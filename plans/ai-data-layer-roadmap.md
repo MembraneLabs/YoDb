@@ -71,7 +71,8 @@ Before implementation, I would write these down as architectural invariants.
 | Principle                                        | Meaning                                                                                               |
 | ------------------------------------------------ | ----------------------------------------------------------------------------------------------------- |
 | Logical identity belongs to your system          | IDs must not depend on Postgres IDs, Neo4j IDs, Qdrant IDs, etc.                                      |
-| Applications describe intent                     | Applications ask for semantic search, traversal, filtering, aggregation, not “run this Qdrant query.” |
+| Application contracts are logical                | Applications use logical records and queries, not “run this Qdrant query.” A requirements/intent layer can be added without exposing physical placement. |
+| Minimum sufficient placement                     | The planner chooses the simplest physical architecture that satisfies requirements; adding a backend is an optimization, not an automatic feature. |
 | Canonical data and derived indexes are different | The authoritative document should not disappear because a vector database dies.                       |
 | Backends expose capabilities                     | Do not pretend every database implements one generic `Database` interface.                            |
 | Query representation is backend-neutral          | SQL/Cypher/vector-query syntax stays below the abstraction boundary.                                  |
@@ -85,13 +86,58 @@ The canonical-versus-derived distinction will probably become one of the most im
 
 ---
 
-# 3. Development roadmap
+# 3. Requirements and placement architecture
+
+The planner's purpose is not to distribute data among databases. Its purpose is
+to select the **minimum sufficient physical architecture** for each dataset.
+
+```text
+DatasetSpec      -> what data looks like
+Requirements     -> what the workload needs (optional in the first public API)
+PlacementPlan    -> how YoDb implements those needs
+```
+
+For example, a future `customer_knowledge` dataset could require durable
+storage, structured filtering, semantic search, relationships, and a p95
+latency target. The appropriate initial plan can still be entirely Postgres:
+
+```text
+canonical       -> PostgreSQL
+filtering       -> PostgreSQL
+semantic search -> PostgreSQL / pgvector
+relationships   -> PostgreSQL edge tables
+```
+
+V0 does **not** need a user-facing, intent-based requirements API. It may begin
+with explicit logical dataset fields and capabilities. Physical indexes may be
+used internally, but application queries must not name an index, backend,
+collection, embedding model, or algorithm. The schema, catalog, and planner
+boundaries must leave room for an internal and future public `Requirements`
+object, plus a formal `PlacementPlan`. Neither application data nor application
+queries may depend on the name or topology of the selected physical backend.
+
+When a future backend such as Qdrant is registered, it becomes an alternative
+implementation for a capability. YoDb does not migrate data simply because
+that backend exists. Migration is considered only when observed workload,
+service objectives, cost, or capacity show that the current placement no
+longer satisfies the dataset's requirements.
+
+Conceptually, future planning will select a placement `P` such that it meets
+the requested capabilities, durability, consistency, and service objectives
+while minimizing storage, compute, network, synchronization, and operational
+complexity costs. Operational complexity is deliberately a first-class cost:
+a single well-performing Postgres deployment should beat a slightly faster but
+unnecessary Postgres + Qdrant + Neo4j deployment.
+
+---
+
+# 4. Development roadmap
 
 I would approach the project in roughly the following phases. Each phase should leave you with a working system rather than being merely infrastructure for the next phase.
 
-1. **Phase 0 — Define semantics and invariants.** Write down what a dataset is, what identity means, what persistence guarantees exist, what “search” means, what is authoritative, and what operations applications are allowed to request. Do this before implementing adapters.
+1. **Phase 0 — Define semantics and invariants.** Write down what a dataset is, what identity means, what persistence guarantees exist, what “search” means, what is authoritative, and what operations applications are allowed to request. Define forward-compatible `Requirements` and `PlacementPlan` concepts, without requiring a V0 intent API.
 
-2. **Phase 1 — Build a PostgreSQL-only storage engine.** Support structured objects, text, metadata, embeddings through pgvector, and relationships through edge tables. No routing yet.
+2. **Phase 1 / V0 — Build a PostgreSQL-only storage engine.** Support structured objects, text, metadata, embeddings through pgvector, and relationships through edge tables. PostgreSQL is the only registered backend and the only placement. No routing or multi-database execution yet.
 
 3. **Phase 2 — Introduce the logical dataset model.** Applications stop thinking about tables. They define `DatasetSpec`s with fields, capabilities, indexes, and consistency requirements.
 
@@ -113,7 +159,7 @@ I would approach the project in roughly the following phases. Each phase should 
 
 12. **Phase 11 — Build the agent-facing layer.** Give agents a constrained tool/API where they declare data requirements and query intent instead of manipulating physical databases.
 
-13. **Phase 12 — Add intelligent placement and cost-based planning.** Collect statistics and make planner decisions using latency, cost, cardinality, backend health, query characteristics, and requested consistency/SLOs.
+13. **Phase 12 — Add intelligent placement and cost-based planning.** Collect statistics and make planner decisions using latency, cost, cardinality, backend health, query characteristics, and requested consistency/SLOs. The planner may also choose among physical implementations within Postgres before considering an external backend.
 
 14. **Phase 13 — Production hardening.** Add tenancy, auth, isolation, lifecycle management, schema migration, backup/recovery, auditing, observability, quotas, reconciliation, and failure handling.
 

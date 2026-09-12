@@ -52,10 +52,33 @@ class SpecTests(unittest.TestCase):
 
         self.assertEqual(catalog.datasets[0].indexes[0].source_field, "content")
         self.assertEqual(catalog.to_dict()["relationships"][0]["name"], "authored_by")
+        self.assertEqual(catalog.to_dict()["relationships"][0]["version"], 1)
 
     def test_dataset_requires_logical_id(self) -> None:
         with self.assertRaisesRegex(SpecValidationError, "'id' field"):
             DatasetSpec(name="missing_id", fields={"name": FieldSpec(FieldType.STRING)})
+
+    def test_field_requirement_and_default_semantics(self) -> None:
+        required = FieldSpec(FieldType.STRING, required=True)
+        defaulted = FieldSpec(FieldType.STRING, default="draft")
+        nullable = FieldSpec(FieldType.TEXT, nullable=True, default=None)
+
+        self.assertFalse(required.has_default)
+        self.assertEqual(defaulted.to_dict()["default"], "draft")
+        self.assertIsNone(nullable.to_dict()["default"])
+        with self.assertRaisesRegex(SpecValidationError, "both required"):
+            FieldSpec(FieldType.STRING, required=True, default="draft")
+        with self.assertRaisesRegex(SpecValidationError, "null default"):
+            FieldSpec(FieldType.STRING, default=None)
+
+    def test_unknown_fields_are_disabled_by_default(self) -> None:
+        self.assertFalse(self.documents.allow_unknown_fields)
+        permissive = DatasetSpec(
+            name="ingest_events",
+            allow_unknown_fields=True,
+            fields={"id": FieldSpec(FieldType.ID)},
+        )
+        self.assertTrue(permissive.allow_unknown_fields)
 
     def test_vector_index_requires_text_source(self) -> None:
         with self.assertRaisesRegex(SpecValidationError, "string or text"):

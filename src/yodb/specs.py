@@ -11,6 +11,9 @@ from enum import StrEnum
 from typing import Any, Mapping
 
 
+_UNSET = object()
+
+
 class SpecValidationError(ValueError):
     """Raised when a logical data-model specification is invalid."""
 
@@ -54,16 +57,22 @@ class FieldSpec:
     """The schema and query capabilities of one record or edge field."""
 
     type: FieldType
+    required: bool = False
     nullable: bool = False
     repeated: bool = False
     filterable: bool = False
     sortable: bool = False
     searchable: bool = False
+    default: Any = _UNSET
     description: str | None = None
 
     def __post_init__(self) -> None:
         if self.type is FieldType.ID and (self.nullable or self.repeated):
             raise SpecValidationError("An id field must be singular and non-nullable.")
+        if self.required and self.default is not _UNSET:
+            raise SpecValidationError("A field cannot be both required and have a default.")
+        if self.default is None and not self.nullable:
+            raise SpecValidationError("A null default requires nullable=True.")
         if self.sortable and self.repeated:
             raise SpecValidationError("A repeated field cannot be sortable.")
         if self.searchable and self.type not in {FieldType.STRING, FieldType.TEXT}:
@@ -72,13 +81,20 @@ class FieldSpec:
     def to_dict(self) -> dict[str, Any]:
         return {
             "type": self.type.value,
+            "required": self.required,
             "nullable": self.nullable,
             "repeated": self.repeated,
             "filterable": self.filterable,
             "sortable": self.sortable,
             "searchable": self.searchable,
-            "description": self.description,
+            **({"default": self.default} if self.has_default else {}),
+            **({"description": self.description} if self.description is not None else {}),
         }
+
+    @property
+    def has_default(self) -> bool:
+        """Whether this field supplies a literal default for missing input."""
+        return self.default is not _UNSET
 
 
 @dataclass(frozen=True, slots=True)
@@ -134,6 +150,7 @@ class DatasetSpec:
     namespace: str = "default"
     version: int = 1
     canonical_consistency: Consistency = Consistency.STRONG
+    allow_unknown_fields: bool = False
 
     def __post_init__(self) -> None:
         _require_name(self.name, "dataset name")
@@ -171,6 +188,7 @@ class DatasetSpec:
             "namespace": self.namespace,
             "version": self.version,
             "canonical_consistency": self.canonical_consistency.value,
+            "allow_unknown_fields": self.allow_unknown_fields,
             "fields": {name: spec.to_dict() for name, spec in self.fields.items()},
             "indexes": [index.to_dict() for index in self.indexes],
         }
@@ -186,12 +204,15 @@ class RelationshipSpec:
     cardinality: Cardinality
     fields: Mapping[str, FieldSpec] = field(default_factory=dict)
     namespace: str = "default"
+    version: int = 1
 
     def __post_init__(self) -> None:
         _require_name(self.name, "relationship name")
         _require_name(self.from_dataset, "source dataset")
         _require_name(self.to_dataset, "target dataset")
         _require_name(self.namespace, "namespace")
+        if self.version < 1:
+            raise SpecValidationError("A relationship version must be at least 1.")
         if "id" in self.fields:
             raise SpecValidationError("Relationship fields cannot define 'id'; edges own their ID.")
         for name, spec in self.fields.items():
@@ -203,6 +224,7 @@ class RelationshipSpec:
         return {
             "name": self.name,
             "namespace": self.namespace,
+            "version": self.version,
             "from_dataset": self.from_dataset,
             "to_dataset": self.to_dataset,
             "cardinality": self.cardinality.value,
@@ -224,6 +246,9 @@ class CatalogSpec:
         names = {dataset.qualified_name for dataset in self.datasets}
         if len(names) != len(self.datasets):
             raise SpecValidationError("Dataset names must be unique within a namespace.")
+        relationship_names = {f"{relationship.namespace}.{relationship.name}" for relationship in self.relationships}
+        if len(relationship_names) != len(self.relationships):
+            raise SpecValidationError("Relationship names must be unique within a namespace.")
         for relationship in self.relationships:
             from_name = f"{relationship.namespace}.{relationship.from_dataset}"
             to_name = f"{relationship.namespace}.{relationship.to_dataset}"

@@ -2,7 +2,8 @@
 
 YoDb is an AI-oriented logical data layer. This first increment defines a
 backend-neutral schema model: datasets and typed records, relationships with
-edge fields, and derived indexes such as vector embeddings.
+edge fields, derived indexes such as vector embeddings, and field-level
+presence/default semantics.
 
 ```python
 from yodb import DatasetSpec, FieldSpec, FieldType, IndexKind, IndexSpec
