@@ -1,34 +1,16 @@
 # YoDb
 
-YoDb is an AI-oriented logical data layer. This first increment defines a
-backend-neutral schema model: datasets and typed records, relationships with
-edge fields, derived indexes such as vector embeddings, and field-level
-presence/default semantics.
+YoDb is a planned read-only, typed, explainable federated data layer for
+relational, semantic, and bounded graph queries. Its initial implementation
+will target PostgreSQL, pgvector, and optional Neo4j without migrating source
+data.
 
-```python
-from yodb import DatasetSpec, FieldSpec, FieldType, IndexKind, IndexSpec
+The active design and delivery references are under [plans/](plans/):
 
-documents = DatasetSpec(
-    name="documents",
-    fields={
-        "id": FieldSpec(FieldType.ID),
-        "content": FieldSpec(FieldType.TEXT, searchable=True),
-    },
-    indexes=(
-        IndexSpec(
-            name="content_embedding",
-            kind=IndexKind.VECTOR,
-            source_field="content",
-            embedding_model="text-embedding-3-large",
-            dimensions=3072,
-            distance="cosine",
-        ),
-    ),
-)
-```
+- [V0.1 federated semantic data layer](plans/v0.1-federated-semantic-data-layer.md)
+- [V0.1 implementation plan](plans/v0.1-implementation-plan.md)
+- [Phase 0 logical semantics and catalog decisions](plans/phase-0-semantics.md)
+- [V0.1 YAML catalog schema](plans/v0.1-yaml-catalog-schema.md)
 
-Run the tests with:
-
-```bash
-PYTHONPATH=src python3 -m unittest discover -s tests
-```
+The initial runtime reads and statically validates a three-file YAML catalog.
+It does not yet connect to source databases or execute queries.

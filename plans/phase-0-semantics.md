@@ -4,19 +4,502 @@ This document records the behavioral contracts that YoDb must establish before
 adding persistence, physical backends, or a public API. Decisions here are
 implemented through domain-model code and executable tests.
 
+> **V0.1 authority notice.** The initial parts of this document describe a
+> future YoDb-managed canonical-write mode. V0.1 instead is a read-only,
+> source-authoritative federated query layer. The V0.1 decisions and binding
+> contract below control whenever they conflict with the earlier write,
+> generated-ID, canonical-persistence, tombstone, or derived-index sections.
+> The earlier material remains a future-mode reference until it is fully
+> reorganized.
+
 ## Decision status
 
 | Topic | Status |
 | --- | --- |
 | Record validation and unknown fields | Decided (initial contract) |
 | Logical ID format and generation | Decided |
-| Write, delete, and version semantics | Decided |
-| Canonical persistence guarantee | Decided |
-| Index freshness and eventual consistency | Decided |
-| Query semantics | Decided (initial contract) |
-| Relationship behavior | Decided (initial contract) |
-| Error model | Decided |
-| Schema evolution | Decided (V0 constraints) |
+| Write, delete, and version semantics | Future YoDb-managed write mode; not V0.1 |
+| Canonical persistence guarantee | Future YoDb-managed write mode; not V0.1 |
+| Index freshness and eventual consistency | Future YoDb-managed write mode; not V0.1 |
+| Query semantics | Partially retained; V0.1 source bindings and result contract control |
+| Relationship behavior | Logical traversal retained; relationship writes are future mode |
+| Error model | V0.1 contract decided below |
+| Schema evolution | V0.1 catalog-only rules; no source migration |
+| V0.1 source authority and read boundary | Decided |
+| V0.1 catalog and binding configuration | Decided |
+| V0.1 normalized result envelope | Decided |
+
+## V0.1 source authority and catalog bindings
+
+### Source-authoritative read boundary
+
+V0.1 does not own source data. It is read-only and does not create a shadow
+canonical record store. A connected PostgreSQL or Neo4j source remains
+authoritative for its own data, identity, write transaction, deletion, version,
+and physical-index behavior.
+
+YoDb owns the logical catalog, query IR, validation, planning, result
+normalization, logical result identity, provenance, and explainability.
+
+- V0.1 provides no create, update, delete, write routing, distributed
+  transaction, or global cross-source snapshot guarantee.
+- Each source operation uses that source's ordinary read semantics.
+- A response reports source read timestamps/freshness and any allowed partial
+  failure; it must not imply a single global snapshot.
+- When multiple sources provide the same logical field, catalog metadata
+  declares source precedence. The preferred value is returned and a material
+  disagreement is surfaced in explain/debug output rather than silently merged.
+- A missing or deleted record in the preferred hydration source cannot be
+  resurrected from a graph or secondary representation.
+
+### Responsibility boundary
+
+```text
+YoDb:          inspect source schema/capabilities; validate bindings;
+               plan, execute, normalize, and explain reads.
+
+Developer or
+coding agent:  author every DatasetSpec, SourceBinding, FieldBinding,
+               RelationshipBinding, JoinBinding, and LogicalIdBinding.
+
+Human owner:   supplies or approves business meaning and activates a catalog
+               version.
+```
+
+V0.1 deliberately does **not** infer, suggest, auto-generate, or activate a
+logical dataset, field mapping, relationship, cross-source match, or join.
+Schema inspection exposes factual physical metadata only. A coding agent may
+use that metadata and user-provided business context to write a complete catalog
+configuration, but YoDb only validates that configuration; it never invents
+business meaning or an executable mapping.
+
+### Catalog configuration contract
+
+The executable, user-authored V0.1 YAML contract is defined in
+[v0.1-yaml-catalog-schema.md](v0.1-yaml-catalog-schema.md). It supersedes the
+older illustrative configuration shape in this section where they differ. The
+YAML deliberately has only `logical.yaml`, `sources.yaml`, and `relations.yaml`;
+it does not expose named mapping objects. The terms below remain useful
+conceptually and inside Python, but not as a required user-facing YAML layer.
+
+The active catalog is an immutable, versioned declarative configuration. The
+runtime representation may be Pydantic/Python objects, while the portable
+configuration representation is YAML or JSON. Every physical reference must be
+explicit; no name-based fallback is permitted. The catalog is **closed-world**:
+an unmapped physical column or property is inaccessible for every YoDb purpose,
+including filtering, projection, ordering, semantic retrieval, identity, and
+join execution.
+
+The initial configuration has this shape:
+
+```text
+CatalogSpec
+├── version
+├── sources: SourceSpec[]
+├── datasets: DatasetSpec[]
+└── relationships: RelationshipBinding[]
+```
+
+#### `SourceSpec`
+
+A `SourceSpec` registers one connected physical data source.
+
+| Field | Required | Meaning |
+| --- | --- | --- |
+| `name` | Yes | Immutable catalog-local source identifier. It is not a hostname. |
+| `kind` | Yes | `postgres` or `neo4j` in V0.1. |
+| `connection_ref` | Yes | Reference to externally managed credentials/configuration; credentials are never embedded in catalog files. |
+| `read_only` | Yes | Must be `true` in V0.1. |
+| `enabled` | No | Whether the source may be selected by the planner; defaults to `true`. |
+
+#### `DatasetSpec`
+
+A dataset is a stable business-level entity such as `Customer`,
+`SupportTicket`, or `Order`. It is not necessarily a physical table.
+
+| Field | Required | Meaning |
+| --- | --- | --- |
+| `name` | Yes | Immutable logical dataset name. |
+| `description` | Yes | Human-readable business meaning. |
+| `aliases` | No | Business synonyms used by SDK/MCP catalog discovery. |
+| `fields` | Yes | Declared logical `FieldSpec`s. |
+| `source_bindings` | Yes | One or more explicit physical representations. |
+| `identity_binding` | Yes | The source binding that supplies the stable logical identity. |
+| `field_precedence` | No | Preferred source binding per overlapping logical field. |
+
+Logical fields retain their typed properties and add V0.1 metadata where
+applicable: `description`, `aliases`, safe `example_values` or an enumeration,
+`unit`, `sensitivity`, and `semantic_eligible`. Field capabilities describe
+logical/access policy, never physical-index presence.
+
+#### `SourceBinding` and `FieldBinding`
+
+A source binding maps one logical dataset to one physical representation. A
+field binding maps a declared logical field to one physical column or property.
+
+| `SourceBinding` field | Required | Meaning |
+| --- | --- | --- |
+| `name` | Yes | Immutable binding identifier within the dataset. |
+| `source` | Yes | A `SourceSpec.name`. |
+| `kind` | Yes | `postgres_relation` or `neo4j_label` in V0.1. |
+| `relation` / `label` | Yes | Exact PostgreSQL schema-qualified table/view or Neo4j label. |
+| `identity` | Yes | Ordered logical fields whose `FieldBinding` values form the immutable source key for this representation. |
+| `fields` | Yes | Mapping of logical field names to `FieldBinding`s. |
+| `read_timestamp_field` | No | Source field used as a freshness/version hint when one exists. |
+
+| `FieldBinding` field | Required | Meaning |
+| --- | --- | --- |
+| `field` | Yes | Declared logical field name. |
+| `column` / `property` | Yes | Exact physical column or Neo4j property name. |
+| `source_type` | Yes | Inspected physical type, retained for validation and diagnostics. |
+| `normalization` | No | Explicit source-to-logical conversion rule; omitted only when the mapping is directly compatible. |
+| `visibility` | No | `public` (default) or `internal`. Internal fields are unavailable to caller projection/filter/order/search but may be used by declared identity or join bindings. |
+
+Every identity and join key therefore has a `FieldBinding`, even when it is an
+internal implementation key. YoDb never names an unmapped column/property in a
+physical plan. Mapping a field as `internal` does not expose it to an
+application, agent, MCP client, or normal result envelope; it only makes the
+approved physical value available to the planner for the declared purpose.
+
+#### `LogicalIdBinding`
+
+A logical result ID is deterministic, source-derived, and opaque. It is never a
+physical database row identifier exposed as a universal ID.
+
+```text
+logical ID = stable encoding of
+  (logical dataset, immutable identity-binding name, canonical source-key tuple)
+```
+
+`DatasetSpec.identity_binding` selects the authoritative identity binding. The
+binding's ordered `identity` field bindings must resolve to non-null, unique
+source values for that representation. Other representations of the same
+logical dataset must connect to this identity through an explicit approved
+`JoinBinding`; matching table names, columns, emails, values, or apparent IDs
+is not identity evidence.
+
+#### `RelationshipBinding` and `JoinBinding`
+
+A relationship binding expresses the business meaning of an edge. A join
+binding expresses exactly how YoDb can resolve that edge physically.
+
+| `RelationshipBinding` field | Required | Meaning |
+| --- | --- | --- |
+| `name` | Yes | Immutable logical relationship name. |
+| `source_dataset` | Yes | Logical origin dataset. |
+| `target_dataset` | Yes | Logical target dataset. |
+| `description` | Yes | Business meaning of the relationship. |
+| `aliases` | No | Business synonyms for catalog discovery. |
+| `cardinality` | Yes | `one_to_one`, `one_to_many`, `many_to_one`, or `many_to_many`. |
+| `join_bindings` | Yes | One or more approved physical resolution paths. |
+
+| `JoinBinding` field | Required | Meaning |
+| --- | --- | --- |
+| `name` | Yes | Immutable identifier for this physical resolution path. |
+| `kind` | Yes | `equality`, `bridge_table`, or `graph_edge` in V0.1. |
+| `source_binding` | Yes | Exact source-side dataset binding. |
+| `target_binding` | Yes | Exact target-side dataset binding. |
+| `steps` | Yes | Ordered explicit equality joins or graph-edge endpoints, each referring only to declared field bindings. |
+| `source_of_truth` | Yes | Binding used for preferred final hydration when this path returns overlapping values. |
+
+An `equality` binding has one equality step. A `bridge_table` binding names
+every bridge relation and equality step. A `graph_edge` binding names its graph
+source, exact labels, relationship type, endpoint field bindings, and direction.
+A join step names a logical field plus a source binding; the planner resolves
+the physical column/property only through that field's `FieldBinding`. A query
+can use only a declared relationship and one of its valid join bindings; it
+cannot issue arbitrary SQL/Cypher, refer to an unmapped physical field, or infer
+a cross-source link.
+
+### Illustrative declarative configuration
+
+This is an example of a complete, human/agent-authored binding. It is
+illustrative of the contract; exact parser syntax follows the Python model.
+
+```yaml
+version: 1
+
+sources:
+  - name: crm_postgres
+    kind: postgres
+    connection_ref: secret://yodb/crm-readonly
+    read_only: true
+
+  - name: support_postgres
+    kind: postgres
+    connection_ref: secret://yodb/support-readonly
+    read_only: true
+
+datasets:
+  - name: Customer
+    description: A company with a commercial account.
+    aliases: [client, account, organization]
+    identity_binding: crm_customer
+    fields:
+      - name: id
+        type: id
+        description: Stable customer identity.
+      - name: name
+        type: string
+        description: Customer company name.
+      - name: plan_tier
+        type: string
+        description: Current commercial subscription level.
+        aliases: [plan, subscription tier]
+        example_values: [enterprise, business, starter]
+    source_bindings:
+      - name: crm_customer
+        source: crm_postgres
+        kind: postgres_relation
+        relation: public.accounts
+        identity: [id]
+        fields:
+          - field: id
+            column: account_uuid
+            source_type: uuid
+          - field: name
+            column: company_name
+            source_type: text
+          - field: plan_tier
+            column: subscription_level
+            source_type: text
+
+  - name: SupportTicket
+    description: A customer support case and its conversation.
+    identity_binding: support_ticket
+    fields:
+      - name: id
+        type: id
+        description: Stable ticket identity.
+      - name: customer_id
+        type: id
+        description: Customer identity recorded by the support system.
+      - name: content
+        type: text
+        description: Customer support conversation and issue description.
+        semantic_eligible: true
+    source_bindings:
+      - name: support_ticket
+        source: support_postgres
+        kind: postgres_relation
+        relation: public.tickets
+        identity: [id]
+        fields:
+          - field: id
+            column: ticket_id
+            source_type: uuid
+          - field: customer_id
+            column: crm_account_uuid
+            source_type: uuid
+            visibility: internal
+          - field: content
+            column: body
+            source_type: text
+
+relationships:
+  - name: Customer.has_ticket
+    source_dataset: Customer
+    target_dataset: SupportTicket
+    description: A support ticket associated with a customer.
+    cardinality: one_to_many
+    join_bindings:
+      - name: crm_customer_to_support_ticket
+        kind: equality
+        source_binding: crm_customer
+        target_binding: support_ticket
+        source_of_truth: crm_customer
+        steps:
+          - left: { binding: crm_customer, field: id }
+            right: { binding: support_ticket, field: customer_id }
+```
+
+### Catalog validation and activation
+
+YoDb validates a submitted catalog version without modifying source data. It
+checks that every named source, relation/label, column/property, field,
+identity key, and join endpoint exists; that types and explicit normalization
+rules are compatible; and that identity/relationship cardinality claims are
+consistent with inspected constraints or optional read-only profiling.
+
+The user may use a coding agent to author the entire configuration from raw
+schema inspection and business context. Before activation, YoDb exposes
+validation/profiling facts such as key uniqueness, null rates, join coverage,
+and observed duplicate counts. It does not turn those facts into a suggested
+mapping or activate a mapping automatically.
+
+### Existing in-memory domain layer: V0.1 boundary
+
+The current in-memory record/edge implementation was designed for a future
+YoDb-managed canonical-write mode. It is retained as useful domain groundwork,
+but it is not a V0.1 storage engine, read cache, or source of record truth.
+
+| Existing concept | V0.1 treatment |
+| --- | --- |
+| `FieldType`, `FieldSpec` | Retain and extend for logical catalog and binding metadata. |
+| `DatasetSpec` | Retain and evolve into the logical dataset catalog definition. |
+| `RelationshipSpec` | Retain and evolve into logical relationship semantics. |
+| Structured errors and type validation | Retain; extend with catalog, connector, planner, consistency, and budget error families. |
+| YoDb-generated `ydb_<ULID>` record IDs | Do not use for V0.1 externally owned source records. |
+| In-memory record/edge store | Do not use as a V0.1 data store, canonical cache, or fallback read source. |
+| Create/update/delete, versions, tombstones | Deferred to future YoDb-managed write mode. |
+| Edge creation and write-time cardinality enforcement | Deferred; V0.1 reads declared relationships only. |
+
+V0.1 connector results are authoritative for record contents at their reported
+source read time. Local V0.1 state may contain catalog metadata, short-lived
+cursor/search-session state, telemetry, and bounded explicitly non-authoritative
+caches. It must never silently serve a locally copied source record as a
+canonical or fresher value.
+
+Consequently, existing write-domain tests remain valuable future-mode
+regressions, but they do not prove V0.1 behavior. V0.1 needs separate tests for
+catalog loading, bindings, logical-ID derivation, query validation, compilation,
+normalization/provenance, pagination, budgets, and source-failure behavior.
+
+### V0.1 normalized result envelope
+
+YoDb normalizes source reads into a stable logical response. A source row/node
+is never returned in raw physical shape, and YoDb does not attach a V0.1-owned
+record version, tombstone state, or `extra` field bag.
+
+```text
+QueryResponse
+├── query_id
+├── results: LogicalRecord[]
+├── page
+├── sources
+└── warnings
+
+LogicalRecord
+├── id
+├── dataset
+├── fields
+├── provenance
+└── match                 optional operation-specific metadata
+```
+
+| Response field | Required | V0.1 meaning |
+| --- | --- | --- |
+| `query_id` | Yes for accepted queries | Stable identifier for explain output, telemetry, and support diagnostics. |
+| `results` | Yes | Ordered normalized logical records. |
+| `page.next_cursor` | No | Opaque continuation cursor/session token; `null` on a final page. |
+| `sources` | Yes | Safe summary of participating logical source/binding names and their read timestamps/freshness. |
+| `warnings` | Yes | Structured non-fatal conditions; an empty array means no known degradation. |
+
+| `LogicalRecord` field | Required | V0.1 meaning |
+| --- | --- | --- |
+| `id` | Yes | Opaque deterministic logical ID derived through `LogicalIdBinding`. |
+| `dataset` | Yes | Logical dataset name. |
+| `fields` | Yes | Requested, public, mapped logical fields only. |
+| `provenance` | Yes | Identity binding and source read timestamp; authorized explain/debug output may add field-source details. |
+| `match` | No | Query-result metadata for semantic verification or traversal; never a persisted record field. |
+
+Illustrative relational response:
+
+```json
+{
+  "query_id": "qry_01...",
+  "results": [
+    {
+      "id": "ydb_...",
+      "dataset": "Customer",
+      "fields": {
+        "name": "Acme",
+        "plan_tier": "enterprise"
+      },
+      "provenance": {
+        "identity_binding": "crm_customer",
+        "read_at": "2026-09-14T10:00:00Z"
+      }
+    }
+  ],
+  "page": { "next_cursor": null },
+  "sources": [
+    { "binding": "crm_customer", "read_at": "2026-09-14T10:00:00Z" }
+  ],
+  "warnings": []
+}
+```
+
+Field-state rules are explicit:
+
+- A selected mapped field with a source `null` is returned as `null`.
+- A non-selected field is omitted from `fields`.
+- An `internal` field is always omitted from normal results.
+- YoDb must never fabricate `null` for a value it could not read. A required
+  source failure fails the request; an explicitly allowed partial response
+  omits unavailable fields/results and names the exact impact in `warnings`.
+- Sensitive physical source keys, credentials, hostnames, raw SQL/Cypher, and
+  raw source exceptions are not normal result/provenance data.
+
+Semantic and graph metadata stay outside `fields`. For example, a semantic
+result may include a verification decision/confidence and model version, while a
+traversal result may include a bounded path summary. Detailed graph evidence is
+opt-in, authorized, and budgeted.
+
+### V0.1 error and warning contract
+
+YoDb exposes one transport-neutral public error envelope across the Python SDK,
+future HTTP interfaces, and MCP. Public errors are stable, machine-readable,
+and safe: raw PostgreSQL/Neo4j/model-provider exceptions, SQL/Cypher,
+credentials, and stack traces never cross the boundary.
+
+```json
+{
+  "error": {
+    "code": "query_budget_exceeded",
+    "message": "The requested query exceeds its configured traversal-work budget.",
+    "retryable": false,
+    "request_id": "req_01...",
+    "query_id": "qry_01...",
+    "details": {
+      "budget": "max_intermediate_nodes",
+      "configured": 10000,
+      "observed": 12543
+    }
+  }
+}
+```
+
+- `request_id` is present for every request, including requests rejected before
+  query planning.
+- `query_id` is present once YoDb has accepted a valid query for planning or
+  execution; it may be absent for malformed requests.
+- `code` is stable snake_case and is the machine contract. `message` is
+  human-readable and may improve without breaking clients.
+- `retryable=true` means the identical request may plausibly succeed later.
+  Invalid input, invalid bindings, and exhausted fixed budgets are not
+  retryable; a transient read timeout usually is.
+- `details` has a documented, family-specific safe shape.
+
+| Error family | V0.1 codes |
+| --- | --- |
+| Catalog/configuration | `catalog_validation_failed`, `source_binding_invalid`, `field_binding_invalid`, `join_binding_invalid`, `logical_id_binding_invalid` |
+| Query validation | `query_validation_failed`, `dataset_not_found`, `field_not_found`, `field_not_accessible`, `relationship_not_found` |
+| Cursor/session | `cursor_query_mismatch`, `cursor_invalidated`, `search_cursor_expired` |
+| Capability/planning | `capability_unavailable`, `plan_constraint_unsatisfied` |
+| Budget/safety | `query_budget_exceeded`, `traversal_budget_exceeded`, `candidate_transfer_budget_exceeded` |
+| Source/read availability | `source_unavailable`, `source_timeout`, `source_read_failed` |
+| Source compatibility | `source_value_incompatible`, `source_schema_drift_detected` |
+| Unexpected failure | `internal_error` |
+
+A required source failure fails the request. A partial result is allowed only
+when the caller explicitly sets `allow_partial_results=true` and the planner
+can identify the impact. It is represented as a successful `QueryResponse`
+with a structured warning, never as an unexplained omission:
+
+```json
+{
+  "code": "partial_source_unavailable",
+  "source": "relationship_graph",
+  "skipped_operation": "bounded_traversal",
+  "impact": "Results exclude graph-derived constraints."
+}
+```
+
+Conflicting values from sources are normally warnings rather than errors. The
+catalog-preferred source value is returned, and authorized explain/debug output
+identifies the conflicting binding/value state. This policy prevents silent
+merges without turning an otherwise usable read into a failure.
 
 ## Record validation
 

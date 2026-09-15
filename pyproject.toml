@@ -5,8 +5,12 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "yodb"
 version = "0.1.0"
-description = "Logical data-model specifications for YoDb"
+description = "YoDb V0.1 planning and contract definitions"
 requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2.12,<3",
+    "PyYAML>=6,<7",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

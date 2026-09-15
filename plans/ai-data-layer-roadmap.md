@@ -1,6 +1,14 @@
-Yes. I would build this as a **progressive database/data-platform project**, where every phase produces something usable and teaches you what abstraction the next phase actually needs.
+> **V0.1 scope revision:**
+> [V0.1 — Federated Semantic Data Layer](v0.1-federated-semantic-data-layer.md)
+> is the controlling delivery plan. This document remains the long-term
+> architecture reference. Where the two conflict, the V0.1 plan wins.
 
-The end goal is not “support PostgreSQL + Qdrant + Neo4j + ClickHouse.” The end goal is:
+This is a **progressive semantic-data/runtime project**, where every phase
+produces something usable and teaches us which abstraction the next phase
+actually needs.
+
+The end goal is not “support PostgreSQL + Qdrant + Neo4j + ClickHouse.” The
+eventual goal is:
 
 > **Applications describe the data they have, the capabilities they need, and the query they want performed. Your system determines how that maps onto physical storage and executes it.**
 
@@ -137,7 +145,7 @@ I would approach the project in roughly the following phases. Each phase should 
 
 1. **Phase 0 — Define semantics and invariants.** Write down what a dataset is, what identity means, what persistence guarantees exist, what “search” means, what is authoritative, and what operations applications are allowed to request. Define forward-compatible `Requirements` and `PlacementPlan` concepts, without requiring a V0 intent API.
 
-2. **Phase 1 / V0 — Build a PostgreSQL-only storage engine.** Support structured objects, text, metadata, embeddings through pgvector, and relationships through edge tables. PostgreSQL is the only registered backend and the only placement. No routing or multi-database execution yet.
+2. **Phase 1 / V0.1 — Build a federated semantic query layer.** Connect existing PostgreSQL/pgvector sources and optional Neo4j graph sources read-only. Implement the typed IR (`Scan`, `Filter`, `Project`, `Order`, `Limit`, `SemanticFilter`, bounded `Traverse`), source bindings, declared joins, naive and retrieval-assisted semantic plans, `EXPLAIN AI`, and a benchmark suite. V0.1 does not own canonical writes; configured source precedence determines authoritative reads. Typed relationship edges and bounded Postgres/Neo4j traversal remain supported.
 
 3. **Phase 2 — Introduce the logical dataset model.** Applications stop thinking about tables. They define `DatasetSpec`s with fields, capabilities, indexes, and consistency requirements.
 
