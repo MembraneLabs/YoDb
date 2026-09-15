@@ -4,12 +4,15 @@ from datetime import UTC, datetime
 import unittest
 
 from yodb import (
+    ErrorCode,
+    ErrorDetail,
     FindingSeverity,
     InspectionCapability,
     PhysicalField,
     PhysicalResource,
     ResourceKind,
     SourceInspection,
+    SourceInspectionError,
     SourceValidationReport,
     ValidationFinding,
 )
@@ -17,6 +20,20 @@ from yodb.catalog import SourceKind
 
 
 class InspectionContractsTests(unittest.TestCase):
+    def test_adapter_errors_have_a_safe_structured_payload(self) -> None:
+        error = SourceInspectionError(
+            ErrorDetail(
+                code=ErrorCode.SOURCE_PERMISSION_DENIED,
+                message="The configured role cannot inspect source metadata.",
+                retryable=False,
+                source_name="crm_postgres",
+            )
+        )
+
+        self.assertEqual(error.code, ErrorCode.SOURCE_PERMISSION_DENIED)
+        self.assertFalse(error.retryable)
+        self.assertEqual(error.detail.source_name, "crm_postgres")
+
     def test_source_inspection_represents_adapter_native_schema_facts(self) -> None:
         inspection = SourceInspection(
             source_name="crm_postgres",
@@ -74,4 +91,3 @@ class InspectionContractsTests(unittest.TestCase):
 
         self.assertTrue(warning_only.is_valid)
         self.assertFalse(invalid.is_valid)
-
