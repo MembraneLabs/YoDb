@@ -19,7 +19,7 @@ from .contracts import (
     SourceValidationReport,
     ValidationFinding,
 )
-from .errors import ErrorCode, ErrorDetail, SourceInspectionError, YoDbError
+from ..errors import ErrorCode, ErrorDetail, SourceInspectionError, YoDbError
 from .postgres import PostgresCatalogValidator, PostgresSourceInspector
 
 __all__ = [

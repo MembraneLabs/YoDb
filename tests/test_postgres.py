@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Any
+from contextlib import contextmanager
+from typing import Any, Iterator
 import unittest
 
 from yodb import (
@@ -25,14 +26,15 @@ from yodb.catalog import (
 
 class PostgresAdapterTests(unittest.TestCase):
     def test_inspector_reads_physical_metadata_without_reading_business_rows(self) -> None:
-        connection = FakeConnection()
-        inspector = PostgresSourceInspector(lambda reference: connection)
+        connections = FakeConnectionAdapter()
+        inspector = PostgresSourceInspector(connections)
 
         inspection = inspector.inspect(InspectionRequest(source_name="crm_postgres", source=_source()))
 
+        connection = connections.connection
         accounts = inspection.resources["public.accounts"]
         self.assertTrue(connection.rolled_back)
-        self.assertTrue(connection.closed)
+        self.assertTrue(connections.returned)
         self.assertIn("SET TRANSACTION READ ONLY", connection.executed)
         self.assertEqual(inspection.engine_version, "17.5")
         self.assertEqual(accounts.primary_key.fields, ("account_uuid",))
@@ -43,7 +45,7 @@ class PostgresAdapterTests(unittest.TestCase):
         self.assertIn(InspectionCapability.VECTOR_INDEXES, inspection.capabilities)
 
     def test_validator_accepts_existing_unique_identity_and_mapped_fields(self) -> None:
-        inspection = PostgresSourceInspector(lambda reference: FakeConnection()).inspect(
+        inspection = PostgresSourceInspector(FakeConnectionAdapter()).inspect(
             InspectionRequest(source_name="crm_postgres", source=_source())
         )
 
@@ -53,7 +55,7 @@ class PostgresAdapterTests(unittest.TestCase):
         self.assertEqual(report.findings, ())
 
     def test_validator_reports_a_missing_configured_resource(self) -> None:
-        inspection = PostgresSourceInspector(lambda reference: FakeConnection()).inspect(
+        inspection = PostgresSourceInspector(FakeConnectionAdapter()).inspect(
             InspectionRequest(source_name="crm_postgres", source=_source())
         )
         source = _source(resource="public.missing_accounts")
@@ -79,6 +81,20 @@ class FakeConnection:
 
     def close(self) -> None:
         self.closed = True
+
+
+class FakeConnectionAdapter:
+    def __init__(self) -> None:
+        self.connection = FakeConnection()
+        self.returned = False
+
+    @contextmanager
+    def acquire(self, connection_ref: str, *, timeout_seconds: float | None = None) -> Iterator[FakeConnection]:
+        try:
+            yield self.connection
+        finally:
+            self.connection.rollback()
+            self.returned = True
 
 
 class FakeCursor:

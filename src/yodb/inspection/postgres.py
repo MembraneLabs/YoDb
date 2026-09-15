@@ -8,13 +8,14 @@ connection factory so connection references remain opaque to YoDb.
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 import re
 from typing import Any, Protocol
 
 from ..catalog import Catalog, LogicalType, SourceKind
-from .errors import ErrorCode, ErrorDetail, SourceInspectionError
+from ..connections.contracts import SourceConnectionAdapter
+from ..errors import ErrorCode, ErrorDetail, SourceInspectionError
 from .contracts import (
     FindingSeverity,
     InspectionCapability,
@@ -49,9 +50,6 @@ class PostgresConnection(Protocol):
     def rollback(self) -> Any: ...
 
     def close(self) -> Any: ...
-
-
-PostgresConnectionFactory = Callable[[str], PostgresConnection]
 
 
 _VECTOR_DIMENSIONS = re.compile(r"^vector\((?P<dimensions>\d+)\)$", re.IGNORECASE)
@@ -169,8 +167,8 @@ class PostgresSourceInspector:
 
     source_kind = SourceKind.POSTGRES
 
-    def __init__(self, connect: PostgresConnectionFactory) -> None:
-        self._connect = connect
+    def __init__(self, connections: SourceConnectionAdapter[PostgresConnection]) -> None:
+        self._connections = connections
 
     def inspect(self, request: InspectionRequest) -> SourceInspection:
         if request.source.kind is not SourceKind.POSTGRES:
@@ -183,21 +181,20 @@ class PostgresSourceInspector:
                 )
             )
 
-        connection: PostgresConnection | None = None
         try:
-            connection = self._connect(request.source.connection_ref)
-            cursor = connection.cursor()
-            try:
-                cursor.execute("SET TRANSACTION READ ONLY")
-                version_rows = _fetch_rows(cursor, _SERVER_VERSION_SQL)
-                extension_rows = _fetch_rows(cursor, _EXTENSIONS_SQL)
-                resource_rows = _fetch_rows(cursor, _RESOURCES_SQL)
-                column_rows = _fetch_rows(cursor, _COLUMNS_SQL)
-                constraint_rows = _fetch_rows(cursor, _KEYS_AND_CHECKS_SQL)
-                foreign_key_rows = _fetch_rows(cursor, _FOREIGN_KEYS_SQL)
-                index_rows = _fetch_rows(cursor, _INDEXES_SQL)
-            finally:
-                cursor.close()
+            with self._connections.acquire(request.source.connection_ref) as connection:
+                cursor = connection.cursor()
+                try:
+                    cursor.execute("SET TRANSACTION READ ONLY")
+                    version_rows = _fetch_rows(cursor, _SERVER_VERSION_SQL)
+                    extension_rows = _fetch_rows(cursor, _EXTENSIONS_SQL)
+                    resource_rows = _fetch_rows(cursor, _RESOURCES_SQL)
+                    column_rows = _fetch_rows(cursor, _COLUMNS_SQL)
+                    constraint_rows = _fetch_rows(cursor, _KEYS_AND_CHECKS_SQL)
+                    foreign_key_rows = _fetch_rows(cursor, _FOREIGN_KEYS_SQL)
+                    index_rows = _fetch_rows(cursor, _INDEXES_SQL)
+                finally:
+                    cursor.close()
 
             return _build_inspection(
                 request,
@@ -213,12 +210,6 @@ class PostgresSourceInspector:
             raise
         except Exception as error:
             raise _source_error_from_exception(request.source_name, error) from error
-        finally:
-            if connection is not None:
-                try:
-                    connection.rollback()
-                finally:
-                    connection.close()
 
 
 class PostgresCatalogValidator:

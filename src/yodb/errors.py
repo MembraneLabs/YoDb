@@ -16,6 +16,9 @@ class ErrorCode(str, Enum):
     """V0.1 error codes needed before query execution exists."""
 
     SOURCE_KIND_UNSUPPORTED = "source_kind_unsupported"
+    CONNECTION_REFERENCE_NOT_FOUND = "connection_reference_not_found"
+    CONNECTION_POOL_TIMEOUT = "connection_pool_timeout"
+    CONNECTION_POOL_CLOSED = "connection_pool_closed"
     SOURCE_UNAVAILABLE = "source_unavailable"
     SOURCE_AUTHENTICATION_FAILED = "source_authentication_failed"
     SOURCE_PERMISSION_DENIED = "source_permission_denied"
@@ -56,3 +59,6 @@ class YoDbError(Exception):
 class SourceInspectionError(YoDbError):
     """Raised when an adapter cannot produce a source inspection snapshot."""
 
+
+class SourceConnectionError(YoDbError):
+    """Raised when a source connection cannot be resolved or leased."""
