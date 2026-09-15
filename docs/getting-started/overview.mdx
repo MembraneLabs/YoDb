@@ -1,0 +1,49 @@
+---
+title: Overview
+description: Start with YoDb's three-file catalog.
+---
+
+## The catalog
+
+A YoDb catalog has exactly three files:
+
+```text
+catalog/
+├── datasets.yaml
+├── sources.yaml
+└── relations.yaml
+```
+
+`datasets.yaml` describes the business-facing datasets and their fields.
+`sources.yaml` maps those datasets to actual backend resources and fields.
+`relations.yaml` defines how datasets connect.
+
+```text
+dataset → source → resource → physical field
+```
+
+For example:
+
+```text
+customer → crm_postgres → public.accounts → account_uuid
+```
+
+## Validate a catalog
+
+The loader does not connect to databases yet. It validates YAML structure and
+cross-file references only.
+
+```python
+from yodb import load_catalog
+
+catalog = load_catalog("catalog")
+print(catalog.datasets.keys())
+```
+
+From the repository root, run the test suite with:
+
+```bash
+PYTHONPATH=src python3 -m unittest discover -s tests -v
+```
+
+Continue with the [catalog overview](/catalog/overview).

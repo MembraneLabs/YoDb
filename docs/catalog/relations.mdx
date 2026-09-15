@@ -1,0 +1,37 @@
+---
+title: relations.yaml
+description: Define approved relational joins and graph edges.
+---
+
+Relationships connect datasets, not arbitrary tables or columns. Every endpoint
+field must already be mapped in `sources.yaml`.
+
+```yaml
+api_version: yodb/v0.1
+
+relationships:
+  customer_has_ticket:
+    from: customer
+    to: support_ticket
+    description: A support ticket associated with a customer.
+    cardinality: one_to_many
+
+    implementations:
+      - kind: key_match
+        from:
+          source: crm_postgres
+          field: crm_account_key
+        to:
+          source: support_postgres
+          field: customer_crm_key
+
+      - kind: edge
+        source: relationship_graph
+        edge: HAS_TICKET
+        direction: out
+```
+
+`key_match` is the relational implementation. `edge` is the Neo4j graph
+implementation of the same business relationship. The query planner chooses an
+available implementation later; callers never choose a database or graph
+engine.

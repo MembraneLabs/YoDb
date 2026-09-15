@@ -1,27 +1,5 @@
-"""YoDb's backend-neutral logical data model."""
+"""YoDb V0.1 catalog loading and static validation."""
 
-from .specs import (
-    Cardinality,
-    CatalogSpec,
-    Consistency,
-    DatasetSpec,
-    FieldSpec,
-    FieldType,
-    IndexKind,
-    IndexSpec,
-    RelationshipSpec,
-    SpecValidationError,
-)
+from .catalog import Catalog, CatalogValidationError, load_catalog
 
-__all__ = [
-    "Cardinality",
-    "CatalogSpec",
-    "Consistency",
-    "DatasetSpec",
-    "FieldSpec",
-    "FieldType",
-    "IndexKind",
-    "IndexSpec",
-    "RelationshipSpec",
-    "SpecValidationError",
-]
+__all__ = ["Catalog", "CatalogValidationError", "load_catalog"]
