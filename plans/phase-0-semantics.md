@@ -46,7 +46,7 @@ normalization, logical result identity, provenance, and explainability.
 - Each source operation uses that source's ordinary read semantics.
 - A response reports source read timestamps/freshness and any allowed partial
   failure; it must not imply a single global snapshot.
-- When multiple sources provide the same logical field, catalog metadata
+- When multiple sources provide the same field, catalog metadata
   declares source precedence. The preferred value is returned and a material
   disagreement is surfaced in explain/debug output rather than silently merged.
 - A missing or deleted record in the preferred hydration source cannot be
@@ -67,7 +67,7 @@ Human owner:   supplies or approves business meaning and activates a catalog
 ```
 
 V0.1 deliberately does **not** infer, suggest, auto-generate, or activate a
-logical dataset, field mapping, relationship, cross-source match, or join.
+dataset, field mapping, relationship, cross-source match, or join.
 Schema inspection exposes factual physical metadata only. A coding agent may
 use that metadata and user-provided business context to write a complete catalog
 configuration, but YoDb only validates that configuration; it never invents
@@ -78,7 +78,7 @@ business meaning or an executable mapping.
 The executable, user-authored V0.1 YAML contract is defined in
 [v0.1-yaml-catalog-schema.md](v0.1-yaml-catalog-schema.md). It supersedes the
 older illustrative configuration shape in this section where they differ. The
-YAML deliberately has only `logical.yaml`, `sources.yaml`, and `relations.yaml`;
+YAML deliberately has only `datasets.yaml`, `sources.yaml`, and `relations.yaml`;
 it does not expose named mapping objects. The terms below remain useful
 conceptually and inside Python, but not as a required user-facing YAML layer.
 
@@ -119,13 +119,13 @@ A dataset is a stable business-level entity such as `Customer`,
 
 | Field | Required | Meaning |
 | --- | --- | --- |
-| `name` | Yes | Immutable logical dataset name. |
+| `name` | Yes | Immutable dataset name. |
 | `description` | Yes | Human-readable business meaning. |
 | `aliases` | No | Business synonyms used by SDK/MCP catalog discovery. |
 | `fields` | Yes | Declared logical `FieldSpec`s. |
 | `source_bindings` | Yes | One or more explicit physical representations. |
 | `identity_binding` | Yes | The source binding that supplies the stable logical identity. |
-| `field_precedence` | No | Preferred source binding per overlapping logical field. |
+| `field_precedence` | No | Preferred source binding per overlapping field. |
 
 Logical fields retain their typed properties and add V0.1 metadata where
 applicable: `description`, `aliases`, safe `example_values` or an enumeration,
@@ -134,8 +134,8 @@ logical/access policy, never physical-index presence.
 
 #### `SourceBinding` and `FieldBinding`
 
-A source binding maps one logical dataset to one physical representation. A
-field binding maps a declared logical field to one physical column or property.
+A source binding maps one dataset to one physical representation. A field
+binding maps a declared field to one physical column or property.
 
 | `SourceBinding` field | Required | Meaning |
 | --- | --- | --- |
@@ -143,13 +143,13 @@ field binding maps a declared logical field to one physical column or property.
 | `source` | Yes | A `SourceSpec.name`. |
 | `kind` | Yes | `postgres_relation` or `neo4j_label` in V0.1. |
 | `relation` / `label` | Yes | Exact PostgreSQL schema-qualified table/view or Neo4j label. |
-| `identity` | Yes | Ordered logical fields whose `FieldBinding` values form the immutable source key for this representation. |
-| `fields` | Yes | Mapping of logical field names to `FieldBinding`s. |
+| `identity` | Yes | Ordered fields whose `FieldBinding` values form the immutable source key for this representation. |
+| `fields` | Yes | Mapping of field names to `FieldBinding`s. |
 | `read_timestamp_field` | No | Source field used as a freshness/version hint when one exists. |
 
 | `FieldBinding` field | Required | Meaning |
 | --- | --- | --- |
-| `field` | Yes | Declared logical field name. |
+| `field` | Yes | Declared field name. |
 | `column` / `property` | Yes | Exact physical column or Neo4j property name. |
 | `source_type` | Yes | Inspected physical type, retained for validation and diagnostics. |
 | `normalization` | No | Explicit source-to-logical conversion rule; omitted only when the mapping is directly compatible. |
@@ -168,13 +168,13 @@ physical database row identifier exposed as a universal ID.
 
 ```text
 logical ID = stable encoding of
-  (logical dataset, immutable identity-binding name, canonical source-key tuple)
+  (dataset, immutable identity-binding name, canonical source-key tuple)
 ```
 
 `DatasetSpec.identity_binding` selects the authoritative identity binding. The
 binding's ordered `identity` field bindings must resolve to non-null, unique
 source values for that representation. Other representations of the same
-logical dataset must connect to this identity through an explicit approved
+dataset must connect to this identity through an explicit approved
 `JoinBinding`; matching table names, columns, emails, values, or apparent IDs
 is not identity evidence.
 
@@ -205,7 +205,7 @@ binding expresses exactly how YoDb can resolve that edge physically.
 An `equality` binding has one equality step. A `bridge_table` binding names
 every bridge relation and equality step. A `graph_edge` binding names its graph
 source, exact labels, relationship type, endpoint field bindings, and direction.
-A join step names a logical field plus a source binding; the planner resolves
+A join step names a field plus a source binding; the planner resolves
 the physical column/property only through that field's `FieldBinding`. A query
 can use only a declared relationship and one of its valid join bindings; it
 cannot issue arbitrary SQL/Cypher, refer to an unmapped physical field, or infer
@@ -336,7 +336,7 @@ but it is not a V0.1 storage engine, read cache, or source of record truth.
 | Existing concept | V0.1 treatment |
 | --- | --- |
 | `FieldType`, `FieldSpec` | Retain and extend for logical catalog and binding metadata. |
-| `DatasetSpec` | Retain and evolve into the logical dataset catalog definition. |
+| `DatasetSpec` | Retain and evolve into the dataset catalog definition. |
 | `RelationshipSpec` | Retain and evolve into logical relationship semantics. |
 | Structured errors and type validation | Retain; extend with catalog, connector, planner, consistency, and budget error families. |
 | YoDb-generated `ydb_<ULID>` record IDs | Do not use for V0.1 externally owned source records. |
@@ -389,7 +389,7 @@ LogicalRecord
 | --- | --- | --- |
 | `id` | Yes | Opaque deterministic logical ID derived through `LogicalIdBinding`. |
 | `dataset` | Yes | Logical dataset name. |
-| `fields` | Yes | Requested, public, mapped logical fields only. |
+| `fields` | Yes | Requested, public, mapped fields only. |
 | `provenance` | Yes | Identity binding and source read timestamp; authorized explain/debug output may add field-source details. |
 | `match` | No | Query-result metadata for semantic verification or traversal; never a persisted record field. |
 
@@ -596,7 +596,7 @@ DatasetSpec(
 When `allow_unknown_fields` is `False`, a write with a field that is not
 declared by the dataset fails validation. This is the default because it
 catches misspellings, prevents accidental schema drift, and preserves the
-meaning of a typed logical dataset.
+meaning of a typed dataset.
 
 ### Opt-in behavior
 
@@ -974,7 +974,7 @@ physical algorithm.
 ```
 
 Lexical retrieval has the parallel shape `lexical_search: {"query": "..."}`.
-The dataset schema/capabilities identify the logical fields eligible for each
+The dataset schema/capabilities identify the fields eligible for each
 mode; physical indexes are planner and catalog concerns.
 
 | Topic | V0 policy |
@@ -1188,14 +1188,14 @@ a schema version and are invalidated by an incompatible schema activation.
 
 ### Logical capabilities versus physical indexes
 
-`filterable`, `sortable`, and `searchable` are logical field capabilities. They
+`filterable`, `sortable`, and `searchable` are field capabilities. They
 express what a caller is allowed to request; they do not require or reveal a
 materialized physical index.
 
 The planner may satisfy a permitted operation with an existing index, a
 PostgreSQL scan, or another safe physical implementation. It may later create
 or recommend an index because workload telemetry justifies it. Absence of an
-index alone must never make a declared logical field capability unavailable.
+index alone must never make a declared field capability unavailable.
 
 ### V0 schema changes
 

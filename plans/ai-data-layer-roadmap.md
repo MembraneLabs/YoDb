@@ -117,7 +117,7 @@ relationships   -> PostgreSQL edge tables
 ```
 
 V0 does **not** need a user-facing, intent-based requirements API. It may begin
-with explicit logical dataset fields and capabilities. Physical indexes may be
+with explicit dataset fields and capabilities. Physical indexes may be
 used internally, but application queries must not name an index, backend,
 collection, embedding model, or algorithm. The schema, catalog, and planner
 boundaries must leave room for an internal and future public `Requirements`
@@ -147,7 +147,7 @@ I would approach the project in roughly the following phases. Each phase should 
 
 2. **Phase 1 / V0.1 — Build a federated semantic query layer.** Connect existing PostgreSQL/pgvector sources and optional Neo4j graph sources read-only. Implement the typed IR (`Scan`, `Filter`, `Project`, `Order`, `Limit`, `SemanticFilter`, bounded `Traverse`), source bindings, declared joins, naive and retrieval-assisted semantic plans, `EXPLAIN AI`, and a benchmark suite. V0.1 does not own canonical writes; configured source precedence determines authoritative reads. Typed relationship edges and bounded Postgres/Neo4j traversal remain supported.
 
-3. **Phase 2 — Introduce the logical dataset model.** Applications stop thinking about tables. They define `DatasetSpec`s with fields, capabilities, indexes, and consistency requirements.
+3. **Phase 2 — Introduce the dataset model.** Applications stop thinking about tables. They define `DatasetSpec`s with fields, capabilities, indexes, and consistency requirements.
 
 4. **Phase 3 — Build a backend-neutral query AST.** Represent filters, semantic search, lexical search, traversal, sorting, projections, and limits structurally instead of accepting raw SQL.
 
@@ -2340,7 +2340,7 @@ If you achieve that, you've validated the core architecture.
 
 Introduce ClickHouse.
 
-Now one logical dataset can have:
+Now one dataset can have:
 
 ```text
 transactional representation

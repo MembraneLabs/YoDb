@@ -7,7 +7,7 @@ import unittest
 from yodb import CatalogValidationError, load_catalog
 
 
-LOGICAL = """\
+DATASETS = """\
 api_version: yodb/v0.1
 catalog:
   name: acme_data
@@ -148,8 +148,8 @@ class CatalogLoaderTests(unittest.TestCase):
 
 
 class catalog_directory:
-    def __init__(self, *, logical: str = LOGICAL, sources: str = SOURCES, relations: str = RELATIONS) -> None:
-        self._logical = logical
+    def __init__(self, *, datasets: str = DATASETS, sources: str = SOURCES, relations: str = RELATIONS) -> None:
+        self._datasets = datasets
         self._sources = sources
         self._relations = relations
         self._temporary_directory: TemporaryDirectory[str] | None = None
@@ -157,7 +157,7 @@ class catalog_directory:
     def __enter__(self) -> Path:
         self._temporary_directory = TemporaryDirectory()
         directory = Path(self._temporary_directory.name)
-        (directory / "logical.yaml").write_text(self._logical, encoding="utf-8")
+        (directory / "datasets.yaml").write_text(self._datasets, encoding="utf-8")
         (directory / "sources.yaml").write_text(self._sources, encoding="utf-8")
         (directory / "relations.yaml").write_text(self._relations, encoding="utf-8")
         return directory

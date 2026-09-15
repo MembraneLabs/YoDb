@@ -377,7 +377,7 @@ source name and binding version
 source read timestamp / transaction snapshot information when available
 graph bookmark or source version token when available
 freshness warning and partial-source failure
-source precedence used for conflicting logical fields
+source precedence used for conflicting fields
 ```
 
 For a read-only V0.1, do not use two-phase commit or distributed locking. They

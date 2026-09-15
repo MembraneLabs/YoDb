@@ -1,7 +1,7 @@
 """Three-file YAML catalog loader for YoDb V0.1.
 
 The public YAML shape is deliberately backend-neutral:
-logical datasets -> sources/resources/physical fields -> relationships.
+datasets -> sources/resources/physical fields -> relationships.
 """
 
 from __future__ import annotations
@@ -86,7 +86,7 @@ class CatalogMetadata(StrictModel):
     version: int = Field(gt=0)
 
 
-class LogicalDocument(StrictModel):
+class DatasetsDocument(StrictModel):
     api_version: Literal[API_VERSION]
     catalog: CatalogMetadata
     datasets: dict[str, DatasetSpec]
@@ -168,20 +168,20 @@ class Catalog(StrictModel):
 
 
 def load_catalog(directory: str | Path) -> Catalog:
-    """Load and statically validate ``logical.yaml``, ``sources.yaml``, and ``relations.yaml``.
+    """Load and statically validate ``datasets.yaml``, ``sources.yaml``, and ``relations.yaml``.
 
     The function performs no network I/O and never resolves connection
     references. It is safe to run during local development and CI.
     """
 
     root = Path(directory)
-    logical = _load_document(root / "logical.yaml", LogicalDocument)
+    datasets_document = _load_document(root / "datasets.yaml", DatasetsDocument)
     sources = _load_document(root / "sources.yaml", SourcesDocument)
     relations = _load_document(root / "relations.yaml", RelationsDocument)
 
     catalog = Catalog(
-        metadata=logical.catalog,
-        datasets=logical.datasets,
+        metadata=datasets_document.catalog,
+        datasets=datasets_document.datasets,
         sources=sources.sources,
         resolution=sources.resolution,
         relationships=relations.relationships,
@@ -265,7 +265,7 @@ def _validate_resolutions(catalog: Catalog) -> None:
             details.append(f"missing resolutions for: {', '.join(missing)}")
         if extra:
             details.append(f"unknown dataset resolutions: {', '.join(extra)}")
-        raise CatalogValidationError("resolution must cover every logical dataset (" + "; ".join(details) + ")")
+        raise CatalogValidationError("resolution must cover every dataset (" + "; ".join(details) + ")")
 
     for dataset_name, resolution in catalog.resolution.items():
         _validate_source_field(catalog, dataset_name, resolution.identity_source, "id", "identity_source")
@@ -287,7 +287,7 @@ def _validate_resolutions(catalog: Catalog) -> None:
             if extra:
                 details.append(f"unknown fields: {', '.join(extra)}")
             raise CatalogValidationError(
-                f"resolution.{dataset_name}.field_sources must cover every logical field "
+                f"resolution.{dataset_name}.field_sources must cover every field "
                 f"({'; '.join(details)})"
             )
 
