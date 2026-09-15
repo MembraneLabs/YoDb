@@ -1,38 +1,78 @@
 ---
 title: Catalog overview
-description: How YoDb separates business meaning, source locations, and relationships.
+description: Understand the three YAML files, their shared rules, and how YoDb validates them.
 ---
 
-YoDb keeps three concerns separate:
-
-| File | Responsibility |
-| --- | --- |
-| `datasets.yaml` | What a dataset and field mean. |
-| `sources.yaml` | Where a dataset exists and which physical fields implement it. |
-| `relations.yaml` | How approved datasets connect. |
-
-This prevents physical table and column names from leaking into applications or
-agent-facing queries.
-
-## Closed-world access
-
-Only explicitly configured fields are accessible.
+A YoDb catalog is the approved, business-facing description of connected data.
+It has exactly three files:
 
 ```text
-Unmapped physical field
-  → inaccessible for projection, filtering, ordering, search, identity, and joins.
-
-Mapped public field
-  → available to normal authorized queries.
-
-Mapped internal field
-  → available only to approved identity and relationship execution.
+catalog/
+├── datasets.yaml   # business datasets and fields
+├── sources.yaml    # approved physical locations for those fields
+└── relations.yaml  # approved ways datasets connect
 ```
 
-Every catalog document uses:
+The files answer different questions and should not be merged together.
 
-```yaml
-api_version: yodb/v0.1
+| File | Answers | Must not contain |
+| --- | --- | --- |
+| `datasets.yaml` | What does this dataset or field mean? | Table names, labels, columns, credentials. |
+| `sources.yaml` | Which source, resource, and physical field implement it? | Database URLs, passwords, copied schema metadata. |
+| `relations.yaml` | Which business relationships may YoDb use? | Arbitrary SQL, Cypher, or undeclared field access. |
+
+```text
+business dataset → configured source → physical resource → physical field
+
+customer         → crm_postgres     → public.accounts  → account_uuid
 ```
 
-Names for datasets, fields, sources, and relationships use lower snake case.
+Read [YAML syntax](/catalog/yaml-syntax) first if `{}`, `[]`, indentation, or
+the `-` list marker are unfamiliar.
+
+## The two layers: intent and facts
+
+The catalog is user-authored intent. PostgreSQL or Neo4j schema metadata is a
+separate source of facts.
+
+```text
+Catalog YAML
+  says: customer.id maps to public.accounts.account_uuid
+                         │
+                         ▼
+Read-only source inspection
+  finds: column exists, has type uuid, and is a primary key
+                         │
+                         ▼
+Validation report
+  says: the approved mapping is valid or lists exact findings
+```
+
+Do not declare a PostgreSQL foreign key, index, nullability, column type, or
+Neo4j constraint in the catalog. YoDb discovers those facts from the source.
+The catalog only says which resources and fields YoDb is permitted to use.
+
+## Common rules
+
+- Each document begins with `api_version: yodb/v0.1`.
+- Catalog, dataset, source, field, and relationship names use lower snake
+  case: `^[a-z][a-z0-9_]*$`.
+- Every object accepts only documented keys. Unknown keys are rejected rather
+  than silently ignored.
+- `connection_ref` identifies externally managed connection settings; it is
+  never a database URL, password, or token.
+- The catalog is closed-world: a physical resource or field that is not mapped
+  is unavailable to YoDb.
+- `visibility: internal` fields may support configured identity and
+  relationship execution but are not normal caller-facing fields.
+
+## What validation happens when
+
+| Stage | Checks | Connects to a source? |
+| --- | --- | --- |
+| `load_catalog()` | YAML shape, required values, unknown keys, names, and cross-file references | No |
+| PostgreSQL inspection | Physical tables/views, columns, types, keys, foreign keys, indexes, extensions, and vector facts | Yes, read-only |
+| PostgreSQL catalog validation | Configured resources/fields exist; types are compatible; declared source identities are backed by a primary or unique key | Uses inspection snapshot only |
+
+Continue with [datasets.yaml](/catalog/datasets),
+[sources.yaml](/catalog/sources), and [relations.yaml](/catalog/relations).

@@ -1,9 +1,10 @@
 ---
 title: datasets.yaml
-description: Define business datasets and field metadata.
+description: Define business datasets and their typed, user-facing fields.
 ---
 
-`datasets.yaml` has no database, table, label, property, or column names.
+`datasets.yaml` defines business meaning. It contains no database names, table
+names, labels, properties, columns, or connection configuration.
 
 ```yaml
 api_version: yodb/v0.1
@@ -16,23 +17,64 @@ datasets:
   customer:
     description: A company with a commercial account.
     aliases: [client, account, organization]
-
     fields:
       id:
         type: id
         description: Stable customer identity.
-
       name:
         type: string
         description: Customer company name.
-
-      crm_account_key:
+        aliases: [company, organization_name]
+        example_values: [Acme, Globex]
+      account_key:
         type: uuid
-        description: CRM key used for approved joins.
+        description: A source key used by an approved relationship.
         visibility: internal
+      profile:
+        type: text
+        description: Customer profile text suitable for semantic search.
+        semantic_eligible: true
 ```
 
-Every dataset requires a public `id` field with type `id`.
+## Top-level attributes
 
-Use `visibility: internal` for an explicitly mapped implementation key that
-must not be returned or directly queried by normal clients.
+| Path | Required | Allowed value | Meaning |
+| --- | --- | --- | --- |
+| `api_version` | Yes | `yodb/v0.1` | Catalog-format version. |
+| `catalog.name` | Yes | Lower snake case | Catalog identifier. |
+| `catalog.version` | Yes | Positive integer | Immutable catalog version. |
+| `datasets` | Yes | Non-empty mapping | Datasets keyed by lower-snake-case names. |
+| `datasets.<name>.description` | Yes | String | Business definition. |
+| `datasets.<name>.aliases` | No | List of strings | Synonyms for people and agents. |
+| `datasets.<name>.fields` | Yes | Mapping | Fields keyed by lower-snake-case names. |
+
+## Field attributes
+
+| Attribute | Required | Default | Meaning |
+| --- | --- | --- | --- |
+| `type` | Yes | — | Logical YoDb type. |
+| `description` | Yes | — | Business definition. |
+| `aliases` | No | `[]` | Synonyms. |
+| `example_values` | No | `[]` | Safe examples or enum-like values. |
+| `visibility` | No | `public` | `public` or `internal`. |
+| `semantic_eligible` | No | `false` | Marks a field as eligible for future semantic operations. |
+
+| Type | Use |
+| --- | --- |
+| `id` | Stable YoDb dataset identity. |
+| `string` | Short text such as names and statuses. |
+| `text` | Long-form content. |
+| `int` | Whole numbers and counts. |
+| `float` | Measurements, scores, and prices. |
+| `bool` | True/false values. |
+| `timestamp` | An instant in time. |
+| `uuid` | UUID values that are not the dataset's logical `id`. |
+| `json` | Flexible structured metadata. |
+| `bytes` | Small binary values or references. |
+
+Every dataset must contain a public `id` field with `type: id`. The physical
+column supplying it is configured later in `sources.yaml`.
+
+`internal` does not mean undeclared. An internal field is explicitly mapped,
+checked during inspection, and available to approved identity or relationship
+implementations. It is simply not a normal caller-facing field.

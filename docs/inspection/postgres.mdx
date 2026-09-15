@@ -1,0 +1,49 @@
+---
+title: PostgreSQL inspection
+description: Connect read-only, inspect PostgreSQL facts, and validate a catalog.
+---
+
+PostgreSQL inspection is separate from `load_catalog()`: static loading checks
+the three YAML files without network I/O, while inspection opens a read-only
+source connection and returns a factual snapshot.
+
+```text
+sources.yaml connection_ref
+  → PostgresConnectionReferenceResolver
+  → PostgresConnectionSettings
+  → PostgresConnectionAdapter
+  → bounded Psycopg pool
+  → PostgresSourceInspector
+```
+
+`connection_ref` stays opaque to catalog YAML. For local development,
+`MappingPostgresConnectionResolver` maps a reference to connection settings.
+Production code should implement the same resolver interface with its approved
+secret manager.
+
+The adapter maintains a pool per reference. `acquire()` leases a connection; if
+the bounded pool is full, it waits until one returns or raises retryable
+`connection_pool_timeout` at the configured timeout.
+
+## Inspection facts
+
+The inspector uses a read-only transaction and catalog metadata only. It does
+not scan application rows. A `SourceInspection` includes:
+
+- PostgreSQL version and installed extensions;
+- tables/views, columns, native types, type families, nullability, defaults,
+  generated state, and vector dimensions;
+- primary keys, unique constraints, foreign keys, and check constraints;
+- indexes, including method, key fields, included fields, predicate,
+  uniqueness, and validity;
+- pgvector columns plus HNSW/IVFFlat vector-index capabilities.
+
+## Validation
+
+`PostgresCatalogValidator` compares one loaded catalog source with its
+inspection snapshot. It reports findings; it never infers or changes mappings.
+
+It verifies configured resources and physical fields exist, logical types are
+compatible with PostgreSQL types, and source-local identities are backed by a
+primary or unique key. `is_valid: true` with no findings means the inspected
+facts support every configured claim for that source.

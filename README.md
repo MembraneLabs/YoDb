@@ -12,8 +12,10 @@ The active design and delivery references are under [plans/](plans/):
 - [Phase 0 logical semantics and catalog decisions](plans/phase-0-semantics.md)
 - [V0.1 YAML catalog schema](plans/v0.1-yaml-catalog-schema.md)
 
-The initial runtime reads and statically validates a three-file YAML catalog.
-It does not yet connect to source databases or execute queries.
+The current runtime strictly loads and validates a three-file YAML catalog. It
+also includes a read-only PostgreSQL connection pool, schema inspector, and
+catalog validator. Typed query execution, semantic search execution, and graph
+execution are not implemented yet.
 
 Documentation content lives in [docs/](docs/). The separate, dependency-free
 static site module is in [docs-site/](docs-site/).

@@ -1,0 +1,98 @@
+---
+title: YAML syntax
+description: Read the YAML patterns used by every YoDb catalog file.
+---
+
+YAML represents two basic shapes:
+
+- A **mapping** is a named object: `key: value`.
+- A **sequence** is an ordered list: each item starts with `-`.
+
+Indentation places a value inside the key above it. Use spaces consistently;
+two spaces is the convention used in YoDb examples.
+
+## Mappings: named objects
+
+This expanded form defines a field named `id` with two attributes:
+
+```yaml
+id:
+  type: id
+  description: Stable customer identity.
+```
+
+For a small object, YAML also allows a compact **flow mapping** using `{}`:
+
+```yaml
+id: {type: id, description: Stable customer identity.}
+```
+
+The two forms are identical to YoDb. Prefer the expanded form when an object
+has more than one or two attributes or needs comments.
+
+## Sequences: lists
+
+This compact list:
+
+```yaml
+identity: [id]
+```
+
+is identical to:
+
+```yaml
+identity:
+  - id
+```
+
+YoDb uses lists where more than one value is meaningful:
+
+```yaml
+aliases: [client, account]
+identity: [country_code, external_customer_id]
+```
+
+`identity` is a list because a source-local identity can be composite.
+
+## A list of objects
+
+`implementations` is a list because the same business relationship can have
+more than one approved physical implementation. For example, it may be
+resolvable through PostgreSQL field equality and later through a Neo4j edge.
+
+```yaml
+implementations:
+  - from:
+      source: crm_postgres
+      field: account_key
+    to:
+      source: support_postgres
+      field: customer_account_key
+
+  - from:
+      source: relationship_graph
+      field: account_key
+    to:
+      source: relationship_graph
+      field: id
+    edge_type: HAS_TICKET
+```
+
+`from` and `to` are mappings with exactly two keys: `source` and `field`.
+They can also be written compactly:
+
+```yaml
+from: {source: crm_postgres, field: account_key}
+```
+
+## Pattern guide
+
+| YAML shape | YoDb example | Why it has that shape |
+| --- | --- | --- |
+| Mapping | `fields:`, `datasets:`, `sources:` | The name identifies the object. |
+| List | `aliases:`, `identity:`, `implementations:` | Multiple ordered values are allowed. |
+| Nested mapping | `fields.name.physical_name` | A field has its own attributes. |
+| List of mappings | relationship `implementations` | Each implementation has multiple attributes. |
+
+YAML has no special YoDb meaning for `{}` or `[]`; they are only compact
+spelling. The parsed catalog is the same either way.

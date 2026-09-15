@@ -1,5 +1,71 @@
-"""YoDb V0.1 catalog loading and static validation."""
+"""YoDb V0.1 catalog loading, inspection contracts, and static validation."""
 
 from .catalog import Catalog, CatalogValidationError, load_catalog
+from .connections import (
+    ConnectionReferenceResolver,
+    ConnectionAdapterRegistry,
+    MappingPostgresConnectionResolver,
+    PostgresConnectionAdapter,
+    PostgresConnectionReferenceResolver,
+    PostgresConnectionSettings,
+    SourceConnectionAdapter,
+)
+from .errors import ErrorCode, ErrorDetail, SourceConnectionError, SourceInspectionError, YoDbError
+from .inspection import (
+    FindingSeverity,
+    InspectionCapability,
+    InspectionRequest,
+    GraphRelationshipType,
+    PhysicalCheckConstraint,
+    PhysicalField,
+    PhysicalForeignKey,
+    PhysicalIndex,
+    PhysicalKey,
+    PhysicalResource,
+    PhysicalUniqueConstraint,
+    PostgresCatalogValidator,
+    PostgresSourceInspector,
+    ResourceKind,
+    SourceCatalogValidator,
+    SourceInspection,
+    SourceInspector,
+    SourceValidationReport,
+    ValidationFinding,
+)
 
-__all__ = ["Catalog", "CatalogValidationError", "load_catalog"]
+__all__ = [
+    "Catalog",
+    "CatalogValidationError",
+    "ConnectionReferenceResolver",
+    "ConnectionAdapterRegistry",
+    "ErrorCode",
+    "ErrorDetail",
+    "FindingSeverity",
+    "GraphRelationshipType",
+    "InspectionCapability",
+    "InspectionRequest",
+    "MappingPostgresConnectionResolver",
+    "PhysicalField",
+    "PhysicalCheckConstraint",
+    "PhysicalForeignKey",
+    "PhysicalIndex",
+    "PhysicalKey",
+    "PhysicalResource",
+    "PhysicalUniqueConstraint",
+    "PostgresCatalogValidator",
+    "PostgresConnectionAdapter",
+    "PostgresConnectionReferenceResolver",
+    "PostgresConnectionSettings",
+    "PostgresSourceInspector",
+    "ResourceKind",
+    "SourceCatalogValidator",
+    "SourceConnectionAdapter",
+    "SourceConnectionError",
+    "SourceInspectionError",
+    "SourceInspection",
+    "SourceInspector",
+    "SourceValidationReport",
+    "ValidationFinding",
+    "YoDbError",
+    "load_catalog",
+]
