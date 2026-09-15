@@ -32,7 +32,8 @@ class ResourceKind(str, Enum):
 
     TABLE = "table"
     VIEW = "view"
-    LABEL = "label"
+    NODE_LABEL = "node_label"
+    RELATIONSHIP_TYPE = "relationship_type"
 
 
 class InspectionCapability(str, Enum):
@@ -68,15 +69,31 @@ class InspectionRequest(InspectionModel):
 class PhysicalField(InspectionModel):
     """A field/property reported by a physical resource.
 
-    ``type_name`` is adapter-native (for example ``uuid`` or ``VARCHAR`` in
+    ``native_type`` is adapter-native (for example ``uuid`` or ``VARCHAR`` in
     PostgreSQL).  ``nullable`` is optional because some providers, including
     graph stores, cannot always establish it from schema metadata alone.
     """
 
     name: str = Field(min_length=1)
-    type_name: str = Field(min_length=1)
+    native_type: str = Field(min_length=1)
+    type_family: str = Field(min_length=1)
     nullable: bool | None = None
+    default: str | None = None
+    generated: bool | None = None
     dimensions: int | None = Field(default=None, gt=0)
+
+
+class PhysicalKey(InspectionModel):
+    """A named primary or unique key on a physical resource."""
+
+    name: str = Field(min_length=1)
+    fields: tuple[str, ...] = Field(min_length=1)
+
+
+class PhysicalUniqueConstraint(PhysicalKey):
+    """A unique constraint, including PostgreSQL NULL-distinct behavior."""
+
+    nulls_distinct: bool | None = None
 
 
 class PhysicalForeignKey(InspectionModel):
@@ -86,15 +103,33 @@ class PhysicalForeignKey(InspectionModel):
     fields: tuple[str, ...] = Field(min_length=1)
     target_resource: str = Field(min_length=1)
     target_fields: tuple[str, ...] = Field(min_length=1)
+    on_update: str | None = None
+    on_delete: str | None = None
+    deferrable: bool | None = None
+    initially_deferred: bool | None = None
+
+
+class PhysicalCheckConstraint(InspectionModel):
+    """A provider-reported check expression; it is diagnostic only in V0.1."""
+
+    name: str = Field(min_length=1)
+    expression: str = Field(min_length=1)
 
 
 class PhysicalIndex(InspectionModel):
     """An index or provider-equivalent access path on one resource."""
 
     name: str = Field(min_length=1)
-    fields: tuple[str, ...] = Field(min_length=1)
+    fields: tuple[str, ...] = ()
     method: str | None = None
     unique: bool = False
+    include: tuple[str, ...] = ()
+    predicate: str | None = None
+    definition: str | None = None
+    valid: bool | None = None
+    state: str | None = None
+    provider: str | None = None
+    owning_constraint: str | None = None
 
 
 class PhysicalResource(InspectionModel):
@@ -103,10 +138,18 @@ class PhysicalResource(InspectionModel):
     name: str = Field(min_length=1)
     kind: ResourceKind
     fields: dict[str, PhysicalField]
-    primary_key: tuple[str, ...] = ()
-    unique_constraints: tuple[tuple[str, ...], ...] = ()
+    primary_key: PhysicalKey | None = None
+    unique_constraints: tuple[PhysicalUniqueConstraint, ...] = ()
     foreign_keys: tuple[PhysicalForeignKey, ...] = ()
+    check_constraints: tuple[PhysicalCheckConstraint, ...] = ()
     indexes: tuple[PhysicalIndex, ...] = ()
+
+
+class GraphRelationshipType(PhysicalResource):
+    """Facts about a Neo4j relationship type and its observed endpoints."""
+
+    from_labels: tuple[str, ...] = ()
+    to_labels: tuple[str, ...] = ()
 
 
 class SourceInspection(InspectionModel):
@@ -115,8 +158,11 @@ class SourceInspection(InspectionModel):
     source_name: str = Field(min_length=1)
     source_kind: SourceKind
     inspected_at: datetime
+    engine_version: str | None = None
     capabilities: frozenset[InspectionCapability] = frozenset()
     resources: dict[str, PhysicalResource] = {}
+    relationship_types: dict[str, GraphRelationshipType] = {}
+    extensions: dict[str, str] = {}
     provider_metadata: dict[str, Any] = {}
 
 
@@ -161,4 +207,3 @@ class SourceCatalogValidator(Protocol):
 
     def validate(self, catalog: Catalog, inspection: SourceInspection) -> SourceValidationReport:
         """Return factual validation findings; never infer or rewrite mappings."""
-

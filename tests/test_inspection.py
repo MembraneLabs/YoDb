@@ -9,6 +9,7 @@ from yodb import (
     FindingSeverity,
     InspectionCapability,
     PhysicalField,
+    PhysicalKey,
     PhysicalResource,
     ResourceKind,
     SourceInspection,
@@ -50,16 +51,19 @@ class InspectionContractsTests(unittest.TestCase):
                     kind=ResourceKind.TABLE,
                     fields={
                         "account_uuid": PhysicalField(
-                            name="account_uuid", type_name="uuid", nullable=False
+                            name="account_uuid",
+                            native_type="uuid",
+                            type_family="uuid",
+                            nullable=False,
                         )
                     },
-                    primary_key=("account_uuid",),
+                    primary_key=PhysicalKey(name="accounts_pkey", fields=("account_uuid",)),
                 )
             },
         )
 
         account = inspection.resources["public.accounts"]
-        self.assertEqual(account.fields["account_uuid"].type_name, "uuid")
+        self.assertEqual(account.fields["account_uuid"].native_type, "uuid")
         self.assertIn(InspectionCapability.INDEXES, inspection.capabilities)
 
     def test_validation_report_is_invalid_only_when_it_contains_an_error(self) -> None:
