@@ -1,13 +1,10 @@
-"""YoDb V0.1 catalog loading, inspection contracts, and static validation."""
+"""Source inspection contracts, structured errors, and provider adapters."""
 
-from .catalog import Catalog, CatalogValidationError, load_catalog
-from .inspection import (
-    ErrorCode,
-    ErrorDetail,
+from .contracts import (
     FindingSeverity,
+    GraphRelationshipType,
     InspectionCapability,
     InspectionRequest,
-    GraphRelationshipType,
     PhysicalCheckConstraint,
     PhysicalField,
     PhysicalForeignKey,
@@ -15,29 +12,25 @@ from .inspection import (
     PhysicalKey,
     PhysicalResource,
     PhysicalUniqueConstraint,
-    PostgresCatalogValidator,
-    PostgresSourceInspector,
     ResourceKind,
     SourceCatalogValidator,
     SourceInspection,
-    SourceInspectionError,
     SourceInspector,
     SourceValidationReport,
     ValidationFinding,
-    YoDbError,
 )
+from .errors import ErrorCode, ErrorDetail, SourceInspectionError, YoDbError
+from .postgres import PostgresCatalogValidator, PostgresSourceInspector
 
 __all__ = [
-    "Catalog",
-    "CatalogValidationError",
     "ErrorCode",
     "ErrorDetail",
     "FindingSeverity",
     "GraphRelationshipType",
     "InspectionCapability",
     "InspectionRequest",
-    "PhysicalField",
     "PhysicalCheckConstraint",
+    "PhysicalField",
     "PhysicalForeignKey",
     "PhysicalIndex",
     "PhysicalKey",
@@ -47,11 +40,10 @@ __all__ = [
     "PostgresSourceInspector",
     "ResourceKind",
     "SourceCatalogValidator",
-    "SourceInspectionError",
     "SourceInspection",
+    "SourceInspectionError",
     "SourceInspector",
     "SourceValidationReport",
     "ValidationFinding",
     "YoDbError",
-    "load_catalog",
 ]

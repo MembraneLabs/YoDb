@@ -18,7 +18,7 @@ from typing import Any, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from .catalog import Catalog, SourceKind, SourceSpec
+from ..catalog import Catalog, SourceKind, SourceSpec
 
 
 class InspectionModel(BaseModel):

@@ -13,9 +13,9 @@ from datetime import UTC, datetime
 import re
 from typing import Any, Protocol
 
-from .catalog import Catalog, LogicalType, SourceKind
+from ..catalog import Catalog, LogicalType, SourceKind
 from .errors import ErrorCode, ErrorDetail, SourceInspectionError
-from .inspection import (
+from .contracts import (
     FindingSeverity,
     InspectionCapability,
     InspectionRequest,
