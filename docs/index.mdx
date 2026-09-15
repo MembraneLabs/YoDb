@@ -25,8 +25,9 @@ datasets, sources, and relationships.
   </Card>
 </CardGroup>
 
-## V0.1 status
+## Current implementation status
 
-The first implemented capability is static catalog loading and validation. It
-loads three YAML files and rejects incomplete, unsafe, or inconsistent
-configuration before any source database is contacted.
+Implemented building blocks are strict three-file catalog loading, reusable
+source-connection contracts, bounded PostgreSQL pooling, read-only PostgreSQL
+inspection, and PostgreSQL catalog validation. Typed query execution, semantic
+search execution, graph traversal, and the Neo4j adapter are still planned.

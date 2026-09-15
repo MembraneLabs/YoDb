@@ -3,9 +3,11 @@ title: Overview
 description: Start with YoDb's three-file catalog.
 ---
 
-## The catalog
+## Build a catalog in three steps
 
-A YoDb catalog has exactly three files:
+1. Define business datasets and fields in `datasets.yaml`.
+2. Map only approved source resources and physical fields in `sources.yaml`.
+3. Define approved dataset relationships in `relations.yaml`.
 
 ```text
 catalog/
@@ -14,24 +16,15 @@ catalog/
 └── relations.yaml
 ```
 
-`datasets.yaml` describes the business-facing datasets and their fields.
-`sources.yaml` maps those datasets to actual backend resources and fields.
-`relations.yaml` defines how datasets connect.
+The catalog has no user-authored mapping files beyond these three documents.
+Read [YAML syntax](/catalog/yaml-syntax) for the object and list notation used
+in examples.
 
-```text
-dataset → source → resource → physical field
-```
+## Static catalog loading
 
-For example:
-
-```text
-customer → crm_postgres → public.accounts → account_uuid
-```
-
-## Validate a catalog
-
-The loader does not connect to databases yet. It validates YAML structure and
-cross-file references only.
+Static loading validates YAML structure and cross-file references. It is safe
+to run in CI because it never resolves `connection_ref` or connects to a
+source.
 
 ```python
 from yodb import load_catalog
@@ -40,10 +33,31 @@ catalog = load_catalog("catalog")
 print(catalog.datasets.keys())
 ```
 
+## Inspect and validate PostgreSQL
+
+The implemented PostgreSQL path is separate from static loading:
+
+```text
+connection reference → connection resolver → bounded PostgreSQL pool
+                     → read-only inspection snapshot → catalog validation report
+```
+
+The inspector reads metadata, not business rows. It discovers tables/views,
+columns, native types, primary and unique keys, foreign keys, indexes,
+extensions, and pgvector facts. The validator then checks that the catalog's
+resource, field, type, and identity claims match that snapshot.
+
+See [PostgreSQL inspection](/inspection/postgres) for the integration contract.
+
 From the repository root, run the test suite with:
 
 ```bash
 PYTHONPATH=src python3 -m unittest discover -s tests -v
 ```
 
-Continue with the [catalog overview](/catalog/overview).
+Install the project before using PostgreSQL pooling:
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -e .
+```

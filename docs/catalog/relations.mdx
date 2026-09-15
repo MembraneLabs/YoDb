@@ -1,34 +1,71 @@
 ---
 title: relations.yaml
-description: Define approved relational joins and graph edges.
+description: Define approved relational field matches and Neo4j graph edges.
 ---
 
-Relationships connect datasets, not arbitrary tables or columns. Every endpoint
-field must already be mapped in `sources.yaml`.
+`relations.yaml` defines business relationships between datasets. It does not
+grant access to arbitrary tables or columns: every endpoint field must already
+be mapped in `sources.yaml`.
 
 ```yaml
 api_version: yodb/v0.1
-
 relationships:
   customer_has_ticket:
     from: customer
     to: support_ticket
-    description: A support ticket associated with a customer.
+    description: A support ticket belongs to a customer account.
+    aliases: [support_case, raised_ticket]
     cardinality: one_to_many
     direction: uni
-
     implementations:
-      - from: {source: crm_postgres, field: crm_account_key}
-        to: {source: support_postgres, field: customer_crm_key}
-
-      - from: {source: relationship_graph, field: crm_account_key}
+      - from:
+          source: crm_postgres
+          field: account_key
+        to:
+          source: support_postgres
+          field: customer_account_key
+      - from: {source: relationship_graph, field: account_key}
         to: {source: relationship_graph, field: id}
         edge_type: HAS_TICKET
 ```
 
-Every implementation has `from` and `to` endpoints. Without `edge_type`, YoDb
-compares the two mapped field values. With `edge_type`, it traverses that named
-Neo4j edge between the two endpoints.
+## Relationship attributes
 
-`direction: uni` means the relationship goes from `from` dataset to `to`
-dataset. `direction: bi` permits traversal in either direction.
+| Attribute | Required | Allowed value | Meaning |
+| --- | --- | --- | --- |
+| `from` | Yes | Declared dataset name | Origin dataset. |
+| `to` | Yes | Declared dataset name | Target dataset. |
+| `description` | Yes | String | Business meaning. |
+| `aliases` | No | List of strings | Relationship synonyms. |
+| `cardinality` | Yes | `one_to_one`, `one_to_many`, `many_to_one`, `many_to_many` | Declared business cardinality. |
+| `direction` | Yes | `uni` or `bi` | Traversal direction policy. |
+| `implementations` | Yes | Non-empty list | Approved physical ways to resolve it. |
+
+`direction: uni` permits traversal from `from` to `to`. `direction: bi`
+permits traversal in both directions. `cardinality` is always required even
+though V0.1 is read-only; it records business semantics.
+
+## Field-equality implementation
+
+An implementation without `edge_type` compares the two configured endpoint
+field values. The endpoints may be in the same PostgreSQL source or different
+configured sources.
+
+```yaml
+- from: {source: crm_postgres, field: account_key}
+  to: {source: support_postgres, field: customer_account_key}
+```
+
+This does **not** require a PostgreSQL foreign key. A foreign key may exist and
+will be reported by inspection, but the catalog relationship is what explicitly
+authorizes YoDb to use the match.
+
+## Neo4j edge implementation
+
+Adding `edge_type` means the implementation traverses a named Neo4j edge.
+The loader requires one Neo4j source for both endpoints, that source must
+represent both datasets, and `edge_type` must be non-empty.
+
+There is no `kind: key_match`, `kind: edge`, source-binding, target-binding, or
+per-implementation direction attribute. `edge_type` is the only switch between
+a field match and a graph-edge implementation.

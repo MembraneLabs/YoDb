@@ -1,42 +1,85 @@
 ---
 title: sources.yaml
-description: Map datasets to backend resources and physical fields.
+description: Map approved datasets and fields to read-only physical source locations.
 ---
 
-The same source schema works for every backend. `resource` and `physical_name`
-are interpreted by the selected source adapter.
+`sources.yaml` connects business fields from `datasets.yaml` to approved
+physical resources. It does not copy source schema facts such as foreign keys,
+indexes, types, or nullability; those are discovered by read-only inspection.
 
 ```yaml
 api_version: yodb/v0.1
-
 sources:
   crm_postgres:
     kind: postgres
     connection_ref: secret://yodb/crm-readonly
     read_only: true
-
     datasets:
       customer:
         resource: public.accounts
         identity: [id]
         fields:
-          id: { physical_name: account_uuid }
-          name: { physical_name: company_name }
-          crm_account_key: { physical_name: account_uuid }
-
+          id: {physical_name: account_uuid}
+          name: {physical_name: company_name}
+          account_key: {physical_name: account_uuid}
 resolution:
   customer:
     identity_source: crm_postgres
     field_sources:
       id: crm_postgres
       name: crm_postgres
-      crm_account_key: crm_postgres
+      account_key: crm_postgres
 ```
+
+## Source attributes
+
+| Path | Required | Allowed value | Meaning |
+| --- | --- | --- | --- |
+| `sources.<name>.kind` | Yes | `postgres` or `neo4j` | Selects the database adapter. |
+| `connection_ref` | Yes | Non-empty opaque string | Reference resolved outside catalog YAML. |
+| `read_only` | Yes | Exactly `true` | V0.1 never writes to a source. |
+| `datasets` | Yes | Non-empty mapping | Datasets represented by this source. |
+| `datasets.<dataset>.resource` | Yes | Non-empty string | Physical resource name interpreted by the adapter. |
+| `identity` | Yes | Non-empty list of mapped field names | Source-local identity claim. |
+| `fields` | Yes | Mapping of dataset field to `physical_name` | Approved physical field locations. |
+| `physical_name` | Yes | Non-empty string | Exact source column or property. |
 
 | Source kind | `resource` | `physical_name` |
 | --- | --- | --- |
-| `postgres` | Table or view | Column |
-| `neo4j` | Node label | Node property |
+| `postgres` | Schema-qualified table or view, such as `public.accounts` | Column, such as `account_uuid` |
+| `neo4j` | Node label, such as `Customer` | Node property, such as `crmAccountUuid` |
 
-Connection references identify externally managed credentials. Never put a
-database URL, password, or token into this file.
+## `connection_ref` is not a credential
+
+Use a reference such as `secret://yodb/crm-readonly` or a local-development
+reference. A connection resolver turns it into private driver settings at
+runtime. Do not place a URL, password, token, or driver option in this file.
+
+The PostgreSQL connection adapter maintains a bounded pool per
+`connection_ref`. When all leases are in use, a caller waits until a connection
+returns or the configured timeout produces `connection_pool_timeout`.
+
+## Identity and resolution
+
+A dataset may be represented in multiple sources. The `resolution` mapping
+chooses exactly one source for each returned field and exactly one source for
+the dataset identity.
+
+Rules enforced by the loader:
+
+- `resolution` contains every declared dataset and no unknown dataset.
+- `field_sources` contains every declared field for that dataset and no
+  unknown field.
+- Each listed source must represent the dataset and map the field.
+- `identity_source` must map `id`, and its representation must list `id` in
+  `identity`.
+- Every field in a representation's `identity` must itself be mapped.
+
+During PostgreSQL validation, the physical columns backing the declared
+identity must be a primary key or unique constraint.
+
+## Closed-world mapping
+
+If `public.accounts` also has `billing_contact_email` but it is not in this
+file, YoDb cannot expose or use it. Add a declared dataset field and explicit
+mapping before it becomes accessible.

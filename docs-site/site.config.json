@@ -13,9 +13,16 @@
       "label": "Catalog configuration",
       "pages": [
         { "path": "catalog/overview", "label": "Catalog overview" },
+        { "path": "catalog/yaml-syntax", "label": "YAML syntax" },
         { "path": "catalog/datasets", "label": "datasets.yaml" },
         { "path": "catalog/sources", "label": "sources.yaml" },
         { "path": "catalog/relations", "label": "relations.yaml" }
+      ]
+    },
+    {
+      "label": "Source inspection",
+      "pages": [
+        { "path": "inspection/postgres", "label": "PostgreSQL inspection" }
       ]
     }
   ]
