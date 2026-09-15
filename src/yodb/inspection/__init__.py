@@ -21,6 +21,7 @@ from .contracts import (
 )
 from ..errors import ErrorCode, ErrorDetail, SourceInspectionError, YoDbError
 from .postgres import PostgresCatalogValidator, PostgresSourceInspector
+from .registry import InspectionAdapterBinding, SourceInspectionRegistry
 
 __all__ = [
     "ErrorCode",
@@ -28,6 +29,7 @@ __all__ = [
     "FindingSeverity",
     "GraphRelationshipType",
     "InspectionCapability",
+    "InspectionAdapterBinding",
     "InspectionRequest",
     "PhysicalCheckConstraint",
     "PhysicalField",
@@ -41,6 +43,7 @@ __all__ = [
     "ResourceKind",
     "SourceCatalogValidator",
     "SourceInspection",
+    "SourceInspectionRegistry",
     "SourceInspectionError",
     "SourceInspector",
     "SourceValidationReport",

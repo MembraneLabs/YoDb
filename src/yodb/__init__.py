@@ -10,7 +10,14 @@ from .connections import (
     PostgresConnectionSettings,
     SourceConnectionAdapter,
 )
-from .errors import ErrorCode, ErrorDetail, SourceConnectionError, SourceInspectionError, YoDbError
+from .errors import (
+    CatalogRuntimeError,
+    ErrorCode,
+    ErrorDetail,
+    SourceConnectionError,
+    SourceInspectionError,
+    YoDbError,
+)
 from .inspection import (
     FindingSeverity,
     InspectionCapability,
@@ -26,15 +33,28 @@ from .inspection import (
     PostgresCatalogValidator,
     PostgresSourceInspector,
     ResourceKind,
+    InspectionAdapterBinding,
     SourceCatalogValidator,
     SourceInspection,
+    SourceInspectionRegistry,
     SourceInspector,
     SourceValidationReport,
     ValidationFinding,
 )
+from .runtime import (
+    CatalogEvaluation,
+    CatalogRefreshResult,
+    InMemoryCatalogRuntime,
+    RefreshStatus,
+    SourceRuntimeState,
+    SourceRuntimeStatus,
+)
 
 __all__ = [
     "Catalog",
+    "CatalogEvaluation",
+    "CatalogRefreshResult",
+    "CatalogRuntimeError",
     "CatalogValidationError",
     "ConnectionReferenceResolver",
     "ConnectionAdapterRegistry",
@@ -43,8 +63,10 @@ __all__ = [
     "FindingSeverity",
     "GraphRelationshipType",
     "InspectionCapability",
+    "InspectionAdapterBinding",
     "InspectionRequest",
     "MappingPostgresConnectionResolver",
+    "InMemoryCatalogRuntime",
     "PhysicalField",
     "PhysicalCheckConstraint",
     "PhysicalForeignKey",
@@ -58,13 +80,17 @@ __all__ = [
     "PostgresConnectionSettings",
     "PostgresSourceInspector",
     "ResourceKind",
+    "RefreshStatus",
     "SourceCatalogValidator",
     "SourceConnectionAdapter",
     "SourceConnectionError",
     "SourceInspectionError",
     "SourceInspection",
+    "SourceInspectionRegistry",
     "SourceInspector",
     "SourceValidationReport",
+    "SourceRuntimeState",
+    "SourceRuntimeStatus",
     "ValidationFinding",
     "YoDbError",
     "load_catalog",

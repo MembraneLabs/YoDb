@@ -22,7 +22,8 @@
     {
       "label": "Source inspection",
       "pages": [
-        { "path": "inspection/postgres", "label": "PostgreSQL inspection" }
+        { "path": "inspection/postgres", "label": "PostgreSQL inspection" },
+        { "path": "inspection/catalog-runtime", "label": "Catalog runtime" }
       ]
     }
   ]
