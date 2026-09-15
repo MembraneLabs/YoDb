@@ -9,7 +9,7 @@ from __future__ import annotations
 from enum import Enum
 from pathlib import Path
 import re
-from typing import Annotated, Any, Literal
+from typing import Any, Literal
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError, model_validator
@@ -125,24 +125,10 @@ class RelationEndpoint(StrictModel):
     field: str
 
 
-class KeyMatchImplementation(StrictModel):
-    kind: Literal["key_match"]
+class RelationshipImplementation(StrictModel):
     from_endpoint: RelationEndpoint = Field(alias="from")
     to_endpoint: RelationEndpoint = Field(alias="to")
-
-
-class EdgeImplementation(StrictModel):
-    kind: Literal["edge"]
-    source: str
-    edge: str
-    direction: Literal["out", "in"]
-
-
-RelationshipImplementation = Annotated[
-    KeyMatchImplementation | EdgeImplementation,
-    Field(discriminator="kind"),
-]
-_IMPLEMENTATION_ADAPTER = TypeAdapter(RelationshipImplementation)
+    edge_type: str | None = None
 
 
 class RelationshipSpec(StrictModel):
@@ -151,6 +137,7 @@ class RelationshipSpec(StrictModel):
     description: str
     aliases: tuple[str, ...] = ()
     cardinality: Cardinality
+    direction: Literal["uni", "bi"]
     implementations: tuple[RelationshipImplementation, ...] = Field(min_length=1)
 
 
@@ -309,38 +296,23 @@ def _validate_relationships(catalog: Catalog) -> None:
             )
 
         for implementation in relationship.implementations:
-            if isinstance(implementation, KeyMatchImplementation):
-                _validate_source_field(
-                    catalog,
-                    relationship.from_dataset,
-                    implementation.from_endpoint.source,
-                    implementation.from_endpoint.field,
-                    f"relationships.{relationship_name}.key_match.from",
-                )
-                _validate_source_field(
-                    catalog,
-                    relationship.to_dataset,
-                    implementation.to_endpoint.source,
-                    implementation.to_endpoint.field,
-                    f"relationships.{relationship_name}.key_match.to",
-                )
-            elif isinstance(implementation, EdgeImplementation):
-                source = catalog.sources.get(implementation.source)
-                if source is None:
-                    raise CatalogValidationError(
-                        f"relationships.{relationship_name}.edge references unknown source "
-                        f"'{implementation.source}'"
-                    )
-                if source.kind is not SourceKind.NEO4J:
-                    raise CatalogValidationError(
-                        f"relationships.{relationship_name}.edge source '{implementation.source}' must be neo4j"
-                    )
-                for dataset_name in (relationship.from_dataset, relationship.to_dataset):
-                    if dataset_name not in source.datasets:
-                        raise CatalogValidationError(
-                            f"relationships.{relationship_name}.edge source '{implementation.source}' "
-                            f"does not represent dataset '{dataset_name}'"
-                        )
+            _validate_source_field(
+                catalog,
+                relationship.from_dataset,
+                implementation.from_endpoint.source,
+                implementation.from_endpoint.field,
+                f"relationships.{relationship_name}.implementations.from",
+            )
+            _validate_source_field(
+                catalog,
+                relationship.to_dataset,
+                implementation.to_endpoint.source,
+                implementation.to_endpoint.field,
+                f"relationships.{relationship_name}.implementations.to",
+            )
+
+            if implementation.edge_type is not None:
+                _validate_graph_implementation(catalog, relationship_name, relationship, implementation)
 
 
 def _validate_source_field(
@@ -363,6 +335,38 @@ def _validate_source_field(
             f"{location} field '{field_name}' is not mapped for dataset '{dataset_name}' "
             f"in source '{source_name}'"
         )
+
+
+def _validate_graph_implementation(
+    catalog: Catalog,
+    relationship_name: str,
+    relationship: RelationshipSpec,
+    implementation: RelationshipImplementation,
+) -> None:
+    if not implementation.edge_type.strip():
+        raise CatalogValidationError(
+            f"relationships.{relationship_name}.implementations.edge_type must not be blank"
+        )
+
+    from_source = implementation.from_endpoint.source
+    to_source = implementation.to_endpoint.source
+    if from_source != to_source:
+        raise CatalogValidationError(
+            f"relationships.{relationship_name}.implementations with edge_type must use one graph source"
+        )
+
+    source = catalog.sources[from_source]
+    if source.kind is not SourceKind.NEO4J:
+        raise CatalogValidationError(
+            f"relationships.{relationship_name}.implementations.edge_type source '{from_source}' must be neo4j"
+        )
+
+    for dataset_name in (relationship.from_dataset, relationship.to_dataset):
+        if dataset_name not in source.datasets:
+            raise CatalogValidationError(
+                f"relationships.{relationship_name}.implementations edge source '{from_source}' "
+                f"does not represent dataset '{dataset_name}'"
+            )
 
 
 def _validate_named_mapping(location: str, values: dict[str, Any]) -> None:

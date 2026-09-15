@@ -82,6 +82,14 @@ YAML deliberately has only `datasets.yaml`, `sources.yaml`, and `relations.yaml`
 it does not expose named mapping objects. The terms below remain useful
 conceptually and inside Python, but not as a required user-facing YAML layer.
 
+The V0.1 `relations.yaml` contract is intentionally uniform and small. Every
+relationship declares `from`, `to`, `cardinality`, and `direction: uni | bi`.
+Every physical implementation declares the same `from` and `to` endpoints,
+each using a source and mapped field. Without `edge_type`, YoDb compares those
+two field values. With `edge_type`, it follows that named Neo4j edge between the
+same endpoints. User-authored YAML has no `kind: key_match`, `kind: edge`,
+separate source/target binding names, or per-implementation direction field.
+
 The active catalog is an immutable, versioned declarative configuration. The
 runtime representation may be Pydantic/Python objects, while the portable
 configuration representation is YAML or JSON. Every physical reference must be

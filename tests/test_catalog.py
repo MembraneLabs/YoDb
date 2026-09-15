@@ -92,14 +92,13 @@ relationships:
     to: support_ticket
     description: A ticket associated with a customer.
     cardinality: one_to_many
+    direction: uni
     implementations:
-      - kind: key_match
-        from: {source: crm_postgres, field: crm_account_key}
+      - from: {source: crm_postgres, field: crm_account_key}
         to: {source: support_postgres, field: customer_crm_key}
-      - kind: edge
-        source: relationship_graph
-        edge: HAS_TICKET
-        direction: out
+      - from: {source: relationship_graph, field: crm_account_key}
+        to: {source: relationship_graph, field: id}
+        edge_type: HAS_TICKET
 """
 
 
@@ -132,8 +131,11 @@ class CatalogLoaderTests(unittest.TestCase):
                 load_catalog(directory)
 
     def test_rejects_non_neo4j_edge_source(self) -> None:
-        invalid_relations = RELATIONS.replace("source: relationship_graph\n        edge", "source: crm_postgres\n        edge")
-        with catalog_directory(relations=invalid_relations) as directory:
+        invalid_sources = SOURCES.replace(
+            "relationship_graph:\n    kind: neo4j",
+            "relationship_graph:\n    kind: postgres",
+        )
+        with catalog_directory(sources=invalid_sources) as directory:
             with self.assertRaisesRegex(CatalogValidationError, "must be neo4j"):
                 load_catalog(directory)
 
