@@ -1,0 +1,22 @@
+{
+  "site_name": "YoDb",
+  "site_description": "Documentation for the YoDb federated data catalog.",
+  "navigation": [
+    {
+      "label": "Get started",
+      "pages": [
+        { "path": "index", "label": "Introduction" },
+        { "path": "getting-started/overview", "label": "Overview" }
+      ]
+    },
+    {
+      "label": "Catalog configuration",
+      "pages": [
+        { "path": "catalog/overview", "label": "Catalog overview" },
+        { "path": "catalog/datasets", "label": "datasets.yaml" },
+        { "path": "catalog/sources", "label": "sources.yaml" },
+        { "path": "catalog/relations", "label": "relations.yaml" }
+      ]
+    }
+  ]
+}
