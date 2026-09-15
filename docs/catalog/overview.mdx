@@ -1,0 +1,38 @@
+---
+title: Catalog overview
+description: How YoDb separates business meaning, source locations, and relationships.
+---
+
+YoDb keeps three concerns separate:
+
+| File | Responsibility |
+| --- | --- |
+| `datasets.yaml` | What a dataset and field mean. |
+| `sources.yaml` | Where a dataset exists and which physical fields implement it. |
+| `relations.yaml` | How approved datasets connect. |
+
+This prevents physical table and column names from leaking into applications or
+agent-facing queries.
+
+## Closed-world access
+
+Only explicitly configured fields are accessible.
+
+```text
+Unmapped physical field
+  → inaccessible for projection, filtering, ordering, search, identity, and joins.
+
+Mapped public field
+  → available to normal authorized queries.
+
+Mapped internal field
+  → available only to approved identity and relationship execution.
+```
+
+Every catalog document uses:
+
+```yaml
+api_version: yodb/v0.1
+```
+
+Names for datasets, fields, sources, and relationships use lower snake case.

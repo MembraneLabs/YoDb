@@ -1,0 +1,38 @@
+---
+title: datasets.yaml
+description: Define business datasets and field metadata.
+---
+
+`datasets.yaml` has no database, table, label, property, or column names.
+
+```yaml
+api_version: yodb/v0.1
+
+catalog:
+  name: acme_data
+  version: 1
+
+datasets:
+  customer:
+    description: A company with a commercial account.
+    aliases: [client, account, organization]
+
+    fields:
+      id:
+        type: id
+        description: Stable customer identity.
+
+      name:
+        type: string
+        description: Customer company name.
+
+      crm_account_key:
+        type: uuid
+        description: CRM key used for approved joins.
+        visibility: internal
+```
+
+Every dataset requires a public `id` field with type `id`.
+
+Use `visibility: internal` for an explicitly mapped implementation key that
+must not be returned or directly queried by normal clients.

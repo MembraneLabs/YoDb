@@ -14,3 +14,5 @@ The active design and delivery references are under [plans/](plans/):
 
 The initial runtime reads and statically validates a three-file YAML catalog.
 It does not yet connect to source databases or execute queries.
+
+The Mintlify-ready documentation site lives in [docs/](docs/).

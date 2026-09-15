@@ -1,0 +1,42 @@
+---
+title: sources.yaml
+description: Map datasets to backend resources and physical fields.
+---
+
+The same source schema works for every backend. `resource` and `physical_name`
+are interpreted by the selected source adapter.
+
+```yaml
+api_version: yodb/v0.1
+
+sources:
+  crm_postgres:
+    kind: postgres
+    connection_ref: secret://yodb/crm-readonly
+    read_only: true
+
+    datasets:
+      customer:
+        resource: public.accounts
+        identity: [id]
+        fields:
+          id: { physical_name: account_uuid }
+          name: { physical_name: company_name }
+          crm_account_key: { physical_name: account_uuid }
+
+resolution:
+  customer:
+    identity_source: crm_postgres
+    field_sources:
+      id: crm_postgres
+      name: crm_postgres
+      crm_account_key: crm_postgres
+```
+
+| Source kind | `resource` | `physical_name` |
+| --- | --- | --- |
+| `postgres` | Table or view | Column |
+| `neo4j` | Node label | Node property |
+
+Connection references identify externally managed credentials. Never put a
+database URL, password, or token into this file.

@@ -1,0 +1,32 @@
+---
+title: YoDb
+description: A typed, explainable federated data layer for relational, semantic, and graph queries.
+---
+
+YoDb gives applications and agents one typed way to query connected data
+sources without migrating their data.
+
+The first version is read-only. It is designed for:
+
+- relational reads from PostgreSQL;
+- semantic filtering with PostgreSQL, pgvector, and a verification model;
+- bounded graph traversal through PostgreSQL edge tables or Neo4j.
+
+YoDb does not expose raw SQL, Cypher, vector index names, or database
+credentials to callers. Instead, a developer defines a small catalog of
+datasets, sources, and relationships.
+
+<CardGroup cols={2}>
+  <Card title="Get started" icon="play" href="/getting-started/overview">
+    Understand the current V0.1 scope and catalog layout.
+  </Card>
+  <Card title="Configure the catalog" icon="table" href="/catalog/overview">
+    Define datasets, source resources, and relationships.
+  </Card>
+</CardGroup>
+
+## V0.1 status
+
+The first implemented capability is static catalog loading and validation. It
+loads three YAML files and rejects incomplete, unsafe, or inconsistent
+configuration before any source database is contacted.
