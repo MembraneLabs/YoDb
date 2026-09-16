@@ -62,6 +62,31 @@ YoDb resolves the approved physical mapping internally. For example, `name`
 may currently map to a PostgreSQL column called `company_name`; that fact is
 not part of the query and can change without requiring callers to rewrite it.
 
+## Using the query package
+
+The Python query package parses an ordinary JSON/YAML-compatible dictionary,
+then validates it against the active catalog runtime:
+
+```python
+from yodb.query import parse_query, validate_query
+
+request = parse_query({
+    "from": {"dataset": "customer"},
+    "select": ["id", "name"],
+    "where": {"field": "status", "op": "eq", "value": "active"},
+    "page": {"first": 25},
+})
+
+bound_query = validate_query(request, runtime)
+```
+
+Parsing checks the request's structure. Validation then checks the dataset,
+field visibility, field types, operators, ordering, and limits against the
+runtime's currently active catalog. `bound_query` contains trusted logical
+catalog references and two fingerprints: one for the normalized query meaning,
+and one for the active catalog snapshot. It is the only input the future query
+planner will accept.
+
 ## What a query may name
 
 Queries may name only:
@@ -321,8 +346,10 @@ credentials, or other physical source details.
 
 ## Current status
 
-This is the query contract being implemented in Milestone 2. Catalog loading,
-source inspection, mapping validation, and catalog activation are already
-available. Query model validation, planning, PostgreSQL compilation, and query
-execution are the next pieces.
+Milestone 2's relational query-model core is available: strict parsing,
+catalog binding, type/operator validation, effective ordering, request limits,
+and stable query/catalog fingerprints. Catalog loading, source inspection,
+mapping validation, and catalog activation are also available.
 
+The next pieces are declared relationship traversal validation, semantic-query
+validation, physical planning, PostgreSQL compilation, cursors, and execution.
