@@ -25,6 +25,12 @@
         { "path": "inspection/postgres", "label": "PostgreSQL inspection" },
         { "path": "inspection/catalog-runtime", "label": "Catalog runtime" }
       ]
+    },
+    {
+      "label": "Querying data",
+      "pages": [
+        { "path": "query/query-model", "label": "Query model" }
+      ]
     }
   ]
 }

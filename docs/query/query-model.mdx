@@ -1,0 +1,328 @@
+---
+title: Query model
+description: Write portable, structured queries against business datasets.
+---
+
+YoDb queries use the business names defined in your catalog. You ask for a
+dataset, its fields, filters, ordering, and a page of results. You never need
+to know whether the data lives in PostgreSQL, Neo4j, a table, a graph label, or
+an index.
+
+```text
+your structured query
+        ↓
+YoDb validates catalog names and types
+        ↓
+YoDb chooses and runs an approved source-specific plan
+        ↓
+normalized logical result
+```
+
+This page defines the public query contract. It is designed to work with the
+PostgreSQL connector first and to keep the same request shape as graph and
+other database connectors are added.
+
+## A first query
+
+This query asks for up to 25 active customers whose name starts with `Acme`.
+
+```yaml
+from:
+  dataset: customer
+
+select:
+  - id
+  - name
+  - status
+
+where:
+  all:
+    - field: name
+      op: starts_with
+      value: Acme
+    - field: status
+      op: eq
+      value: active
+
+order_by:
+  - field: name
+    direction: asc
+
+page:
+  first: 25
+```
+
+Everything in this query is a logical catalog name:
+
+- `customer` is a dataset from [`datasets.yaml`](../catalog/datasets).
+- `name` and `status` are fields in that dataset.
+- `starts_with` and `eq` are YoDb filter operators.
+
+YoDb resolves the approved physical mapping internally. For example, `name`
+may currently map to a PostgreSQL column called `company_name`; that fact is
+not part of the query and can change without requiring callers to rewrite it.
+
+## What a query may name
+
+Queries may name only:
+
+- declared datasets;
+- public fields in those datasets;
+- declared relationships, when relationship traversal is available;
+- portable YoDb operators and request options.
+
+The following are deliberately not accepted in a query:
+
+- database or source names;
+- SQL tables, columns, SQL, Cypher, or database functions;
+- Neo4j labels or edge types;
+- pgvector, index names, embedding models, or query hints;
+- unmapped physical fields;
+- fields marked `visibility: internal`.
+
+This keeps application code independent of where data is stored. It also lets
+YoDb choose an efficient implementation without exposing a database-specific
+escape hatch.
+
+## Selecting fields
+
+`select` is an optional list of public fields to return:
+
+```yaml
+select:
+  - id
+  - name
+  - created_at
+```
+
+If it is omitted, YoDb returns all public fields of the root dataset. The
+logical `id` is always included in the result, even if it is not listed. It is
+the stable identity used for pagination, provenance, and future relationship
+results.
+
+You cannot select an unknown field, a field from a different dataset, or an
+internal field. These are validation errors rather than requests that silently
+return `null`.
+
+## Filtering results
+
+`where` is a structured Boolean expression. It is never a text fragment of
+SQL or Cypher.
+
+### One condition
+
+```yaml
+where:
+  field: created_at
+  op: gte
+  value: "2026-01-01T00:00:00Z"
+```
+
+### All conditions must match
+
+```yaml
+where:
+  all:
+    - field: status
+      op: eq
+      value: open
+    - field: priority
+      op: gte
+      value: 3
+```
+
+### Any condition may match
+
+```yaml
+where:
+  any:
+    - field: status
+      op: eq
+      value: urgent
+    - field: assigned
+      op: eq
+      value: false
+```
+
+### Negating a condition
+
+```yaml
+where:
+  not:
+    field: status
+    op: eq
+    value: closed
+```
+
+`all` and `any` can be nested to express more complex logic. Each leaf
+condition compares one logical field with a typed value. Comparisons between
+arbitrary fields are not supported; approved relationship traversal is the
+portable way to connect datasets.
+
+## Available filter operators
+
+| Field type | Operators |
+| --- | --- |
+| `id`, `uuid`, `string`, `text`, `int`, `float`, `bool`, `timestamp` | `eq`, `ne`, `in`, `not_in`, `is_null`, `is_not_null` |
+| `int`, `float`, `timestamp` | `gt`, `gte`, `lt`, `lte` |
+| `string`, `text` | `contains`, `starts_with` |
+
+Examples:
+
+```yaml
+# One of a small set of values
+field: status
+op: in
+value: [open, pending]
+```
+
+```yaml
+# A nullable field has no value for these operators
+field: resolved_at
+op: is_null
+```
+
+The value must match the declared field type. For example, an integer field
+requires a JSON/YAML number such as `12`, not the string `"12"`; a boolean
+requires `true` or `false`, not `"true"`. Timestamps must use RFC 3339 with a
+UTC offset, such as `2026-01-01T00:00:00Z`.
+
+Use `is_null` and `is_not_null` for missing values. `eq: null` and `ne: null`
+are invalid because different databases handle null comparisons differently.
+
+Whether YoDb uses an index is an execution decision. A valid filter remains a
+valid filter without one, although server query limits may reject work that is
+too expensive to perform safely.
+
+## Ordering
+
+Use `order_by` to request a deterministic result order:
+
+```yaml
+order_by:
+  - field: created_at
+    direction: desc
+  - field: name
+    direction: asc
+```
+
+`direction` is either `asc` or `desc`. YoDb always appends logical `id` as a
+final tie-breaker unless it is already the final order term. If no order is
+given, the default order is `id ASC`.
+
+This matters because it makes pages stable: records with the same creation
+time still have an unambiguous order. `json` and `bytes` fields cannot be
+ordered in V0.1 because they do not have a portable ordering across adapters.
+
+## Getting the next page
+
+YoDb uses cursor (keyset) pagination rather than offset pagination:
+
+```yaml
+page:
+  first: 25
+  after: opaque_cursor_from_the_previous_response
+```
+
+The first page has `first` and no `after`. A response will eventually return a
+`next_cursor`; send it back as `after` to request the following page.
+
+A cursor is opaque and signed. Do not inspect, edit, or construct it. It is
+bound to the query, effective ordering, and catalog version, so it cannot be
+reused for a different query. Page-size defaults and maximums are set by the
+server deployment.
+
+Source databases can change while you are paging. Cursor pagination keeps the
+order well-defined but does not claim a global snapshot across multiple source
+databases.
+
+## Request constraints
+
+Callers can state bounded requirements where the service allows them:
+
+```yaml
+constraints:
+  maximum_results: 25
+  maximum_latency_ms: 1000
+  allow_partial_results: false
+```
+
+The server remains the authority on limits. It may reject impossible or unsafe
+requests rather than running unbounded work. `allow_partial_results` only has
+meaning for a future multi-source plan; YoDb will never silently omit a failed
+source from an otherwise complete-looking response.
+
+## Relationships and graph traversal
+
+Relationships come from [`relations.yaml`](../catalog/relations). A caller
+does not write join conditions or mention foreign-key columns. Instead, a
+future traversal names a reviewed relationship:
+
+```yaml
+traverse:
+  - relationship: customer_has_ticket
+    direction: forward
+    as: ticket
+    where:
+      field: status
+      op: eq
+      value: open
+```
+
+`forward` means the relationship's declared `from` dataset to its declared
+`to` dataset. `reverse` is available only for a relationship declared as
+bidirectional. YoDb will enforce a bounded number of hops and a work budget.
+
+The same traversal can later use PostgreSQL joins, a PostgreSQL edge table, or
+Neo4j. The caller does not change the query to choose one.
+
+Relationship traversal is part of the shared model but is not yet executable
+in the initial single-dataset PostgreSQL query path. Its exact nested-result
+shape will be documented before it ships.
+
+## Semantic search
+
+Semantic search follows the same principle: name the business field and the
+meaning you seek, not a vector implementation.
+
+```yaml
+semantic:
+  field: content
+  query: tickets at risk of churn because of price
+  candidates: 100
+```
+
+The field must be public and marked `semantic_eligible` in the dataset catalog.
+YoDb may use pgvector initially and a different semantic adapter later. Index
+selection, embedding generation, exact-scan fallback policy, ranking, and
+freshness are service behavior—not caller configuration.
+
+Semantic execution is planned for a later Milestone 2 increment. The initial
+implemented query path is relational filtering, projection, ordering, and
+pagination.
+
+## Validation and errors
+
+YoDb validates a query against the active catalog before it contacts any data
+source. Typical errors include:
+
+| Problem | Example error code |
+| --- | --- |
+| The requested dataset does not exist | `dataset_not_found` |
+| A field is unknown or internal | `field_not_accessible` |
+| A filter value has the wrong type | `query_value_type_invalid` |
+| An operator cannot be used with that type | `query_operator_not_supported` |
+| The Boolean expression is malformed | `query_expression_invalid` |
+| A relationship is not declared or cannot be followed in that direction | `relationship_not_found`, `traversal_not_allowed` |
+
+An error identifies the logical part of the request, such as
+`where.all[1].value`. It does not expose table names, generated SQL,
+credentials, or other physical source details.
+
+## Current status
+
+This is the query contract being implemented in Milestone 2. Catalog loading,
+source inspection, mapping validation, and catalog activation are already
+available. Query model validation, planning, PostgreSQL compilation, and query
+execution are the next pieces.
+
