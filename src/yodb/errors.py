@@ -25,6 +25,8 @@ class ErrorCode(str, Enum):
     SOURCE_INSPECTION_FAILED = "source_inspection_failed"
     SOURCE_CAPABILITY_UNAVAILABLE = "source_capability_unavailable"
     SOURCE_VALIDATION_FAILED = "source_validation_failed"
+    CATALOG_LOAD_FAILED = "catalog_load_failed"
+    CATALOG_RUNTIME_UNINITIALIZED = "catalog_runtime_uninitialized"
 
 
 class ErrorDetail(BaseModel):
@@ -62,3 +64,7 @@ class SourceInspectionError(YoDbError):
 
 class SourceConnectionError(YoDbError):
     """Raised when a source connection cannot be resolved or leased."""
+
+
+class CatalogRuntimeError(YoDbError):
+    """Raised when an in-memory catalog runtime has no usable active snapshot."""

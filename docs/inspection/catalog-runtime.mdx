@@ -1,0 +1,87 @@
+---
+title: Catalog runtime
+description: Load, inspect, validate, and activate one catalog snapshot in memory.
+---
+
+`InMemoryCatalogRuntime` is the central read-only coordinator for a configured
+catalog. It holds the parsed `Catalog`, factual source-inspection snapshots,
+and source validation reports together in process memory.
+
+```text
+datasets.yaml + sources.yaml + relations.yaml
+                    |
+                    v
+              load_catalog()
+                    |
+                    v
+       SourceInspectionRegistry (by source kind)
+                    |
+        inspect source → validate source bindings
+                    |
+                    v
+   candidate CatalogEvaluation (all configured sources)
+                    |
+           all sources valid? ── no ──> reject candidate; retain active snapshot
+                    |
+                   yes
+                    v
+           atomically replace active snapshot
+```
+
+## What it owns
+
+For each refresh attempt, the runtime keeps an explicit status for every
+configured source:
+
+- `valid`: inspection completed and the catalog bindings validate;
+- `invalid`: inspection completed but the validator reported one or more
+  activation-blocking findings;
+- `inspection_failed`: no inspection snapshot was produced. The runtime stores
+  a safe structured error instead of a driver exception or credential detail.
+
+The aggregate result is one of:
+
+- `activated`: every configured source is valid, and the candidate becomes the
+  active snapshot;
+- `rejected`: at least one source is invalid or could not be inspected. The
+  candidate is retained in `last_attempt` for diagnostics, but it does not
+  replace the prior active snapshot;
+- `load_failed`: the three YAML files could not be statically loaded. No
+  candidate is created, and any prior active snapshot is retained.
+
+## Wiring PostgreSQL
+
+The coordinator selects inspection adapters; it does not resolve secrets or
+open database connections itself. A PostgreSQL inspector is constructed with a
+`PostgresConnectionAdapter`, which owns its bounded connection pool. Then both
+the inspector and its validator are registered together for `postgres`:
+
+```python
+from yodb import (
+    InMemoryCatalogRuntime,
+    InspectionAdapterBinding,
+    PostgresCatalogValidator,
+    PostgresSourceInspector,
+    SourceInspectionRegistry,
+)
+from yodb.catalog import SourceKind
+
+postgres_inspector = PostgresSourceInspector(postgres_connections)
+inspection_registry = SourceInspectionRegistry([
+    InspectionAdapterBinding(
+        source_kind=SourceKind.POSTGRES,
+        inspector=postgres_inspector,
+        validator=PostgresCatalogValidator(),
+    )
+])
+
+runtime = InMemoryCatalogRuntime("./catalog", inspection_registry)
+result = runtime.refresh()
+
+if result.status.value == "activated":
+    active_catalog = runtime.active
+```
+
+This never writes to a source, infers mappings, or activates a partially
+validated catalog. The future query planner consumes `runtime.active` only
+after activation.
