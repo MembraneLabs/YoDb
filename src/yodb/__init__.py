@@ -14,9 +14,18 @@ from .errors import (
     CatalogRuntimeError,
     ErrorCode,
     ErrorDetail,
+    QueryError,
     SourceConnectionError,
     SourceInspectionError,
     YoDbError,
+)
+from .query import (
+    BoundQuery,
+    QueryRequest,
+    QueryValidationPolicy,
+    bind_query,
+    parse_query,
+    validate_query,
 )
 from .inspection import (
     FindingSeverity,
@@ -60,6 +69,7 @@ __all__ = [
     "ConnectionAdapterRegistry",
     "ErrorCode",
     "ErrorDetail",
+    "QueryError",
     "FindingSeverity",
     "GraphRelationshipType",
     "InspectionCapability",
@@ -93,5 +103,11 @@ __all__ = [
     "SourceRuntimeStatus",
     "ValidationFinding",
     "YoDbError",
+    "BoundQuery",
+    "QueryRequest",
+    "QueryValidationPolicy",
+    "bind_query",
     "load_catalog",
+    "parse_query",
+    "validate_query",
 ]

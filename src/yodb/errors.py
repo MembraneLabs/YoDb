@@ -27,6 +27,16 @@ class ErrorCode(str, Enum):
     SOURCE_VALIDATION_FAILED = "source_validation_failed"
     CATALOG_LOAD_FAILED = "catalog_load_failed"
     CATALOG_RUNTIME_UNINITIALIZED = "catalog_runtime_uninitialized"
+    QUERY_SHAPE_INVALID = "query_shape_invalid"
+    QUERY_FEATURE_NOT_SUPPORTED = "query_feature_not_supported"
+    DATASET_NOT_FOUND = "dataset_not_found"
+    FIELD_NOT_FOUND = "field_not_found"
+    FIELD_NOT_ACCESSIBLE = "field_not_accessible"
+    QUERY_VALUE_TYPE_INVALID = "query_value_type_invalid"
+    QUERY_OPERATOR_NOT_SUPPORTED = "query_operator_not_supported"
+    QUERY_EXPRESSION_INVALID = "query_expression_invalid"
+    QUERY_LIMIT_INVALID = "query_limit_invalid"
+    CURSOR_QUERY_MISMATCH = "cursor_query_mismatch"
 
 
 class ErrorDetail(BaseModel):
@@ -68,3 +78,7 @@ class SourceConnectionError(YoDbError):
 
 class CatalogRuntimeError(YoDbError):
     """Raised when an in-memory catalog runtime has no usable active snapshot."""
+
+
+class QueryError(YoDbError):
+    """Raised when a submitted logical query cannot be parsed or validated."""
