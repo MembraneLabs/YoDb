@@ -10,6 +10,7 @@ from .connections import (
     PostgresConnectionSettings,
     SourceConnectionAdapter,
 )
+from .compilation import CompiledOutputColumn, CompiledPostgresQuery, PostgresQueryCompiler
 from .errors import (
     CatalogRuntimeError,
     ErrorCode,
@@ -73,6 +74,8 @@ __all__ = [
     "CatalogRuntimeError",
     "CatalogValidationError",
     "ConnectionReferenceResolver",
+    "CompiledOutputColumn",
+    "CompiledPostgresQuery",
     "ConnectionAdapterRegistry",
     "ErrorCode",
     "ErrorDetail",
@@ -92,6 +95,7 @@ __all__ = [
     "PhysicalResource",
     "PhysicalUniqueConstraint",
     "PostgresCatalogValidator",
+    "PostgresQueryCompiler",
     "PostgresConnectionAdapter",
     "PostgresConnectionReferenceResolver",
     "PostgresConnectionSettings",

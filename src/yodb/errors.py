@@ -40,6 +40,8 @@ class ErrorCode(str, Enum):
     QUERY_CATALOG_MISMATCH = "query_catalog_mismatch"
     SOURCE_BINDING_UNAVAILABLE = "source_binding_unavailable"
     SOURCE_LOGICAL_ID_UNAVAILABLE = "source_logical_id_unavailable"
+    QUERY_COMPILATION_UNSUPPORTED = "query_compilation_unsupported"
+    QUERY_SOURCE_SHAPE_UNSUPPORTED = "query_source_shape_unsupported"
 
 
 class ErrorDetail(BaseModel):
