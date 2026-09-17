@@ -21,10 +21,17 @@ from .errors import (
 )
 from .query import (
     BoundQuery,
+    FieldUse,
+    LogicalIdLink,
     QueryRequest,
+    QuerySourceShape,
     QueryValidationPolicy,
+    ResolvedField,
+    SingleSourceQueryBinding,
+    SourceResolvedQuery,
     bind_query,
     parse_query,
+    resolve_query_sources,
     validate_query,
 )
 from .inspection import (
@@ -104,10 +111,17 @@ __all__ = [
     "ValidationFinding",
     "YoDbError",
     "BoundQuery",
+    "FieldUse",
+    "LogicalIdLink",
     "QueryRequest",
+    "QuerySourceShape",
     "QueryValidationPolicy",
+    "ResolvedField",
+    "SingleSourceQueryBinding",
+    "SourceResolvedQuery",
     "bind_query",
     "load_catalog",
     "parse_query",
+    "resolve_query_sources",
     "validate_query",
 ]
