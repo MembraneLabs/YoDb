@@ -37,6 +37,9 @@ class ErrorCode(str, Enum):
     QUERY_EXPRESSION_INVALID = "query_expression_invalid"
     QUERY_LIMIT_INVALID = "query_limit_invalid"
     CURSOR_QUERY_MISMATCH = "cursor_query_mismatch"
+    QUERY_CATALOG_MISMATCH = "query_catalog_mismatch"
+    SOURCE_BINDING_UNAVAILABLE = "source_binding_unavailable"
+    SOURCE_LOGICAL_ID_UNAVAILABLE = "source_logical_id_unavailable"
 
 
 class ErrorDetail(BaseModel):

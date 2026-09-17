@@ -278,6 +278,11 @@ def _validate_resolutions(catalog: Catalog) -> None:
                 f"({'; '.join(details)})"
             )
 
+        if resolution.field_sources["id"] != resolution.identity_source:
+            raise CatalogValidationError(
+                f"resolution.{dataset_name}.field_sources.id must match identity_source"
+            )
+
         for field_name, source_name in resolution.field_sources.items():
             _validate_source_field(catalog, dataset_name, source_name, field_name, "field_sources")
 

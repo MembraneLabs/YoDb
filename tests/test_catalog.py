@@ -148,6 +148,15 @@ class CatalogLoaderTests(unittest.TestCase):
             with self.assertRaisesRegex(CatalogValidationError, "missing resolutions for: support_ticket"):
                 load_catalog(directory)
 
+    def test_requires_logical_id_to_come_from_the_identity_source(self) -> None:
+        invalid_sources = SOURCES.replace(
+            "      id: crm_postgres\n      name: crm_postgres",
+            "      id: relationship_graph\n      name: crm_postgres",
+        )
+        with catalog_directory(sources=invalid_sources) as directory:
+            with self.assertRaisesRegex(CatalogValidationError, "field_sources.id must match identity_source"):
+                load_catalog(directory)
+
 
 class catalog_directory:
     def __init__(self, *, datasets: str = DATASETS, sources: str = SOURCES, relations: str = RELATIONS) -> None:

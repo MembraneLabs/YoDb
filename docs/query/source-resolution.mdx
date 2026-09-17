@@ -1,0 +1,141 @@
+---
+title: Source resolution
+description: How YoDb safely classifies one logical query across one or more approved sources.
+---
+
+One business dataset can have fields supplied by more than one source. Source
+resolution is the internal step that takes a validated logical query and finds
+the approved physical mappings it needs. It does not generate SQL, query a
+database, or guess how two records match.
+
+```text
+BoundQuery
+    ↓
+source resolution
+    ↓
+single-source binding OR multi-source binding
+    ↓
+future planner and source-specific compiler
+```
+
+## One source
+
+Suppose the `customer` dataset is mapped to a CRM PostgreSQL source:
+
+```yaml
+from: {dataset: customer}
+select: [id, name, status]
+where: {field: status, op: eq, value: active}
+order_by:
+  - {field: name, direction: asc}
+```
+
+The resolver may produce this internal mapping:
+
+```text
+customer.id       → crm_postgres → public.accounts.account_uuid
+customer.name     → crm_postgres → public.accounts.company_name
+customer.status   → crm_postgres → public.accounts.account_status
+```
+
+Because all requested fields belong to `crm_postgres`, this is classified as a
+**single-source** query. A later PostgreSQL compiler can safely turn that one
+binding into parameterized SQL.
+
+Physical names remain internal. Callers still use only `customer`, `name`, and
+`status`.
+
+## More than one source
+
+Now imagine two approved contributors to `customer`:
+
+```text
+CRM source     → id, name, status
+Billing source → plan, payment_status
+```
+
+This query needs both sources:
+
+```yaml
+from: {dataset: customer}
+select: [id, name, plan]
+where: {field: plan, op: eq, value: enterprise}
+order_by:
+  - {field: name, direction: asc}
+```
+
+Source resolution classifies it as **multi-source** and returns two
+source-local bindings:
+
+```text
+crm_postgres
+  resource: public.accounts
+  fields: id, name
+
+billing_postgres
+  resource: billing.customers
+  fields: id, plan
+
+link: crm_postgres.logical_id = billing_postgres.logical_id
+```
+
+This is not a cross-database SQL join. The future record-assembly planner can
+use the link to run bounded source-local work, transfer logical IDs, and merge
+approved fields into one logical customer record.
+
+## The logical-ID requirement
+
+Every source that contributes a public field, filter, or ordering field must
+also declare the dataset's logical `id` as its unique source identity.
+
+The physical primary keys may be completely different. For example, a billing
+table can retain `billing_customer_id` as its primary key while exposing a
+unique `crm_customer_uuid` as YoDb's logical `customer.id` mapping:
+
+```yaml
+datasets:
+  customer:
+    resource: billing.customers
+    identity: [id]
+    fields:
+      id: {physical_name: crm_customer_uuid}
+      plan: {physical_name: subscription_plan}
+```
+
+The source inspector verifies that the physical field used as `identity: [id]`
+is backed by a primary or unique key.
+
+If a contributor has no stable logical-ID mapping, YoDb rejects its use. It
+does not infer equivalence from similar field names, values, foreign keys, or
+an LLM suggestion.
+
+## Assembly links are not relationships
+
+A logical-ID link joins multiple representations of the **same dataset**:
+
+```text
+CRM customer ↔ Billing customer
+```
+
+A relationship in [`relations.yaml`](../catalog/relations) joins different
+business datasets:
+
+```text
+customer → support_ticket
+```
+
+The first is implicit only after both sources explicitly map the same logical
+`id`. The second must always be explicitly declared and is used for future
+graph traversal. Neither is inferred by YoDb.
+
+## Current status
+
+The source-resolution classifier is available now. It verifies that a bound
+query still belongs to the exact active catalog snapshot, returns single- or
+multi-source binding objects, and creates explicit logical-ID links for
+multi-source participation.
+
+The next implementation step is compiling a single-source PostgreSQL binding
+to safe parameterized SQL. Multi-source record assembly, graph traversal, and
+semantic execution are not executable yet.
+

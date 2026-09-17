@@ -22,6 +22,15 @@ from .models import (
     SortDirection,
 )
 from .parser import parse_query
+from .resolution import (
+    FieldUse,
+    LogicalIdLink,
+    QuerySourceShape,
+    ResolvedField,
+    SingleSourceQueryBinding,
+    SourceResolvedQuery,
+    resolve_query_sources,
+)
 from .validation import QueryValidationPolicy, bind_query, validate_query
 
 __all__ = [
@@ -37,15 +46,22 @@ __all__ = [
     "BoundQuery",
     "ComparisonOperator",
     "DatasetReference",
+    "FieldUse",
+    "LogicalIdLink",
     "NotExpression",
     "OrderTerm",
     "PageRequest",
     "Predicate",
     "QueryConstraints",
     "QueryRequest",
+    "QuerySourceShape",
     "QueryValidationPolicy",
     "SortDirection",
+    "ResolvedField",
+    "SingleSourceQueryBinding",
+    "SourceResolvedQuery",
     "bind_query",
     "parse_query",
+    "resolve_query_sources",
     "validate_query",
 ]

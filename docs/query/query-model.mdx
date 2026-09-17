@@ -109,6 +109,10 @@ This keeps application code independent of where data is stored. It also lets
 YoDb choose an efficient implementation without exposing a database-specific
 escape hatch.
 
+When a query is valid, YoDb also resolves its fields to the approved sources
+behind the catalog. See [source resolution](./source-resolution) for how this
+works when a dataset has fields in more than one database.
+
 ## Selecting fields
 
 `select` is an optional list of public fields to return:
