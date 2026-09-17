@@ -1,0 +1,92 @@
+---
+title: PostgreSQL compilation
+description: How a single-source logical query becomes safe parameterized PostgreSQL SQL.
+---
+
+After a query has been validated and resolved to one PostgreSQL source, YoDb
+can compile it into a PostgreSQL statement. Compilation is not execution: it
+produces SQL text, a separate parameter tuple, and logical output-column
+metadata. The central execution engine then selects the PostgreSQL executor,
+leases a pooled connection, and submits that result.
+
+```text
+logical query
+  → bound query
+  → single-source binding
+  → CompiledPostgresQuery
+  → PostgreSQL execution adapter
+  → logical rows
+```
+
+## Example
+
+Given this logical query:
+
+```yaml
+from: {dataset: customer}
+select: [id, name, status]
+where: {field: status, op: eq, value: active}
+order_by:
+  - {field: name, direction: asc}
+page: {first: 25}
+```
+
+and a reviewed catalog mapping:
+
+```text
+customer.id     → public.accounts.account_uuid
+customer.name   → public.accounts.company_name
+customer.status → public.accounts.account_status
+```
+
+YoDb produces the following compiled form:
+
+```sql
+SELECT "account_uuid" AS "id", "company_name" AS "name", "account_status" AS "status"
+FROM "public"."accounts"
+WHERE "account_status" = %s
+ORDER BY "company_name" ASC, "account_uuid" ASC
+LIMIT %s
+```
+
+```text
+parameters: ("active", 25)
+output columns: id, name, status
+```
+
+The caller never submits `public.accounts`, `account_status`, SQL, or `%s`.
+Those identifiers are derived only from the active catalog's approved source
+binding. The caller's `active` value is a separate parameter, never
+interpolated into SQL text.
+
+## Current supported relational slice
+
+The compiler currently accepts a resolved `single_source` PostgreSQL query and
+compiles:
+
+- selected fields;
+- Boolean `all`, `any`, and `not` expressions;
+- `eq`, `ne`, `in`, `not_in`, `is_null`, `is_not_null`;
+- numeric and timestamp range operators: `gt`, `gte`, `lt`, `lte`;
+- deterministic ordering, including the logical-ID tie-breaker;
+- bounded `LIMIT` from the page size and `maximum_results` constraint.
+
+The compiler quotes every resource, column, and output alias derived from the
+catalog. It also rejects an invalid qualified resource instead of attempting
+to construct SQL from it.
+
+## Explicitly not compiled yet
+
+The compiler rejects rather than ignores:
+
+- multi-source queries and logical-ID record assembly;
+- Neo4j or any non-PostgreSQL source;
+- cursor pagination (`page.after`);
+- text `contains` and `starts_with` predicates, pending final portable text
+  collation semantics;
+- semantic search, relationship traversal, grouping, windows, and raw SQL.
+
+No statement is executed by the compiler itself. See [query execution](./execution)
+for the central engine and PostgreSQL execution adapter that use the existing
+bounded connection pool, send the parameterized statement, and normalize the
+returned rows to logical fields.

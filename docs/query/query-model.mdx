@@ -113,6 +113,8 @@ When a query is valid, YoDb also resolves its fields to the approved sources
 behind the catalog. See [source resolution](./source-resolution) for how this
 works when a dataset has fields in more than one database.
 
+For a resolved one-source PostgreSQL query, see [PostgreSQL compilation](./postgres-compilation).
+
 ## Selecting fields
 
 `select` is an optional list of public fields to return:
@@ -356,4 +358,4 @@ and stable query/catalog fingerprints. Catalog loading, source inspection,
 mapping validation, and catalog activation are also available.
 
 The next pieces are declared relationship traversal validation, semantic-query
-validation, physical planning, PostgreSQL compilation, cursors, and execution.
+validation, cursors, PostgreSQL execution, and multi-source record assembly.
