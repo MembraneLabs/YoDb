@@ -73,6 +73,13 @@ from .inspection import (
     SourceValidationReport,
     ValidationFinding,
 )
+from .planning import (
+    InMemoryAssemblyPlan,
+    InMemoryPlanPolicy,
+    PhysicalQueryPlanner,
+    SingleSourcePlan,
+    SourceScanPlan,
+)
 from .runtime import (
     CatalogEvaluation,
     CatalogRefreshResult,
@@ -104,6 +111,8 @@ __all__ = [
     "InspectionRequest",
     "MappingPostgresConnectionResolver",
     "InMemoryCatalogRuntime",
+    "InMemoryAssemblyPlan",
+    "InMemoryPlanPolicy",
     "PhysicalField",
     "PhysicalCheckConstraint",
     "PhysicalForeignKey",
@@ -118,6 +127,7 @@ __all__ = [
     "PostgresConnectionReferenceResolver",
     "PostgresConnectionSettings",
     "PostgresSourceInspector",
+    "PhysicalQueryPlanner",
     "ResourceKind",
     "RefreshStatus",
     "SourceCatalogValidator",
@@ -130,6 +140,8 @@ __all__ = [
     "SourceValidationReport",
     "SourceRuntimeState",
     "SourceRuntimeStatus",
+    "SourceScanPlan",
+    "SingleSourcePlan",
     "ValidationFinding",
     "YoDbError",
     "QueryCompilerAdapter",

@@ -7,6 +7,7 @@ from .contracts import (
     QueryExecutionResult,
 )
 from .engine import QueryExecutionEngine
+from .in_memory import assemble
 from .postgres import PostgresQueryExecutionAdapter
 from .registry import QueryExecutionAdapterRegistry
 
@@ -18,4 +19,5 @@ __all__ = [
     "QueryExecutionAdapterRegistry",
     "QueryExecutionEngine",
     "QueryExecutionResult",
+    "assemble",
 ]

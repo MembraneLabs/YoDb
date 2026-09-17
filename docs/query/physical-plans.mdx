@@ -1,0 +1,92 @@
+---
+title: Physical plans
+description: How YoDb executes a query whose fields live in one or several sources.
+---
+
+YoDb's caller-facing query remains logical. A physical plan is a private,
+backend-neutral description of the work needed to produce that result after
+the query has been bound to an active catalog and its fields resolved to
+approved sources.
+
+## First plan model
+
+V0.1 currently has only these plan objects:
+
+```text
+SourceScanPlan
+  one read from one declared source representation
+
+SingleSourcePlan
+  one SourceScanPlan; the backend can evaluate the whole query
+
+InMemoryAssemblyPlan
+  several SourceScanPlans
+  → assemble records by declared logical id
+  → evaluate the complete filter
+  → globally sort and page results
+```
+
+`SourceScanPlan` contains the validated source binding, approved physical
+projection fields, an optional source-local Boolean filter, ordering, and a
+limit. A compiler adapter turns only this object into native work. PostgreSQL
+turns it into parameterized SQL; a future Neo4j adapter can turn the same kind
+of plan node into Cypher.
+
+## One source
+
+For a dataset whose requested fields all belong to one PostgreSQL source:
+
+```text
+logical customer query
+  → SourceScanPlan(crm_postgres)
+  → PostgreSQL compiler and execution adapter
+  → logical rows
+```
+
+The source receives the filter, ordering, and page limit because it can
+preserve the complete query meaning by itself.
+
+## Several sources
+
+For a dataset with fields split between sources, for example CRM `name` and
+billing `plan`:
+
+```text
+SourceScanPlan(crm)       SourceScanPlan(billing)
+       │                         │
+       └──── InMemoryAssemblyPlan ┘
+                    │
+       anchor on CRM logical id
+       merge matching billing fields
+       evaluate full filter, order, and page
+                    │
+               logical rows
+```
+
+The identity source declared in `sources.yaml` is the record anchor. A
+contributor can enrich only an anchored record with the same logical `id`.
+Contributor-only IDs are ignored; an absent contributor field is `null`.
+
+For correctness, this first federated plan performs **no optimization**:
+
+- no predicates are pushed into a multi-source scan;
+- no per-source ordering or caller page limit is applied;
+- scans run sequentially;
+- the complete Boolean expression is evaluated after assembly using SQL-like
+  three-valued null behavior.
+
+Each source scan has a hard configurable row budget (default 10,000 records)
+and asks for one additional row. Exceeding the bound fails the query rather
+than silently returning a partial result.
+
+## Deferred optimization
+
+These are intentionally later choices, not changes to the logical API:
+
+- run independent scans concurrently;
+- push safe source-local predicates down under conjunctions;
+- use source statistics and indexes to select a plan;
+- push a same-PostgreSQL-source join into one SQL statement;
+- add transfer, memory, latency, and cost estimates.
+
+See the V0.1 query plan for the optimization notes and sequencing.
