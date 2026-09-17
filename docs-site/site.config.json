@@ -32,7 +32,8 @@
         { "path": "query/query-model", "label": "Query model" },
         { "path": "query/source-resolution", "label": "Source resolution" },
         { "path": "query/postgres-compilation", "label": "PostgreSQL compilation" },
-        { "path": "query/execution", "label": "Query execution" }
+        { "path": "query/execution", "label": "Query execution" },
+        { "path": "query/physical-plans", "label": "Physical plans" }
       ]
     }
   ]
