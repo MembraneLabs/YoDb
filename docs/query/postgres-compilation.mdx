@@ -6,14 +6,16 @@ description: How a single-source logical query becomes safe parameterized Postgr
 After a query has been validated and resolved to one PostgreSQL source, YoDb
 can compile it into a PostgreSQL statement. Compilation is not execution: it
 produces SQL text, a separate parameter tuple, and logical output-column
-metadata. A later executor will lease a connection and submit that result.
+metadata. The central execution engine then selects the PostgreSQL executor,
+leases a pooled connection, and submits that result.
 
 ```text
 logical query
   → bound query
   → single-source binding
   → CompiledPostgresQuery
-  → future executor
+  → PostgreSQL execution adapter
+  → logical rows
 ```
 
 ## Example
@@ -84,7 +86,7 @@ The compiler rejects rather than ignores:
   collation semantics;
 - semantic search, relationship traversal, grouping, windows, and raw SQL.
 
-No statement is executed by the compiler. The next step is a PostgreSQL
-executor that uses the existing bounded connection pool, sends this statement
-with its parameter tuple, and normalizes returned rows to logical fields.
-
+No statement is executed by the compiler itself. See [query execution](./execution)
+for the central engine and PostgreSQL execution adapter that use the existing
+bounded connection pool, send the parameterized statement, and normalize the
+returned rows to logical fields.

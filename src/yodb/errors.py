@@ -42,6 +42,8 @@ class ErrorCode(str, Enum):
     SOURCE_LOGICAL_ID_UNAVAILABLE = "source_logical_id_unavailable"
     QUERY_COMPILATION_UNSUPPORTED = "query_compilation_unsupported"
     QUERY_SOURCE_SHAPE_UNSUPPORTED = "query_source_shape_unsupported"
+    QUERY_EXECUTION_UNSUPPORTED = "query_execution_unsupported"
+    QUERY_EXECUTION_FAILED = "query_execution_failed"
 
 
 class ErrorDetail(BaseModel):
@@ -87,3 +89,7 @@ class CatalogRuntimeError(YoDbError):
 
 class QueryError(YoDbError):
     """Raised when a submitted logical query cannot be parsed or validated."""
+
+
+class QueryExecutionError(YoDbError):
+    """Raised when a compiled query cannot be safely executed."""

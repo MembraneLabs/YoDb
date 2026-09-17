@@ -1,0 +1,87 @@
+---
+title: Query execution
+description: Run supported structured queries through YoDb's central execution engine.
+---
+
+The central execution engine is the supported route from a caller's structured
+logical query to normalized logical rows. It owns the orchestration but never
+contains SQL, Cypher, credentials, connection-pool logic, or database-driver
+objects.
+
+```text
+structured query
+  → parse and validate against the active catalog
+  → resolve approved physical source bindings
+  → choose a compiler adapter from the source kind
+  → compile a native parameterized command
+  → choose an execution adapter from the command's source kind
+  → normalized logical rows
+```
+
+## Creating the PostgreSQL path
+
+An application wires each concern once at process startup. The catalog runtime
+must already have activated a validated catalog.
+
+```python
+from yodb.compilation import PostgresQueryCompiler, QueryCompilerRegistry
+from yodb.execution import (
+    PostgresQueryExecutionAdapter,
+    QueryExecutionAdapterRegistry,
+    QueryExecutionEngine,
+)
+
+compilers = QueryCompilerRegistry([
+    PostgresQueryCompiler(),
+])
+
+executors = QueryExecutionAdapterRegistry([
+    PostgresQueryExecutionAdapter(postgres_connection_adapter),
+])
+
+engine = QueryExecutionEngine(runtime, compilers, executors)
+```
+
+`postgres_connection_adapter` is the existing `PostgresConnectionAdapter`. It
+resolves the opaque connection reference and leases a bounded pooled connection.
+It is not constructed from a caller query.
+
+## Running a query
+
+```python
+result = engine.execute({
+    "from": {"dataset": "customer"},
+    "select": ["id", "name", "status"],
+    "where": {"field": "status", "op": "eq", "value": "active"},
+    "page": {"first": 25},
+})
+
+for row in result.rows:
+    print(row["id"], row["name"])
+```
+
+The result contains immutable mappings using logical field names only, along
+with fingerprints for the normalized query and the activated catalog snapshot.
+The central engine does not expose native cursors or native query text.
+
+## Adapter boundaries
+
+Three registry-selected adapter categories isolate providers:
+
+| Adapter | Owns |
+| --- | --- |
+| connection adapter | credentials, connection settings, and pooling |
+| compiler adapter | native query construction and parameter binding |
+| execution adapter | running native work and normalizing native result rows |
+
+PostgreSQL is the first implementation of both compiler and execution
+adapters. A future Neo4j, MongoDB, or other backend provides equivalent
+adapters under the same interfaces; the structured caller query and central
+engine do not become database-specific.
+
+## Current execution boundary
+
+V0.1 currently executes only resolved `single_source` PostgreSQL queries using
+the relational operators documented in [PostgreSQL compilation](./postgres-compilation).
+Multi-source record assembly, relationship traversal, semantic search, cursor
+pagination, and non-PostgreSQL adapters remain explicit future plan nodes.

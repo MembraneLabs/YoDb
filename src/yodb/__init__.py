@@ -10,15 +10,30 @@ from .connections import (
     PostgresConnectionSettings,
     SourceConnectionAdapter,
 )
-from .compilation import CompiledOutputColumn, CompiledPostgresQuery, PostgresQueryCompiler
+from .compilation import (
+    CompiledOutputColumn,
+    CompiledPostgresQuery,
+    CompiledQuery,
+    PostgresQueryCompiler,
+    QueryCompilerAdapter,
+    QueryCompilerRegistry,
+)
 from .errors import (
     CatalogRuntimeError,
     ErrorCode,
     ErrorDetail,
     QueryError,
+    QueryExecutionError,
     SourceConnectionError,
     SourceInspectionError,
     YoDbError,
+)
+from .execution import (
+    PostgresQueryExecutionAdapter,
+    QueryExecutionAdapter,
+    QueryExecutionAdapterRegistry,
+    QueryExecutionEngine,
+    QueryExecutionResult,
 )
 from .query import (
     BoundQuery,
@@ -76,10 +91,12 @@ __all__ = [
     "ConnectionReferenceResolver",
     "CompiledOutputColumn",
     "CompiledPostgresQuery",
+    "CompiledQuery",
     "ConnectionAdapterRegistry",
     "ErrorCode",
     "ErrorDetail",
     "QueryError",
+    "QueryExecutionError",
     "FindingSeverity",
     "GraphRelationshipType",
     "InspectionCapability",
@@ -96,6 +113,7 @@ __all__ = [
     "PhysicalUniqueConstraint",
     "PostgresCatalogValidator",
     "PostgresQueryCompiler",
+    "PostgresQueryExecutionAdapter",
     "PostgresConnectionAdapter",
     "PostgresConnectionReferenceResolver",
     "PostgresConnectionSettings",
@@ -114,6 +132,12 @@ __all__ = [
     "SourceRuntimeStatus",
     "ValidationFinding",
     "YoDbError",
+    "QueryCompilerAdapter",
+    "QueryCompilerRegistry",
+    "QueryExecutionAdapter",
+    "QueryExecutionAdapterRegistry",
+    "QueryExecutionEngine",
+    "QueryExecutionResult",
     "BoundQuery",
     "FieldUse",
     "LogicalIdLink",

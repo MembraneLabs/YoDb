@@ -48,6 +48,8 @@ class PostgresQueryCompiler:
     adapter and submit the compiled statement with its parameter tuple.
     """
 
+    source_kind = SourceKind.POSTGRES
+
     def compile(self, query: SourceResolvedQuery) -> CompiledPostgresQuery:
         """Compile a single-source PostgreSQL query or raise a structured error."""
 
