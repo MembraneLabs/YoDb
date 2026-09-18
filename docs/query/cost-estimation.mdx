@@ -20,11 +20,18 @@ estimated coordinator memory bytes
 estimated backend work
 estimated latency
 confidence and assumptions
+statistics collection time and provenance
 ```
 
 Confidence is `high`, `medium`, or `low`. Missing statistics always lower
 confidence and use conservative fallbacks; missing facts must never make a
 plan appear cheaper.
+
+Each estimate has an expected value and a conservative upper bound. The
+current multiplier is 1.5× for high confidence, 3× for medium confidence, and
+10× for low confidence, capped by known source cardinality. A future policy
+uses upper bounds for budget safety rather than treating expected values as a
+guarantee.
 
 ## PostgreSQL adapter
 
@@ -54,6 +61,23 @@ assessment = PlanCostEstimator(
 print(assessment.estimate.estimated_transfer_bytes)
 print(assessment.estimate.confidence)
 ```
+
+For a multi-source plan with a top-level conjunction, compare the current
+baseline with a safe source-local predicate-pushdown candidate:
+
+```python
+comparison = PlanCostEstimator(
+    CostEstimatorRegistry([PostgresCostEstimator()])
+).compare(plan, active_catalog)
+
+baseline = comparison.baseline
+name, pushdown = comparison.candidates[0]
+```
+
+The candidate is generated only when every filter is a leaf under `all` and
+belongs to exactly one source. It is **estimated only** in this increment.
+`QueryExecutionEngine` continues to execute the baseline plan; no automatic
+choice or changed query result is introduced.
 
 For an in-memory multi-source plan, YoDb estimates each source scan and then
 adds sequential transfer and coordinator-memory work. This baseline has no

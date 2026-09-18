@@ -6,6 +6,7 @@ from .cost import (
     CostEstimate,
     CostEstimatorRegistry,
     PlanAssessment,
+    PlanComparison,
     PlanCostEstimator,
     PostgresCostEstimator,
 )
@@ -141,6 +142,7 @@ __all__ = [
     "PostgresSourceInspector",
     "PhysicalQueryPlanner",
     "PlanAssessment",
+    "PlanComparison",
     "PlanCostEstimator",
     "ResourceKind",
     "RefreshStatus",

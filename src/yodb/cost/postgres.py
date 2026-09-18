@@ -30,7 +30,15 @@ class PostgresCostEstimator:
         if resource.estimated_rows is None:
             assumptions = (*assumptions, "resource row count unavailable; used conservative default")
             confidence = CostConfidence.LOW
-        return CostEstimate(output, row_bytes, output * row_bytes, 0.0, work, latency, confidence, assumptions)
+        multiplier = {CostConfidence.HIGH: 1.5, CostConfidence.MEDIUM: 3.0, CostConfidence.LOW: 10.0}[confidence]
+        upper_rows = min(rows, output * multiplier)
+        if scan.limit is not None:
+            upper_rows = min(upper_rows, float(scan.limit))
+        return CostEstimate(
+            output, upper_rows, row_bytes, output * row_bytes, upper_rows * row_bytes,
+            0.0, 0.0, work, latency, confidence, inspection.inspected_at,
+            ("postgresql:pg_class", "postgresql:pg_stats", "postgresql:index_catalog"), assumptions,
+        )
 
 
 def _selectivity(expression, resource: PhysicalResource, scan: SourceScanPlan):
