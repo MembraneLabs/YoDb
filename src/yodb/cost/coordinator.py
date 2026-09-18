@@ -26,5 +26,5 @@ class PlanCostEstimator:
         anchor_rows = scan_costs[0].estimated_rows
         transfer = sum(cost.estimated_transfer_bytes for cost in scan_costs)
         memory = sum(cost.estimated_transfer_bytes for cost in scan_costs) * 2.0
-        assembly = CostEstimate(anchor_rows, 0.0, transfer, memory, sum(cost.estimated_rows for cost in scan_costs), sum(cost.estimated_latency_ms for cost in scan_costs) + anchor_rows / 100_000, CostConfidence.LOW, ("unoptimized sequential in-memory assembly",))
+        assembly = CostEstimate(anchor_rows, 0.0, transfer, memory, sum(cost.estimated_backend_work for cost in scan_costs), sum(cost.estimated_latency_ms for cost in scan_costs) + anchor_rows / 100_000, CostConfidence.LOW, ("unoptimized sequential in-memory assembly",))
         return PlanAssessment(assembly, (*estimates, ("in_memory_assembly", assembly)))
