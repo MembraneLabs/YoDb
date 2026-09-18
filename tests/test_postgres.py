@@ -43,6 +43,9 @@ class PostgresAdapterTests(unittest.TestCase):
         self.assertEqual(accounts.fields["embedding"].dimensions, 1536)
         self.assertIn(InspectionCapability.VECTOR_COLUMNS, inspection.capabilities)
         self.assertIn(InspectionCapability.VECTOR_INDEXES, inspection.capabilities)
+        self.assertIn(InspectionCapability.TABLE_STATISTICS, inspection.capabilities)
+        self.assertEqual(accounts.estimated_rows, 50_000)
+        self.assertEqual(accounts.fields["company_name"].estimated_distinct_values, 40_000)
 
     def test_validator_accepts_existing_unique_identity_and_mapped_fields(self) -> None:
         inspection = PostgresSourceInspector(FakeConnectionAdapter()).inspect(
@@ -204,6 +207,26 @@ _RESPONSES: dict[str, list[dict[str, Any]]] = {
             "include_fields": [],
             "predicate": None,
             "definition": "CREATE INDEX accounts_embedding_hnsw ON public.accounts USING hnsw (embedding)",
+        },
+    ],
+    "resource_statistics": [
+        {"resource_name": "public.accounts", "estimated_rows": 50_000, "average_row_bytes": 180},
+        {"resource_name": "public.users", "estimated_rows": 20_000, "average_row_bytes": 120},
+    ],
+    "column_statistics": [
+        {
+            "resource_name": "public.accounts",
+            "field_name": "company_name",
+            "null_frac": 0.0,
+            "n_distinct": 40_000,
+            "avg_width": 34,
+        },
+        {
+            "resource_name": "public.accounts",
+            "field_name": "account_uuid",
+            "null_frac": 0.0,
+            "n_distinct": -1.0,
+            "avg_width": 16,
         },
     ],
 }

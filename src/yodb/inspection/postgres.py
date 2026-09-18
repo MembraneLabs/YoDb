@@ -160,6 +160,30 @@ GROUP BY n.nspname, c.relname, index_class.relname, access_method.amname, index_
          index_data.indisunique, index_data.indisvalid, index_data.indnkeyatts, index_data.indpred, index_data.indrelid
 ORDER BY resource_name, index_name
 """
+_RESOURCE_STATISTICS_SQL = """/* yodb:resource_statistics */
+SELECT n.nspname || '.' || c.relname AS resource_name,
+       CASE WHEN c.reltuples > 0 THEN c.reltuples ELSE NULL END AS estimated_rows,
+       CASE WHEN c.reltuples > 0
+            THEN pg_relation_size(c.oid)::double precision / c.reltuples
+            ELSE NULL END AS average_row_bytes
+FROM pg_class AS c
+JOIN pg_namespace AS n ON n.oid = c.relnamespace
+WHERE c.relkind IN ('r', 'p', 'm', 'f')
+  AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+  AND n.nspname NOT LIKE 'pg_toast%'
+ORDER BY resource_name
+"""
+_COLUMN_STATISTICS_SQL = """/* yodb:column_statistics */
+SELECT schemaname || '.' || tablename AS resource_name,
+       attname AS field_name,
+       null_frac,
+       n_distinct,
+       avg_width
+FROM pg_stats
+WHERE schemaname NOT IN ('pg_catalog', 'information_schema')
+  AND schemaname NOT LIKE 'pg_toast%'
+ORDER BY resource_name, field_name
+"""
 
 
 class PostgresSourceInspector:
@@ -193,6 +217,8 @@ class PostgresSourceInspector:
                     constraint_rows = _fetch_rows(cursor, _KEYS_AND_CHECKS_SQL)
                     foreign_key_rows = _fetch_rows(cursor, _FOREIGN_KEYS_SQL)
                     index_rows = _fetch_rows(cursor, _INDEXES_SQL)
+                    resource_stat_rows = _fetch_rows(cursor, _RESOURCE_STATISTICS_SQL)
+                    column_stat_rows = _fetch_rows(cursor, _COLUMN_STATISTICS_SQL)
                 finally:
                     cursor.close()
 
@@ -205,6 +231,8 @@ class PostgresSourceInspector:
                 constraint_rows,
                 foreign_key_rows,
                 index_rows,
+                resource_stat_rows,
+                column_stat_rows,
             )
         except SourceInspectionError:
             raise
@@ -338,18 +366,42 @@ def _build_inspection(
     constraint_rows: list[dict[str, Any]],
     foreign_key_rows: list[dict[str, Any]],
     index_rows: list[dict[str, Any]],
+    resource_stat_rows: list[dict[str, Any]],
+    column_stat_rows: list[dict[str, Any]],
 ) -> SourceInspection:
+    resource_statistics = {
+        str(row["resource_name"]): (
+            _as_optional_float(row.get("estimated_rows")),
+            _as_optional_float(row.get("average_row_bytes")),
+        )
+        for row in resource_stat_rows
+    }
+    column_statistics = {
+        (str(row["resource_name"]), str(row["field_name"])): row
+        for row in column_stat_rows
+    }
     fields_by_resource: dict[str, dict[str, PhysicalField]] = defaultdict(dict)
     for row in column_rows:
         native_type = str(row["native_type"])
-        fields_by_resource[str(row["resource_name"])][str(row["field_name"])] = PhysicalField(
-            name=str(row["field_name"]),
+        resource_name = str(row["resource_name"])
+        field_name = str(row["field_name"])
+        field_stats = column_statistics.get((resource_name, field_name))
+        estimated_rows = resource_statistics.get(resource_name, (None, None))[0]
+        distinct = _postgres_distinct_count(
+            field_stats.get("n_distinct") if field_stats is not None else None,
+            estimated_rows,
+        )
+        fields_by_resource[resource_name][field_name] = PhysicalField(
+            name=field_name,
             native_type=native_type,
             type_family=_postgres_type_family(native_type),
             nullable=_as_optional_bool(row.get("nullable")),
             default=_as_optional_string(row.get("default_expression")),
             generated=_as_optional_bool(row.get("generated")),
             dimensions=_vector_dimensions(native_type),
+            estimated_distinct_values=distinct,
+            null_fraction=_as_optional_float(field_stats.get("null_frac")) if field_stats is not None else None,
+            average_value_bytes=_as_optional_float(field_stats.get("avg_width")) if field_stats is not None else None,
         )
 
     primary_keys: dict[str, PhysicalKey] = {}
@@ -413,6 +465,8 @@ def _build_inspection(
             foreign_keys=tuple(foreign_keys[resource_name]),
             check_constraints=tuple(checks[resource_name]),
             indexes=tuple(indexes[resource_name]),
+            estimated_rows=resource_statistics.get(resource_name, (None, None))[0],
+            average_row_bytes=resource_statistics.get(resource_name, (None, None))[1],
         )
 
     extensions = {str(row["extname"]): str(row["extversion"]) for row in extension_rows}
@@ -422,6 +476,8 @@ def _build_inspection(
         InspectionCapability.FOREIGN_KEYS,
         InspectionCapability.UNIQUE_CONSTRAINTS,
         InspectionCapability.INDEXES,
+        InspectionCapability.TABLE_STATISTICS,
+        InspectionCapability.COLUMN_STATISTICS,
     }
     vector_fields = [field for resource in resources.values() for field in resource.fields.values() if field.type_family == "vector"]
     vector_indexes = [index for resource in resources.values() for index in resource.indexes if index.method in {"hnsw", "ivfflat"}]
@@ -502,6 +558,25 @@ def _as_optional_string(value: Any) -> str | None:
 
 def _as_optional_bool(value: Any) -> bool | None:
     return bool(value) if value is not None else None
+
+
+def _as_optional_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    number = float(value)
+    return number if number >= 0 else None
+
+
+def _postgres_distinct_count(value: Any, estimated_rows: float | None) -> float | None:
+    """Resolve PostgreSQL's negative n_distinct fraction without storing values."""
+
+    distinct = _as_optional_float(value)
+    if distinct is not None:
+        return distinct
+    if value is None or estimated_rows is None:
+        return None
+    fraction = float(value)
+    return abs(fraction) * estimated_rows if fraction < 0 else None
 
 
 def _source_error_from_exception(source_name: str, error: Exception) -> SourceInspectionError:
