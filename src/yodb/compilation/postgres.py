@@ -14,6 +14,7 @@ from ..query.models import (
     BoundPredicate,
     ComparisonOperator,
 )
+from ..planning import RemoteScan
 from ..query.resolution import QuerySourceShape, ResolvedField, SourceResolvedQuery
 from .contracts import CompiledOutputColumn, CompiledPostgresQuery
 
@@ -36,7 +37,7 @@ _COMPILED_OPERATORS = frozenset(
 
 @dataclass(frozen=True)
 class _CompileContext:
-    query: SourceResolvedQuery
+    query: SourceResolvedQuery | None
     fields_by_name: dict[str, ResolvedField]
 
 
@@ -101,6 +102,60 @@ class PostgresQueryCompiler:
             output_columns=tuple(
                 CompiledOutputColumn(sql_alias=field.field.name, logical_field=field.field.name)
                 for field in selected
+            ),
+        )
+
+    def compile_scan(self, scan: RemoteScan) -> CompiledPostgresQuery:
+        """Compile one planner-produced PostgreSQL fragment.
+
+        The planner has already established field ownership and pushdown
+        legality. This compiler repeats the source-kind and field checks while
+        translating only the accepted fragment into parameterized SQL.
+        """
+
+        if scan.source.source_kind is not SourceKind.POSTGRES:
+            _fail(
+                ErrorCode.QUERY_COMPILATION_UNSUPPORTED,
+                "The PostgreSQL compiler requires a PostgreSQL remote scan.",
+            )
+        fields_by_name = {field.field.name: field for field in scan.projection}
+        if scan.source.logical_id.field.name not in fields_by_name:
+            _fail(
+                ErrorCode.QUERY_COMPILATION_UNSUPPORTED,
+                "Every PostgreSQL remote scan must project its logical ID.",
+            )
+        context = _CompileContext(query=None, fields_by_name=fields_by_name)
+        projections = ", ".join(
+            f"{_column(field)} AS {_quote_identifier(field.field.name)}" for field in scan.projection
+        )
+        parameters: list[object] = []
+        where = _compile_expression(scan.pushed_filter, context, parameters)
+        statements = [f"SELECT {projections}", f"FROM {_resource(scan.source.resource)}"]
+        if where is not None:
+            statements.append(f"WHERE {where}")
+        if scan.order_by:
+            statements.append(
+                "ORDER BY "
+                + ", ".join(
+                    f"{_column(_require_resolved_field(context, term.field.name, 'order_by'))} "
+                    f"{term.direction.value.upper()}"
+                    for term in scan.order_by
+                )
+            )
+        limit = scan.limit if scan.limit is not None else (
+            scan.maximum_rows + 1 if scan.maximum_rows is not None else None
+        )
+        if limit is not None:
+            parameters.append(limit)
+            statements.append("LIMIT %s")
+        return CompiledPostgresQuery(
+            source_name=scan.source.source_name,
+            connection_ref=scan.source.connection_ref,
+            sql="\n".join(statements),
+            parameters=tuple(parameters),
+            output_columns=tuple(
+                CompiledOutputColumn(sql_alias=field.field.name, logical_field=field.field.name)
+                for field in scan.projection
             ),
         )
 

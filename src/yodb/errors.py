@@ -42,6 +42,10 @@ class ErrorCode(str, Enum):
     SOURCE_LOGICAL_ID_UNAVAILABLE = "source_logical_id_unavailable"
     QUERY_COMPILATION_UNSUPPORTED = "query_compilation_unsupported"
     QUERY_SOURCE_SHAPE_UNSUPPORTED = "query_source_shape_unsupported"
+    QUERY_PLAN_UNSUPPORTED = "query_plan_unsupported"
+    QUERY_PLAN_INVARIANT_VIOLATION = "query_plan_invariant_violation"
+    QUERY_ROW_LIMIT_EXCEEDED = "query_row_limit_exceeded"
+    QUERY_COORDINATOR_LIMIT_EXCEEDED = "query_coordinator_limit_exceeded"
     QUERY_EXECUTION_UNSUPPORTED = "query_execution_unsupported"
     QUERY_EXECUTION_FAILED = "query_execution_failed"
 

@@ -90,6 +90,47 @@ class QueryExecutionEngineTests(unittest.TestCase):
 
         self.assertEqual(caught.exception.code, ErrorCode.QUERY_EXECUTION_UNSUPPORTED)
 
+    def test_assembles_two_sources_then_applies_full_filter_global_order_and_page(self) -> None:
+        executor = SourceRowsExecutor(
+            {
+                "crm": (
+                    {"id": "c1", "name": "Zulu", "status": "active"},
+                    {"id": "c2", "name": "Alpha", "status": "inactive"},
+                    {"id": "c3", "name": "Bravo", "status": "active"},
+                ),
+                "billing": (
+                    {"id": "c1", "plan": "basic"},
+                    {"id": "c2", "plan": "enterprise"},
+                    {"id": "c3", "plan": "enterprise"},
+                ),
+            }
+        )
+        engine = QueryExecutionEngine(
+            StaticRuntime(_multi_active_catalog()),
+            QueryCompilerRegistry([PostgresQueryCompiler()]),
+            QueryExecutionAdapterRegistry([executor]),
+        )
+
+        result = engine.execute(
+            {
+                "from": {"dataset": "customer"},
+                "select": ["name", "plan"],
+                "where": {"all": [
+                    {"field": "status", "op": "eq", "value": "active"},
+                    {"field": "plan", "op": "eq", "value": "enterprise"},
+                ]},
+                "order_by": [{"field": "name", "direction": "desc"}],
+                "page": {"first": 1},
+            }
+        )
+
+        self.assertEqual([dict(row) for row in result.rows], [{"id": "c3", "name": "Bravo", "plan": "enterprise"}])
+        self.assertEqual([query.source_name for query in executor.queries], ["crm", "billing"])
+        self.assertIn('WHERE "status" = %s', executor.queries[0].sql)
+        self.assertIn('WHERE "plan" = %s', executor.queries[1].sql)
+        self.assertTrue(all('ORDER BY' not in query.sql for query in executor.queries))
+        self.assertTrue(all('LIMIT %s' in query.sql for query in executor.queries))
+
 
 class StaticRuntime:
     def __init__(self, active: CatalogEvaluation) -> None:
@@ -138,6 +179,18 @@ class FakeCursor:
 
     def fetchall(self) -> list[tuple[object, ...]]:
         return self._connection._rows
+
+
+class SourceRowsExecutor:
+    source_kind = SourceKind.POSTGRES
+
+    def __init__(self, rows: dict[str, tuple[dict[str, object], ...]]) -> None:
+        self._rows = rows
+        self.queries = []
+
+    def execute(self, query, *, timeout_seconds: float | None = None):
+        self.queries.append(query)
+        return self._rows[query.source_name]
 
 
 def _active_catalog() -> CatalogEvaluation:
@@ -193,4 +246,37 @@ def _active_catalog() -> CatalogEvaluation:
                 validation=SourceValidationReport(source_name="crm_postgres", inspected_at=_NOW),
             )
         },
+    )
+
+
+def _multi_active_catalog() -> CatalogEvaluation:
+    sources = {
+        "crm": SourceSpec(
+            kind=SourceKind.POSTGRES, connection_ref="crm", read_only=True,
+            datasets={"customer": SourceDatasetSpec(resource="crm.accounts", identity=("id",), fields={
+                "id": SourceFieldSpec(physical_name="account_id"), "name": SourceFieldSpec(physical_name="name"), "status": SourceFieldSpec(physical_name="status"),
+            })},
+        ),
+        "billing": SourceSpec(
+            kind=SourceKind.POSTGRES, connection_ref="billing", read_only=True,
+            datasets={"customer": SourceDatasetSpec(resource="billing.customers", identity=("id",), fields={
+                "id": SourceFieldSpec(physical_name="customer_id"), "plan": SourceFieldSpec(physical_name="plan"),
+            })},
+        ),
+    }
+    catalog = Catalog(
+        metadata=CatalogMetadata(name="execution-multi", version=1),
+        datasets={"customer": DatasetSpec(description="Customer.", fields={
+            "id": FieldSpec(type=LogicalType.ID, description="ID."),
+            "name": FieldSpec(type=LogicalType.STRING, description="Name."),
+            "status": FieldSpec(type=LogicalType.STRING, description="Status."),
+            "plan": FieldSpec(type=LogicalType.STRING, description="Plan."),
+        })},
+        sources=sources,
+        resolution={"customer": DatasetResolution(identity_source="crm", field_sources={"id": "crm", "name": "crm", "status": "crm", "plan": "billing"})},
+        relationships={},
+    )
+    return CatalogEvaluation(
+        catalog=catalog, evaluated_at=_NOW,
+        sources={name: SourceRuntimeState(source_name=name, status=SourceRuntimeStatus.VALID, inspection=SourceInspection(source_name=name, source_kind=source.kind, inspected_at=_NOW), validation=SourceValidationReport(source_name=name, inspected_at=_NOW)) for name, source in sources.items()},
     )

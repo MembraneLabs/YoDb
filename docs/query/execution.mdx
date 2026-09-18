@@ -12,9 +12,10 @@ objects.
 structured query
   → parse and validate against the active catalog
   → resolve approved physical source bindings
-  → choose a compiler adapter from the source kind
-  → compile a native parameterized command
-  → choose an execution adapter from the command's source kind
+  → build one physical plan from source planning adapters
+  → compile each remote scan into a native parameterized command
+  → execute remote scans through their source execution adapters
+  → assemble and complete remaining logical work at the coordinator
   → normalized logical rows
 ```
 
@@ -66,11 +67,12 @@ The central engine does not expose native cursors or native query text.
 
 ## Adapter boundaries
 
-Three registry-selected adapter categories isolate providers:
+Four registry-selected adapter categories isolate providers:
 
 | Adapter | Owns |
 | --- | --- |
 | connection adapter | credentials, connection settings, and pooling |
+| planning adapter | what a source can preserve for one physical fragment |
 | compiler adapter | native query construction and parameter binding |
 | execution adapter | running native work and normalizing native result rows |
 
@@ -79,9 +81,40 @@ adapters. A future Neo4j, MongoDB, or other backend provides equivalent
 adapters under the same interfaces; the structured caller query and central
 engine do not become database-specific.
 
-## Current execution boundary
+## V0.1 execution boundary
 
-V0.1 currently executes only resolved `single_source` PostgreSQL queries using
-the relational operators documented in [PostgreSQL compilation](./postgres-compilation).
-Multi-source record assembly, relationship traversal, semantic search, cursor
-pagination, and non-PostgreSQL adapters remain explicit future plan nodes.
+V0.1 executes both single-source PostgreSQL queries and a bounded baseline
+multi-source shape for one logical dataset. The engine has one source-local
+`RemoteScan` per participating representation. It assembles contributor rows
+onto the identity-source records by the declared logical `id`, then evaluates
+the complete filter, global order, and page locally before exposing the
+requested projection.
+
+For multi-source queries, only individual top-level `all`/AND predicates owned
+by one source may be pushed. Cross-source `any`/OR and `not` expressions stay
+at the coordinator. A contributor scan that has a pushed conjunct is also a
+required matching-ID set, preventing a non-returned contributor record from
+being mistaken for a null field value.
+
+`contains` and `starts_with` currently run only at the coordinator. When a
+residual predicate exists, the planner does not push ordering or paging ahead
+of it; it uses a bounded remote scan instead. This is slower than native text
+pushdown but preserves logical results.
+
+Relationship traversal, semantic search, cursor pagination, key transfer,
+parallel scan scheduling, and non-PostgreSQL adapters remain future plan nodes.
+
+## Bounds and explain
+
+The baseline has two hard safety boundaries:
+
+- a remote scan without a result-affecting remote page is capped at 10,000
+  rows plus one sentinel row; receiving the sentinel raises
+  `query_row_limit_exceeded`;
+- coordinator sort/page processing is capped at 50,000 rows; exceeding it
+  raises `query_coordinator_limit_exceeded`.
+
+`engine.explain(query)` performs parsing, binding, resolution, and planning
+only. It returns a structural plan explanation with source aliases, logical
+fields, pushed filter field names, order, and limit—never values, credentials,
+physical names, or SQL.
