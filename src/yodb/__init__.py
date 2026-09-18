@@ -1,6 +1,14 @@
 """YoDb V0.1 catalog loading, inspection contracts, and static validation."""
 
 from .catalog import Catalog, CatalogValidationError, load_catalog
+from .cost import (
+    CostConfidence,
+    CostEstimate,
+    CostEstimatorRegistry,
+    PlanAssessment,
+    PlanCostEstimator,
+    PostgresCostEstimator,
+)
 from .connections import (
     ConnectionReferenceResolver,
     ConnectionAdapterRegistry,
@@ -91,6 +99,9 @@ from .runtime import (
 
 __all__ = [
     "Catalog",
+    "CostConfidence",
+    "CostEstimate",
+    "CostEstimatorRegistry",
     "CatalogEvaluation",
     "CatalogRefreshResult",
     "CatalogRuntimeError",
@@ -121,6 +132,7 @@ __all__ = [
     "PhysicalResource",
     "PhysicalUniqueConstraint",
     "PostgresCatalogValidator",
+    "PostgresCostEstimator",
     "PostgresQueryCompiler",
     "PostgresQueryExecutionAdapter",
     "PostgresConnectionAdapter",
@@ -128,6 +140,8 @@ __all__ = [
     "PostgresConnectionSettings",
     "PostgresSourceInspector",
     "PhysicalQueryPlanner",
+    "PlanAssessment",
+    "PlanCostEstimator",
     "ResourceKind",
     "RefreshStatus",
     "SourceCatalogValidator",

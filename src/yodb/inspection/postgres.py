@@ -161,6 +161,23 @@ GROUP BY n.nspname, c.relname, index_class.relname, access_method.amname, index_
 ORDER BY resource_name, index_name
 """
 
+_STATISTICS_SQL = """/* yodb:statistics */
+SELECT n.nspname || '.' || c.relname AS resource_name,
+       a.attname AS field_name,
+       c.reltuples AS estimated_rows,
+       s.null_frac AS null_fraction,
+       s.n_distinct AS estimated_distinct_values,
+       s.avg_width AS average_value_bytes
+FROM pg_class AS c
+JOIN pg_namespace AS n ON n.oid = c.relnamespace
+JOIN pg_attribute AS a ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
+LEFT JOIN pg_stats AS s ON s.schemaname = n.nspname AND s.tablename = c.relname AND s.attname = a.attname
+WHERE c.relkind IN ('r', 'p', 'v', 'm', 'f')
+  AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+  AND n.nspname NOT LIKE 'pg_toast%'
+ORDER BY resource_name, field_name
+"""
+
 
 class PostgresSourceInspector:
     """Inspect PostgreSQL catalogs through an injected read-only connection factory."""
@@ -193,6 +210,7 @@ class PostgresSourceInspector:
                     constraint_rows = _fetch_rows(cursor, _KEYS_AND_CHECKS_SQL)
                     foreign_key_rows = _fetch_rows(cursor, _FOREIGN_KEYS_SQL)
                     index_rows = _fetch_rows(cursor, _INDEXES_SQL)
+                    statistics_rows = _fetch_rows(cursor, _STATISTICS_SQL)
                 finally:
                     cursor.close()
 
@@ -205,6 +223,7 @@ class PostgresSourceInspector:
                 constraint_rows,
                 foreign_key_rows,
                 index_rows,
+                statistics_rows,
             )
         except SourceInspectionError:
             raise
@@ -338,10 +357,13 @@ def _build_inspection(
     constraint_rows: list[dict[str, Any]],
     foreign_key_rows: list[dict[str, Any]],
     index_rows: list[dict[str, Any]],
+    statistics_rows: list[dict[str, Any]],
 ) -> SourceInspection:
+    statistics = {(str(row["resource_name"]), str(row["field_name"])): row for row in statistics_rows}
     fields_by_resource: dict[str, dict[str, PhysicalField]] = defaultdict(dict)
     for row in column_rows:
         native_type = str(row["native_type"])
+        statistics_row = statistics.get((str(row["resource_name"]), str(row["field_name"])), {})
         fields_by_resource[str(row["resource_name"])][str(row["field_name"])] = PhysicalField(
             name=str(row["field_name"]),
             native_type=native_type,
@@ -350,6 +372,9 @@ def _build_inspection(
             default=_as_optional_string(row.get("default_expression")),
             generated=_as_optional_bool(row.get("generated")),
             dimensions=_vector_dimensions(native_type),
+            estimated_distinct_values=_estimated_distinct(statistics_row.get("estimated_distinct_values"), _as_positive_float(statistics_row.get("estimated_rows"))),
+            null_fraction=_as_optional_float(statistics_row.get("null_fraction")),
+            average_value_bytes=_as_optional_int(statistics_row.get("average_value_bytes")),
         )
 
     primary_keys: dict[str, PhysicalKey] = {}
@@ -413,6 +438,8 @@ def _build_inspection(
             foreign_keys=tuple(foreign_keys[resource_name]),
             check_constraints=tuple(checks[resource_name]),
             indexes=tuple(indexes[resource_name]),
+            estimated_rows=_as_positive_float(next((row.get("estimated_rows") for row in statistics_rows if str(row["resource_name"]) == resource_name), None)),
+            average_row_bytes=sum(field.average_value_bytes or 0 for field in fields_by_resource[resource_name].values()) or None,
         )
 
     extensions = {str(row["extname"]): str(row["extversion"]) for row in extension_rows}
@@ -422,6 +449,8 @@ def _build_inspection(
         InspectionCapability.FOREIGN_KEYS,
         InspectionCapability.UNIQUE_CONSTRAINTS,
         InspectionCapability.INDEXES,
+        InspectionCapability.TABLE_STATISTICS,
+        InspectionCapability.COLUMN_STATISTICS,
     }
     vector_fields = [field for resource in resources.values() for field in resource.fields.values() if field.type_family == "vector"]
     vector_indexes = [index for resource in resources.values() for index in resource.indexes if index.method in {"hnsw", "ivfflat"}]
@@ -502,6 +531,26 @@ def _as_optional_string(value: Any) -> str | None:
 
 def _as_optional_bool(value: Any) -> bool | None:
     return bool(value) if value is not None else None
+
+
+def _as_optional_float(value: Any) -> float | None:
+    return float(value) if value is not None else None
+
+
+def _as_positive_float(value: Any) -> float | None:
+    numeric = _as_optional_float(value)
+    return numeric if numeric is not None and numeric > 0 else None
+
+
+def _as_optional_int(value: Any) -> int | None:
+    return int(value) if value is not None else None
+
+
+def _estimated_distinct(value: Any, rows: Any) -> float | None:
+    if value is None:
+        return None
+    distinct = float(value)
+    return abs(distinct * float(rows)) if distinct < 0 and rows is not None else distinct
 
 
 def _source_error_from_exception(source_name: str, error: Exception) -> SourceInspectionError:

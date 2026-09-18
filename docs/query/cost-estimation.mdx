@@ -1,0 +1,69 @@
+---
+title: Cost estimation
+description: Estimate plan size, transfer, memory, and confidence before federated execution.
+---
+
+YoDb's cost model is a backend-neutral **governor and explainer**. It does not
+yet select a different plan automatically. Instead it assesses the current
+physical plan using inspected source facts and returns an explainable estimate
+that a future optimizer can compare against policy budgets.
+
+## Common estimate
+
+Every source adapter returns the same cost vector:
+
+```text
+estimated rows
+estimated row bytes
+estimated transfer bytes
+estimated coordinator memory bytes
+estimated backend work
+estimated latency
+confidence and assumptions
+```
+
+Confidence is `high`, `medium`, or `low`. Missing statistics always lower
+confidence and use conservative fallbacks; missing facts must never make a
+plan appear cheaper.
+
+## PostgreSQL adapter
+
+The PostgreSQL inspection adapter reads catalog statistics without reading
+business rows. It records approximate resource row counts plus field null
+fractions, distinct-value estimates, and average widths. It deliberately does
+not retain PostgreSQL most-common value contents, which could expose source
+data through metadata.
+
+The PostgreSQL cost adapter currently estimates:
+
+- equality and membership from distinct-value estimates;
+- null tests from null fractions;
+- ranges with a low-confidence one-third fallback until histograms are added;
+- text predicates with a low-confidence ten-percent fallback;
+- Boolean `all`, `any`, and `not` with independence assumptions;
+- index-aware scan work for equality and membership predicates;
+- source transfer size from projected field widths.
+
+## Assessing a plan
+
+```python
+assessment = PlanCostEstimator(
+    CostEstimatorRegistry([PostgresCostEstimator()])
+).assess(plan, active_catalog)
+
+print(assessment.estimate.estimated_transfer_bytes)
+print(assessment.estimate.confidence)
+```
+
+For an in-memory multi-source plan, YoDb estimates each source scan and then
+adds sequential transfer and coordinator-memory work. This baseline has no
+predicate pushdown or parallelism. A later optimizer will compare it with key
+transfer, native join, and parallel candidates.
+
+## Deferred refinements
+
+- PostgreSQL histograms and safe skew-aware value estimates;
+- observed latency/throughput feedback;
+- key-transfer and native-join candidate estimates;
+- explicit budget policy and automatic plan selection;
+- Neo4j, MongoDB, semantic, traversal, aggregate, and window estimators.
