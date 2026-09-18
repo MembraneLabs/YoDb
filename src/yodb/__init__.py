@@ -1,6 +1,15 @@
 """YoDb V0.1 catalog loading, inspection contracts, and static validation."""
 
 from .catalog import Catalog, CatalogValidationError, load_catalog
+from .cost import (
+    CostConfidence,
+    CostEstimate,
+    CostEstimatorRegistry,
+    PlanAssessment,
+    PlanComparison,
+    PlanCostEstimator,
+    PostgresCostEstimator,
+)
 from .connections import (
     ConnectionReferenceResolver,
     ConnectionAdapterRegistry,
@@ -73,6 +82,13 @@ from .inspection import (
     SourceValidationReport,
     ValidationFinding,
 )
+from .planning import (
+    InMemoryAssemblyPlan,
+    InMemoryPlanPolicy,
+    PhysicalQueryPlanner,
+    SingleSourcePlan,
+    SourceScanPlan,
+)
 from .runtime import (
     CatalogEvaluation,
     CatalogRefreshResult,
@@ -84,6 +100,9 @@ from .runtime import (
 
 __all__ = [
     "Catalog",
+    "CostConfidence",
+    "CostEstimate",
+    "CostEstimatorRegistry",
     "CatalogEvaluation",
     "CatalogRefreshResult",
     "CatalogRuntimeError",
@@ -104,6 +123,8 @@ __all__ = [
     "InspectionRequest",
     "MappingPostgresConnectionResolver",
     "InMemoryCatalogRuntime",
+    "InMemoryAssemblyPlan",
+    "InMemoryPlanPolicy",
     "PhysicalField",
     "PhysicalCheckConstraint",
     "PhysicalForeignKey",
@@ -112,12 +133,17 @@ __all__ = [
     "PhysicalResource",
     "PhysicalUniqueConstraint",
     "PostgresCatalogValidator",
+    "PostgresCostEstimator",
     "PostgresQueryCompiler",
     "PostgresQueryExecutionAdapter",
     "PostgresConnectionAdapter",
     "PostgresConnectionReferenceResolver",
     "PostgresConnectionSettings",
     "PostgresSourceInspector",
+    "PhysicalQueryPlanner",
+    "PlanAssessment",
+    "PlanComparison",
+    "PlanCostEstimator",
     "ResourceKind",
     "RefreshStatus",
     "SourceCatalogValidator",
@@ -130,6 +156,8 @@ __all__ = [
     "SourceValidationReport",
     "SourceRuntimeState",
     "SourceRuntimeStatus",
+    "SourceScanPlan",
+    "SingleSourcePlan",
     "ValidationFinding",
     "YoDbError",
     "QueryCompilerAdapter",

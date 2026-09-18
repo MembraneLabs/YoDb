@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
 from ..catalog import SourceKind
-from ..query.resolution import SourceResolvedQuery
+from ..planning.contracts import SourceScanPlan
 
 
 @dataclass(frozen=True)
@@ -43,7 +43,7 @@ class QueryCompilerAdapter(Protocol):
     def source_kind(self) -> SourceKind:
         """The configured source kind handled by this compiler."""
 
-    def compile(self, query: SourceResolvedQuery) -> CompiledQuery:
+    def compile(self, query: SourceScanPlan) -> CompiledQuery:
         """Return a backend-native, parameterized command or a typed error."""
 
 

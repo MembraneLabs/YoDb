@@ -1,0 +1,93 @@
+---
+title: Cost estimation
+description: Estimate plan size, transfer, memory, and confidence before federated execution.
+---
+
+YoDb's cost model is a backend-neutral **governor and explainer**. It does not
+yet select a different plan automatically. Instead it assesses the current
+physical plan using inspected source facts and returns an explainable estimate
+that a future optimizer can compare against policy budgets.
+
+## Common estimate
+
+Every source adapter returns the same cost vector:
+
+```text
+estimated rows
+estimated row bytes
+estimated transfer bytes
+estimated coordinator memory bytes
+estimated backend work
+estimated latency
+confidence and assumptions
+statistics collection time and provenance
+```
+
+Confidence is `high`, `medium`, or `low`. Missing statistics always lower
+confidence and use conservative fallbacks; missing facts must never make a
+plan appear cheaper.
+
+Each estimate has an expected value and a conservative upper bound. The
+current multiplier is 1.5× for high confidence, 3× for medium confidence, and
+10× for low confidence, capped by known source cardinality. A future policy
+uses upper bounds for budget safety rather than treating expected values as a
+guarantee.
+
+## PostgreSQL adapter
+
+The PostgreSQL inspection adapter reads catalog statistics without reading
+business rows. It records approximate resource row counts plus field null
+fractions, distinct-value estimates, and average widths. It deliberately does
+not retain PostgreSQL most-common value contents, which could expose source
+data through metadata.
+
+The PostgreSQL cost adapter currently estimates:
+
+- equality and membership from distinct-value estimates;
+- null tests from null fractions;
+- ranges with a low-confidence one-third fallback until histograms are added;
+- text predicates with a low-confidence ten-percent fallback;
+- Boolean `all`, `any`, and `not` with independence assumptions;
+- index-aware scan work for equality and membership predicates;
+- source transfer size from projected field widths.
+
+## Assessing a plan
+
+```python
+assessment = PlanCostEstimator(
+    CostEstimatorRegistry([PostgresCostEstimator()])
+).assess(plan, active_catalog)
+
+print(assessment.estimate.estimated_transfer_bytes)
+print(assessment.estimate.confidence)
+```
+
+For a multi-source plan with a top-level conjunction, compare the current
+baseline with a safe source-local predicate-pushdown candidate:
+
+```python
+comparison = PlanCostEstimator(
+    CostEstimatorRegistry([PostgresCostEstimator()])
+).compare(plan, active_catalog)
+
+baseline = comparison.baseline
+name, pushdown = comparison.candidates[0]
+```
+
+The candidate is generated only when every filter is a leaf under `all` and
+belongs to exactly one source. It is **estimated only** in this increment.
+`QueryExecutionEngine` continues to execute the baseline plan; no automatic
+choice or changed query result is introduced.
+
+For an in-memory multi-source plan, YoDb estimates each source scan and then
+adds sequential transfer and coordinator-memory work. This baseline has no
+predicate pushdown or parallelism. A later optimizer will compare it with key
+transfer, native join, and parallel candidates.
+
+## Deferred refinements
+
+- PostgreSQL histograms and safe skew-aware value estimates;
+- observed latency/throughput feedback;
+- key-transfer and native-join candidate estimates;
+- explicit budget policy and automatic plan selection;
+- Neo4j, MongoDB, semantic, traversal, aggregate, and window estimators.

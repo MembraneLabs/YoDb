@@ -41,8 +41,12 @@ class PostgresAdapterTests(unittest.TestCase):
         self.assertEqual(accounts.foreign_keys[0].target_resource, "public.users")
         self.assertEqual(accounts.foreign_keys[0].on_delete, "restrict")
         self.assertEqual(accounts.fields["embedding"].dimensions, 1536)
+        self.assertEqual(accounts.estimated_rows, 1000.0)
+        self.assertEqual(accounts.fields["owner_id"].estimated_distinct_values, 100.0)
         self.assertIn(InspectionCapability.VECTOR_COLUMNS, inspection.capabilities)
         self.assertIn(InspectionCapability.VECTOR_INDEXES, inspection.capabilities)
+        self.assertIn(InspectionCapability.TABLE_STATISTICS, inspection.capabilities)
+        self.assertIn(InspectionCapability.COLUMN_STATISTICS, inspection.capabilities)
 
     def test_validator_accepts_existing_unique_identity_and_mapped_fields(self) -> None:
         inspection = PostgresSourceInspector(FakeConnectionAdapter()).inspect(
@@ -205,6 +209,12 @@ _RESPONSES: dict[str, list[dict[str, Any]]] = {
             "predicate": None,
             "definition": "CREATE INDEX accounts_embedding_hnsw ON public.accounts USING hnsw (embedding)",
         },
+    ],
+    "statistics": [
+        {"resource_name": "public.accounts", "field_name": "account_uuid", "estimated_rows": 1000, "null_fraction": 0.0, "estimated_distinct_values": -1.0, "average_value_bytes": 16},
+        {"resource_name": "public.accounts", "field_name": "company_name", "estimated_rows": 1000, "null_fraction": 0.0, "estimated_distinct_values": 900, "average_value_bytes": 24},
+        {"resource_name": "public.accounts", "field_name": "owner_id", "estimated_rows": 1000, "null_fraction": 0.0, "estimated_distinct_values": 100, "average_value_bytes": 16},
+        {"resource_name": "public.accounts", "field_name": "embedding", "estimated_rows": 1000, "null_fraction": 0.1, "estimated_distinct_values": None, "average_value_bytes": 6148},
     ],
 }
 

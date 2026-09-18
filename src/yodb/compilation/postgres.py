@@ -14,7 +14,13 @@ from ..query.models import (
     BoundPredicate,
     ComparisonOperator,
 )
-from ..query.resolution import QuerySourceShape, ResolvedField, SourceResolvedQuery
+from ..planning.contracts import SourceScanPlan
+from ..query.resolution import (
+    QuerySourceShape,
+    ResolvedField,
+    SingleSourceQueryBinding,
+    SourceResolvedQuery,
+)
 from .contracts import CompiledOutputColumn, CompiledPostgresQuery
 
 
@@ -36,7 +42,7 @@ _COMPILED_OPERATORS = frozenset(
 
 @dataclass(frozen=True)
 class _CompileContext:
-    query: SourceResolvedQuery
+    source: SingleSourceQueryBinding
     fields_by_name: dict[str, ResolvedField]
 
 
@@ -50,49 +56,49 @@ class PostgresQueryCompiler:
 
     source_kind = SourceKind.POSTGRES
 
-    def compile(self, query: SourceResolvedQuery) -> CompiledPostgresQuery:
+    def compile(self, query: SourceScanPlan | SourceResolvedQuery) -> CompiledPostgresQuery:
         """Compile a single-source PostgreSQL query or raise a structured error."""
 
-        if query.shape is not QuerySourceShape.SINGLE_SOURCE:
+        scan = _legacy_scan(query) if isinstance(query, SourceResolvedQuery) else query
+        source = scan.source
+        if isinstance(query, SourceResolvedQuery) and query.shape is not QuerySourceShape.SINGLE_SOURCE:
             _fail(
                 ErrorCode.QUERY_SOURCE_SHAPE_UNSUPPORTED,
                 "The PostgreSQL compiler currently accepts single-source queries only.",
             )
-        source = query.identity_source
         if source.source_kind is not SourceKind.POSTGRES:
             _fail(
                 ErrorCode.QUERY_COMPILATION_UNSUPPORTED,
                 "The PostgreSQL compiler requires a PostgreSQL source binding.",
             )
-        if query.query.page.after is not None:
+        if isinstance(query, SourceResolvedQuery) and query.query.page.after is not None:
             _fail(
                 ErrorCode.QUERY_COMPILATION_UNSUPPORTED,
                 "Cursor pagination is not compiled until signed cursor verification is implemented.",
                 "page.after",
             )
 
-        context = _CompileContext(query=query, fields_by_name=_field_map(query))
-        selected = tuple(
-            _require_resolved_field(context, field.name, "select") for field in query.query.select
-        )
+        context = _CompileContext(source=source, fields_by_name=_field_map(source))
+        selected = scan.projection
         projections = ", ".join(
             f"{_column(field)} AS {_quote_identifier(field.field.name)}" for field in selected
         )
         parameters: list[object] = []
-        where = _compile_expression(query.query.where, context, parameters)
+        where = _compile_expression(scan.where, context, parameters)
         order_by = ", ".join(
             f"{_column(_require_resolved_field(context, term.field.name, 'order_by'))} "
             f"{term.direction.value.upper()}"
-            for term in query.query.order_by
+            for term in scan.order_by
         )
-        limit = _effective_limit(query)
-        parameters.append(limit)
 
         statements = [f"SELECT {projections}", f"FROM {_resource(source.resource)}"]
         if where is not None:
             statements.append(f"WHERE {where}")
-        statements.append(f"ORDER BY {order_by}")
-        statements.append("LIMIT %s")
+        if order_by:
+            statements.append(f"ORDER BY {order_by}")
+        if scan.limit is not None:
+            parameters.append(scan.limit)
+            statements.append("LIMIT %s")
         return CompiledPostgresQuery(
             source_name=source.source_name,
             connection_ref=source.connection_ref,
@@ -168,8 +174,7 @@ def _compile_predicate(
     return f"{column} {token} %s"
 
 
-def _field_map(query: SourceResolvedQuery) -> dict[str, ResolvedField]:
-    source = query.identity_source
+def _field_map(source: SingleSourceQueryBinding) -> dict[str, ResolvedField]:
     fields = {field.field.name: field for field in source.fields}
     fields.setdefault(source.logical_id.field.name, source.logical_id)
     return fields
@@ -195,6 +200,21 @@ def _effective_limit(query: SourceResolvedQuery) -> int:
     assert page_limit is not None
     requested_maximum = query.query.constraints.maximum_results
     return min(page_limit, requested_maximum) if requested_maximum is not None else page_limit
+
+
+def _legacy_scan(query: SourceResolvedQuery) -> SourceScanPlan:
+    """Keep direct compiler callers working while the engine uses physical plans."""
+
+    source = query.identity_source
+    by_name = {field.field.name: field for field in source.fields}
+    by_name.setdefault(source.logical_id.field.name, source.logical_id)
+    return SourceScanPlan(
+        source=source,
+        projection=tuple(by_name[field.name] for field in query.query.select),
+        where=query.query.where,
+        order_by=query.query.order_by,
+        limit=_effective_limit(query),
+    )
 
 
 def _resource(resource: str) -> str:
