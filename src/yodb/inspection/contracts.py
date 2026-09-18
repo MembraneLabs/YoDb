@@ -47,6 +47,8 @@ class InspectionCapability(str, Enum):
     INDEXES = "indexes"
     VECTOR_COLUMNS = "vector_columns"
     VECTOR_INDEXES = "vector_indexes"
+    TABLE_STATISTICS = "table_statistics"
+    COLUMN_STATISTICS = "column_statistics"
 
 
 class FindingSeverity(str, Enum):
@@ -81,6 +83,9 @@ class PhysicalField(InspectionModel):
     default: str | None = None
     generated: bool | None = None
     dimensions: int | None = Field(default=None, gt=0)
+    estimated_distinct_values: float | None = Field(default=None, ge=0)
+    null_fraction: float | None = Field(default=None, ge=0, le=1)
+    average_value_bytes: float | None = Field(default=None, ge=0)
 
 
 class PhysicalKey(InspectionModel):
@@ -143,6 +148,8 @@ class PhysicalResource(InspectionModel):
     foreign_keys: tuple[PhysicalForeignKey, ...] = ()
     check_constraints: tuple[PhysicalCheckConstraint, ...] = ()
     indexes: tuple[PhysicalIndex, ...] = ()
+    estimated_rows: float | None = Field(default=None, ge=0)
+    average_row_bytes: float | None = Field(default=None, ge=0)
 
 
 class GraphRelationshipType(PhysicalResource):

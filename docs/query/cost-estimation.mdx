@@ -1,0 +1,137 @@
+---
+title: Federated cost planning
+description: How YoDb compares safe ways to compose source-local operations.
+---
+
+YoDb does not replace the optimizer inside PostgreSQL, Neo4j, or another
+connected database. A source adapter compiles one approved source-local
+operation and that database chooses its own index, scan, join, traversal, or
+vector-search strategy.
+
+YoDb's federated cost model decides only how source-local work is composed:
+
+```text
+logical query
+  → resolve logical fields to approved sources
+  → push down safe source-local predicates and projections
+  → enumerate bounded federation candidates
+  → estimate records, bytes, calls, memory, and latency
+  → apply hard budgets
+  → deterministically choose a safe plan
+  → later: execute the selected plan
+```
+
+The implementation currently provides plan, estimate, and policy components.
+The existing execution engine is intentionally unchanged while keyed-transfer
+execution and runtime guards are completed.
+
+## Candidate strategies
+
+For a dataset whose fields live in CRM and Billing, the initial planner may
+consider:
+
+```text
+remote_scans_then_assembly
+  CRM filtered scan ─┐
+                      ├─ YoDb record assembly by declared logical id
+  Billing scan ──────┘
+
+key_transfer:crm→billing
+  CRM filtered scan → deduplicated bounded ID set
+                     → Billing keyed lookup in bounded batches
+                     → YoDb record assembly
+```
+
+The planner applies safe source-local predicate pushdown automatically. It
+does not split `any` or `not` expressions across sources, because that can
+change null/Boolean semantics. The complete expression remains a coordinator
+residual until a later execution rule can prove it is redundant.
+
+## What is estimated
+
+Every adapter returns source-neutral information:
+
+- expected and conservative-upper result records and bytes;
+- expected and upper remote call count;
+- startup and execution latency ranges when available;
+- result completeness (`exact`, `approximate`, or `unknown`);
+- confidence, assumptions, provenance, and statistics time.
+
+YoDb then estimates its own transfer bytes, coordinator memory, materialized
+ID sets, and critical-path latency. Independent scans use the longest branch
+for expected latency; a key transfer is a dependency chain and adds the source
+stages together.
+
+Native database work units are diagnostic only. A PostgreSQL internal work
+score is not comparable to Neo4j database hits or vector-index probes, so it
+is never the central federation ranking unit.
+
+## PostgreSQL adapter
+
+The PostgreSQL inspector collects aggregated facts only: relation row estimate
+and width, plus column null fraction, distinct count, and average value width.
+It does not copy source values, most-common values, histograms, documents, or
+embeddings into YoDb metadata.
+
+The PostgreSQL cost adapter uses those facts to estimate filtered scans and
+keyed lookups. Missing facts use conservative fallbacks and lower confidence;
+missing metadata never makes a plan appear free.
+
+## Policy and selection
+
+`FederatedQueryBudget` can impose hard limits on remote calls, transfer bytes,
+intermediate rows, key count/bytes, coordinator memory, latency, exactness,
+and confidence for large work. Policy evaluates conservative upper bounds.
+
+Among admitted candidates, `FederatedCostPolicy` chooses deterministically:
+
+1. lower expected critical-path latency;
+2. lower expected transfer bytes;
+3. lower coordinator-memory peak;
+4. fewer remote calls;
+5. higher confidence;
+6. stable strategy name as a final tie-breaker.
+
+If nothing passes policy, the result is a structured set of rejections rather
+than an unbounded attempt to execute.
+
+## Using the components
+
+```python
+from yodb.catalog import SourceKind
+from yodb.cost import (
+    CostEstimatorRegistry,
+    FederatedCostPolicy,
+    FederatedPlanEstimator,
+    FederatedQueryBudget,
+    PostgresCostEstimator,
+)
+from yodb.planning import (
+    FederatedPhysicalPlanner,
+    PostgresSourceCapabilities,
+    SourceCapabilityRegistry,
+)
+
+planner = FederatedPhysicalPlanner(
+    SourceCapabilityRegistry([(SourceKind.POSTGRES, PostgresSourceCapabilities())])
+)
+candidates = planner.enumerate(resolved_query)
+
+estimator = FederatedPlanEstimator(
+    CostEstimatorRegistry([PostgresCostEstimator()])
+)
+assessments = estimator.assess_all(candidates, active_catalog)
+
+decision = FederatedCostPolicy().decide(
+    assessments,
+    FederatedQueryBudget(
+        maximum_key_count=10_000,
+        maximum_transfer_bytes=64 * 1024 * 1024,
+        maximum_coordinator_memory_bytes=128 * 1024 * 1024,
+    ),
+)
+```
+
+`decision` either contains the selected assessment or every candidate with its
+structured policy rejection. It is safe to use as the basis of a future
+non-executing `EXPLAIN` API.

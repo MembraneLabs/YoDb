@@ -35,6 +35,36 @@ from .execution import (
     QueryExecutionEngine,
     QueryExecutionResult,
 )
+from .cost import (
+    CostEstimatorRegistry,
+    EstimateConfidence,
+    FederatedCostPolicy,
+    FederatedEstimate,
+    FederatedPlanEstimator,
+    FederatedQueryBudget,
+    PlanAssessment,
+    PlanDecision,
+    PlanRejection,
+    PostgresCostEstimator,
+    RangeEstimate,
+    RemoteOperationEstimate,
+    ResultCompleteness,
+    ResultEstimate,
+    SourceCostEstimator,
+)
+from .planning import (
+    CandidatePlan,
+    FederatedPhysicalPlanner,
+    FederatedPlanningPolicy,
+    InMemoryAssemblyPlan,
+    KeySetPlan,
+    KeyTransferPlan,
+    PostgresSourceCapabilities,
+    SingleSourcePlan,
+    SourceCapabilities,
+    SourceCapabilityRegistry,
+    SourceScanPlan,
+)
 from .query import (
     BoundQuery,
     FieldUse,
@@ -153,3 +183,34 @@ __all__ = [
     "resolve_query_sources",
     "validate_query",
 ]
+
+__all__.extend(
+    [
+        "CandidatePlan",
+        "CostEstimatorRegistry",
+        "EstimateConfidence",
+        "FederatedCostPolicy",
+        "FederatedEstimate",
+        "FederatedPhysicalPlanner",
+        "FederatedPlanEstimator",
+        "FederatedPlanningPolicy",
+        "FederatedQueryBudget",
+        "InMemoryAssemblyPlan",
+        "KeySetPlan",
+        "KeyTransferPlan",
+        "PlanAssessment",
+        "PlanDecision",
+        "PlanRejection",
+        "PostgresCostEstimator",
+        "PostgresSourceCapabilities",
+        "RangeEstimate",
+        "RemoteOperationEstimate",
+        "ResultCompleteness",
+        "ResultEstimate",
+        "SingleSourcePlan",
+        "SourceCapabilities",
+        "SourceCapabilityRegistry",
+        "SourceCostEstimator",
+        "SourceScanPlan",
+    ]
+)
