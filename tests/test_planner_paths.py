@@ -23,8 +23,13 @@ from yodb.planning import (
 )
 from yodb.query import bind_query, parse_query, resolve_query_sources
 
-from test_execution import SourceRowsExecutor, StaticRuntime, _multi_active_catalog
-from test_planning import _active_catalog as _planning_catalog  # same shape as _multi_active_catalog
+from support.catalogs import (
+    crm_billing_catalog as _planning_catalog,
+    multi_source_catalog,
+    SourceRowsExecutor,
+    StaticRuntime,
+)
+
 
 CUSTOMER = {"from": {"dataset": "customer"}}
 
@@ -175,7 +180,7 @@ class ExecutionTests(unittest.TestCase):
     def run_query(self, raw, *, crm=None, billing=None):
         executor = SourceRowsExecutor({"crm": self.CRM if crm is None else crm, "billing": self.BILLING if billing is None else billing})
         engine = QueryExecutionEngine(
-            StaticRuntime(_multi_active_catalog()),
+            StaticRuntime(multi_source_catalog()),
             QueryCompilerRegistry([PostgresQueryCompiler()]),
             QueryExecutionAdapterRegistry([executor]),
         )
@@ -290,7 +295,7 @@ class ExecutionTests(unittest.TestCase):
             self.assertEqual(caught.exception.code, ErrorCode.QUERY_PLAN_INVARIANT_VIOLATION)
 
     def test_coordinator_row_cap_applies_to_sort_stage(self) -> None:
-        active = _multi_active_catalog()
+        active = multi_source_catalog()
         planner = FederatedPhysicalPlanner(SourcePlanningRegistry([PostgresPlanningAdapter()]))
         planned = planner.plan(resolve_query_sources(bind_query(parse_query(_q(["name", "plan"])), active), active))
         executor = FederatedPlanExecutor(
@@ -313,7 +318,7 @@ class ExecutionTests(unittest.TestCase):
                 return super().execute(query, timeout_seconds=timeout_seconds)
 
         engine = QueryExecutionEngine(
-            StaticRuntime(_multi_active_catalog()),
+            StaticRuntime(multi_source_catalog()),
             QueryCompilerRegistry([PostgresQueryCompiler()]),
             QueryExecutionAdapterRegistry([Recording({"crm": self.CRM, "billing": self.BILLING})]),
         )
@@ -323,7 +328,7 @@ class ExecutionTests(unittest.TestCase):
     def test_explain_does_not_execute_anything(self) -> None:
         executor = SourceRowsExecutor({})
         engine = QueryExecutionEngine(
-            StaticRuntime(_multi_active_catalog()),
+            StaticRuntime(multi_source_catalog()),
             QueryCompilerRegistry([PostgresQueryCompiler()]),
             QueryExecutionAdapterRegistry([executor]),
         )
@@ -343,7 +348,7 @@ class KeyTransferTests(unittest.TestCase):
     def run_query(self, raw, *, crm=None, billing=(), policy=PlannerPolicy()):
         executor = SourceRowsExecutor({"crm": self.CRM if crm is None else crm, "billing": billing})
         engine = QueryExecutionEngine(
-            StaticRuntime(_multi_active_catalog()),
+            StaticRuntime(multi_source_catalog()),
             QueryCompilerRegistry([PostgresQueryCompiler()]),
             QueryExecutionAdapterRegistry([executor]),
             planner=FederatedPhysicalPlanner(SourcePlanningRegistry([PostgresPlanningAdapter()]), policy=policy),
@@ -392,7 +397,7 @@ class KeyTransferTests(unittest.TestCase):
         self.assertTrue(all(" IN (" not in q.sql for q in queries))
 
     def test_explain_reports_the_transfer_bound(self) -> None:
-        active = _multi_active_catalog()
+        active = multi_source_catalog()
         planner = FederatedPhysicalPlanner(SourcePlanningRegistry([PostgresPlanningAdapter()]))
         planned = planner.plan(resolve_query_sources(bind_query(parse_query(_q(["name", "plan"])), active), active))
         (assembly,) = [n for n in planned.explain.nodes if n.kind == "record_assembly"]

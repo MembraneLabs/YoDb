@@ -2,57 +2,53 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
 import unittest
+from dataclasses import replace
 
 from yodb.catalog import SourceKind
 from yodb.compilation import PostgresQueryCompiler, QueryCompilerRegistry
 from yodb.execution import QueryExecutionAdapterRegistry, QueryExecutionEngine
-from yodb.execution.engine import _costs_from_providers
 from yodb.planning import (
     ColumnStatistics,
     CostParameters,
     FederatedPhysicalPlanner,
     ObservationStore,
     PlannerPolicy,
-    PostgresPlanningAdapter,
     RecordAssembly,
-    SemanticPlanPreference,
-    SemanticPolicy,
-    SemanticVerify,
     SourcePlanningRegistry,
     SourceStatistics,
     StatisticsService,
-    StepRole,
 )
 from yodb.query import bind_query, parse_query, resolve_query_sources
-from yodb.semantic import ProviderCost, SemanticPlanKind, SemanticRuntime
+from yodb.semantic import (
+    ProviderCost,
+    SemanticCosts,
+    SemanticExtension,
+    SemanticPlanKind,
+    SemanticPlanPreference,
+    SemanticPolicy,
+    SemanticRuntime,
+    SemanticVerify,
+)
 
-from test_execution import SourceRowsExecutor, StaticRuntime
-from test_semantic_execution import (
+from support.catalogs import SourceRowsExecutor, StaticRuntime
+from support.statistics import MapProvider
+from support.tickets import (
     EMBEDDER_INFO,
     FakeEmbedder,
     KeywordVerifier,
-    _active,
     prio,
     q,
     sem,
+    semantic_planner,
+    ticket_catalog,
 )
 
-ACTIVE = _active()
+
+ACTIVE = ticket_catalog()
 OWNER = {"field": "owner", "op": "eq", "value": "ann"}
 
 
-class MapProvider:
-    """Statistics keyed by the source resource (what a real provider reads from a catalog)."""
-
-    def __init__(self, by_resource):
-        self.by_resource = by_resource
-        self.calls = 0
-
-    def statistics(self, source):
-        self.calls += 1
-        return self.by_resource.get(source.resource)
 
 
 def stats(helpdesk=None, directory=None, **kw):
@@ -65,9 +61,7 @@ def stats(helpdesk=None, directory=None, **kw):
 
 
 def planner(service=None, *, semantic=SemanticPolicy(), costs=CostParameters(), policy=PlannerPolicy()):
-    return FederatedPhysicalPlanner(
-        SourcePlanningRegistry([PostgresPlanningAdapter()]), policy=policy, semantic=semantic, statistics=service, costs=costs
-    )
+    return semantic_planner(semantic, policy=policy, statistics=service, costs=costs)
 
 
 def plan(raw, service=None, **kw):
@@ -255,11 +249,11 @@ class SemanticDecisionTests(unittest.TestCase):
         class Hinted(KeywordVerifier):
             cost_hint = ProviderCost(money_per_candidate=7.0, latency_ms_per_call=1.0)
 
-        costs = _costs_from_providers(CostParameters(), SemanticRuntime(Hinted(), FakeEmbedder(), 4))
+        costs = SemanticExtension(SemanticRuntime(Hinted(), FakeEmbedder(), 4)).costs
         self.assertEqual(costs.verification.money_per_candidate, 7.0)
         self.assertEqual(costs.verifier_batch_size, 3)   # min(runtime cap 4, the verifier's own maximum of 3)
-        self.assertEqual(costs.embedding, CostParameters().embedding)   # no hint: defaults
-        self.assertEqual(_costs_from_providers(CostParameters(), None), CostParameters())
+        self.assertEqual(costs.embedding, SemanticCosts().embedding)   # no hint: defaults
+        self.assertEqual(SemanticExtension().costs, SemanticCosts())
 
 
 def assembly_or_scan(planned):

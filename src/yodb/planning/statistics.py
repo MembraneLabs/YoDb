@@ -32,9 +32,9 @@ from ..query.models import (
     BoundAllExpression,
     BoundAnyExpression,
     BoundFilterExpression,
+    BoundExtensionTerm,
     BoundNotExpression,
     BoundPredicate,
-    BoundSemanticPredicate,
     ComparisonOperator,
 )
 from ..query.resolution import SingleSourceQueryBinding
@@ -172,8 +172,8 @@ def _selectivity(
     columns: Mapping[str, ColumnStatistics],
     defaults: SelectivityDefaults,
 ) -> float:
-    if expression is None or isinstance(expression, BoundSemanticPredicate):
-        return 1.0  # a semantic term is costed by the optimizer, not here
+    if expression is None or isinstance(expression, BoundExtensionTerm):
+        return 1.0  # an extension term is costed by its own operator, not here
     if isinstance(expression, BoundPredicate):
         return _predicate_selectivity(expression, columns.get(expression.field.name), defaults)
     if isinstance(expression, BoundAllExpression):
@@ -257,8 +257,8 @@ def filter_signature(expression: BoundFilterExpression | None) -> str:
 def _shape(expression: BoundFilterExpression) -> object:
     if isinstance(expression, BoundPredicate):
         return {"f": expression.field.name, "o": expression.operator.value, "v": repr(expression.value)}
-    if isinstance(expression, BoundSemanticPredicate):
-        return {"semantic": expression.field.name}
+    if isinstance(expression, BoundExtensionTerm):
+        return {"extension": type(expression).__name__}
     if isinstance(expression, BoundAllExpression):
         return {"all": sorted(json.dumps(_shape(c), sort_keys=True) for c in expression.expressions)}
     if isinstance(expression, BoundAnyExpression):

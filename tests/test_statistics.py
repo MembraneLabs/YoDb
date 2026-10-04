@@ -2,27 +2,27 @@
 
 from __future__ import annotations
 
-from contextlib import contextmanager
-from datetime import UTC, datetime
-from threading import Thread
 import unittest
+from contextlib import contextmanager
+from threading import Thread
 
 from yodb.catalog import SourceKind
 from yodb.planning.postgres_statistics import PostgresStatisticsProvider
 from yodb.planning.statistics import (
     ColumnStatistics,
     CostDefaults,
+    estimate_selectivity,
+    filter_signature,
     ObservationStore,
     ScanKey,
     SelectivityDefaults,
     SourceStatistics,
     StatisticsService,
-    estimate_selectivity,
-    filter_signature,
 )
 from yodb.query import bind_query, parse_query, resolve_query_sources
 
-from test_semantic_execution import _active as _ticket_catalog
+from support.tickets import ticket_catalog as _ticket_catalog
+
 
 ACTIVE = _ticket_catalog()
 

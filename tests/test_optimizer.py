@@ -1,4 +1,9 @@
-"""The cost model and DP optimizer: optimality, constraints, and edge cases."""
+"""The cost model and DP optimizer: optimality, constraints, and edge cases.
+
+The optimizer knows nothing about what an extension does, so these tests use toy
+variants: an exact one (cost per candidate, optional cap) and a ranked,
+approximate one (reads only the top ``size`` rows).
+"""
 
 from __future__ import annotations
 
@@ -8,20 +13,20 @@ import unittest
 
 from yodb.planning import StepRole
 from yodb.planning.optimizer import (
+    brute_force,
     Constraints,
     CostParameters,
+    Estimate,
     Fallback,
-    PowerLawRecall,
-    Problem,
-    SemanticOptions,
-    SourceInput,
-    brute_force,
     optimize,
+    Problem,
+    RankedRead,
+    SourceInput,
+    Variant,
 )
 from yodb.planning.statistics import SourceCostProfile
-from yodb.semantic import ProviderCost, SemanticPlanKind
 
-A, B_ = SemanticPlanKind.VERIFY_ALL, SemanticPlanKind.VECTOR_SHORTLIST
+
 PROFILE = SourceCostProfile(call_latency_ms=5.0, per_row_latency_ms=0.01, per_key_latency_ms=0.002)
 
 
@@ -41,13 +46,30 @@ def optional(name, total, **kw):
     return src(name, StepRole.OPTIONAL, total, total, **kw)
 
 
-def semantic(**kw):
-    base = dict(shortlist_allowed=True, shortlist_start=20, shortlist_cap=1_000, maximum_candidates=1_000, page_size=10, required_recall=0.8)
-    return SemanticOptions(**{**base, **kw})
+def exact(per_row_ms=1.0, *, cap=None, money_per_row=0.0):
+    """Handles every candidate it is given (None when there are more than ``cap``)."""
+
+    def cost(candidates):
+        if cap is not None and candidates.count > cap:
+            return None
+        return Estimate(per_row_ms * candidates.count, money_per_row * candidates.count)
+
+    return Variant("exact", cost=cost)
 
 
-def problem(sources, *, sem=None, keys=1_000, params=CostParameters(), constraints=Constraints()):
-    return Problem(sources, params, maximum_transfer_keys=keys, semantic=sem, constraints=constraints)
+def ranked(size, per_row_ms=1.0, *, money_per_row=0.0, min_coverage=0.0):
+    """Approximate: demands a ranked read of the top ``size``; unusable if it covers too little of the pool."""
+
+    def cost(candidates):
+        if candidates.pool > 0 and size / candidates.pool < min_coverage:
+            return None
+        return Estimate(per_row_ms * candidates.count, money_per_row * candidates.count)
+
+    return Variant(f"ranked:{size}", cost=cost, demand=RankedRead(size, 0.002), approximate=True)
+
+
+def problem(sources, *, variants=(), keys=1_000, params=CostParameters(), constraints=Constraints()):
+    return Problem(sources, params, maximum_transfer_keys=keys, variants=variants, constraints=constraints)
 
 
 def order_of(result):
@@ -65,13 +87,15 @@ class DpMatchesBruteForceTests(unittest.TestCase):
                                     profile=SourceCostProfile(rng.uniform(1, 50), rng.uniform(0.001, 0.05), rng.uniform(0.0005, 0.01))))
         for i in range(rng.randint(0, 2)):
             sources.append(optional(f"o{i}", rng.choice([10, 5_000, 500_000]), key_limit=rng.choice([None, 1_000, 5_000]), row_cap=rng.choice([None, 20_000])))
-        sem = None
+        variants = []
         if rng.random() < 0.7:
-            sem = semantic(shortlist_allowed=rng.random() < 0.7, shortlist_start=rng.choice([5, 20, 100]), shortlist_cap=rng.choice([100, 1_000]),
-                           maximum_candidates=rng.choice([500, 1_000, 5_000]), page_size=rng.choice([1, 10, 100]), required_recall=rng.choice([0.0, 0.5, 0.8, 0.99]))
-            sem = SemanticOptions(**{**sem.__dict__, "shortlist_cap": max(sem.shortlist_cap, sem.shortlist_start)})
+            if rng.random() < 0.8:
+                variants.append(exact(rng.choice([0.05, 1.0]), cap=rng.choice([None, 500, 5_000]), money_per_row=rng.choice([0.0, 0.001])))
+            if rng.random() < 0.7:
+                for size in sorted(rng.sample([5, 20, 100, 1_000], k=rng.randint(1, 3))):
+                    variants.append(ranked(size, rng.choice([0.05, 1.0]), money_per_row=rng.choice([0.0, 0.001]), min_coverage=rng.choice([0.0, 0.01, 0.5])))
         constraints = Constraints(maximum_money=rng.choice([None, 0.05, 1.0]), maximum_latency_ms=rng.choice([None, 2_000.0, 1e9]))
-        return problem(sources, sem=sem, keys=rng.choice([None, 100, 1_000, 5_000]), constraints=constraints)
+        return problem(sources, variants=variants, keys=rng.choice([None, 100, 1_000, 5_000]), constraints=constraints)
 
     def test_the_dp_finds_the_same_optimum_as_trying_everything(self) -> None:
         rng = random.Random(20261003)
@@ -100,9 +124,7 @@ class DpMatchesBruteForceTests(unittest.TestCase):
             if isinstance(result, Fallback):
                 continue
             narrowing = [(s.source_name, s.restrict) for s in result.schedule if s.role is not StepRole.OPTIONAL]
-            kind = result.semantic.kind if result.semantic else None
-            size = result.semantic.shortlist_size if result.semantic else None
-            estimate = p.evaluate(narrowing, kind, size)
+            estimate = p.evaluate(narrowing, result.variant)
             self.assertIsNotNone(estimate)
             self.assertAlmostEqual(estimate.latency_ms, result.estimate.latency_ms, delta=1e-6 * max(1.0, estimate.latency_ms))
             self.assertAlmostEqual(estimate.money, result.estimate.money, places=9)
@@ -176,8 +198,8 @@ class FeasibilityTests(unittest.TestCase):
             self.assertNotIsInstance(result, Fallback)
             self.assertTrue(math.isfinite(result.objective))
 
-    def test_the_candidate_set_size_limit_is_enforced(self) -> None:
-        self.assertIsInstance(optimize(problem([anchor(2_000, 2_000)], sem=semantic(shortlist_allowed=False, maximum_candidates=1_000))), Fallback)
+    def test_a_variants_own_limit_is_enforced(self) -> None:
+        self.assertIsInstance(optimize(problem([anchor(2_000, 2_000)], variants=[exact(cap=1_000)])), Fallback)
 
     def test_too_many_sources_decline_with_a_reason(self) -> None:
         sources = [anchor(), *[required(f"r{i}", 100, 10) for i in range(11)]]
@@ -186,90 +208,62 @@ class FeasibilityTests(unittest.TestCase):
         self.assertIn("exceed the limit", result.reason)
 
 
-class SemanticChoiceTests(unittest.TestCase):
-    def chosen(self, pool, **kw):
-        sem = semantic(**{k: v for k, v in kw.items() if k in SemanticOptions.__dataclass_fields__})
-        params = kw.get("params", CostParameters())
-        result = optimize(problem([anchor(pool, pool)], sem=sem, params=params, constraints=kw.get("constraints", Constraints())))
-        return result
+class VariantChoiceTests(unittest.TestCase):
+    def chosen(self, pool, *variants, **kw):
+        return optimize(problem([anchor(pool, pool)], variants=variants, **kw))
 
-    def test_a_small_pool_is_verified_in_full(self) -> None:
-        self.assertEqual(self.chosen(50).semantic.kind, A)
+    def test_the_cheaper_variant_is_chosen(self) -> None:
+        self.assertEqual(self.chosen(1_000, exact(1.0), exact(0.5)).variant.name, "exact")
+        result = self.chosen(1_000, ranked(100, 0.1), exact(1.0), params=CostParameters(approximation_min_saving=0.0))
+        self.assertEqual(result.variant.name, "ranked:100")
 
-    def test_a_pool_beyond_the_candidate_cap_must_be_shortlisted_when_recall_allows(self) -> None:
-        self.assertEqual(self.chosen(1_000_000, required_recall=0.0).semantic.kind, B_)
+    def test_a_pool_beyond_the_exact_cap_must_use_the_ranked_read(self) -> None:
+        self.assertEqual(self.chosen(1_000_000, exact(cap=1_000), ranked(1_000)).variant.name, "ranked:1000")
 
-    def test_a_pool_beyond_the_cap_that_no_shortlist_can_cover_declines(self) -> None:
-        # (1000 / 1e6) ** 0.5 = 3% expected recall: no shortlist meets 80%, and verifying everything exceeds the cap
-        self.assertIsInstance(self.chosen(1_000_000), Fallback)
+    def test_nothing_feasible_declines(self) -> None:
+        self.assertIsInstance(self.chosen(1_000_000, exact(cap=1_000), ranked(1_000, min_coverage=0.5)), Fallback)
 
-    def test_a_shortlist_is_chosen_when_it_clearly_saves_work_and_meets_the_recall_requirement(self) -> None:
-        result = self.chosen(1_000, page_size=100, shortlist_start=100, required_recall=0.5)
-        self.assertEqual(result.semantic.kind, B_)
-        # (K / 1000) ** 0.5 >= 0.5  <=>  K >= 250, so the cheapest ladder step that qualifies is 400
-        self.assertEqual(result.semantic.shortlist_size, 400)
+    def test_an_approximate_variant_that_saves_little_loses_to_the_exact_one(self) -> None:
+        # ranked reads 800 rows against 900: ~11% less work, which does not clear the default 20% margin
+        self.assertEqual(self.chosen(900, exact(1.0), ranked(800)).variant.name, "exact")
+        eager = CostParameters(approximation_min_saving=0.0)
+        self.assertEqual(self.chosen(900, exact(1.0), ranked(800), params=eager).variant.name, "ranked:800")
 
-    def test_a_shortlist_that_saves_little_loses_to_the_exact_plan(self) -> None:
-        # K must be 800 for 80% recall: ~20% fewer verifications, which does not clear the margin
-        self.assertEqual(self.chosen(900, page_size=100, shortlist_start=100).semantic.kind, A)
-        eager = CostParameters(shortlist_min_saving=0.0)
-        self.assertEqual(self.chosen(900, page_size=100, shortlist_start=100, params=eager).semantic.kind, B_)
+    def test_the_margin_is_not_applied_when_the_exact_variant_is_infeasible(self) -> None:
+        strict = CostParameters(approximation_min_saving=0.99)
+        self.assertEqual(self.chosen(2_000, exact(cap=1_000), ranked(800), params=strict).variant.name, "ranked:800")
 
-    def test_the_shortlist_must_beat_the_exact_plan_by_the_margin_but_not_when_that_plan_is_infeasible(self) -> None:
-        strict = CostParameters(shortlist_min_saving=0.99)
-        self.assertEqual(self.chosen(2_000, page_size=100, shortlist_start=100, required_recall=0.5, params=strict).semantic.kind, B_)
-
-    def test_a_demanding_recall_requirement_rules_out_the_shortlist(self) -> None:
-        result = self.chosen(900, page_size=100, shortlist_start=100, required_recall=1.0, shortlist_cap=800)
-        self.assertEqual(result.semantic.kind, A)
-        self.assertEqual(self.chosen(900, page_size=100, shortlist_start=100, required_recall=1.0, shortlist_cap=1_000).semantic.kind, A)
-
-    def test_an_ineligible_shortlist_is_never_chosen(self) -> None:
-        self.assertEqual(self.chosen(900, page_size=100, shortlist_allowed=False).semantic.kind, A)
+    def test_a_variant_that_declines_its_own_requirement_is_never_chosen(self) -> None:
+        self.assertEqual(self.chosen(900, exact(1.0), ranked(100, 0.01, min_coverage=0.5)).variant.name, "exact")
 
     def test_the_money_limit_can_force_the_cheaper_plan_or_decline(self) -> None:
-        params = CostParameters(verification=ProviderCost(money_per_candidate=0.01, latency_ms_per_call=1.0, latency_ms_per_candidate=0.1))
-        free = self.chosen(1_000, page_size=100, shortlist_start=100, required_recall=0.5, params=params)
-        self.assertEqual(free.semantic.kind, B_)
-        tight = self.chosen(1_000, page_size=100, shortlist_start=100, required_recall=0.5, params=params, constraints=Constraints(maximum_money=free.estimate.money * 0.99))
+        variants = (exact(0.1, money_per_row=0.01), ranked(400, 0.1, money_per_row=0.01))
+        eager = CostParameters(approximation_min_saving=0.0)
+        free = self.chosen(1_000, *variants, params=eager)
+        self.assertEqual(free.variant.name, "ranked:400")
+        tight = self.chosen(1_000, *variants, params=eager, constraints=Constraints(maximum_money=free.estimate.money * 0.99))
         self.assertIsInstance(tight, Fallback)
-        generous = self.chosen(1_000, page_size=100, shortlist_start=100, required_recall=0.5, params=params, constraints=Constraints(maximum_money=free.estimate.money))
-        self.assertEqual(generous.semantic, free.semantic)
+        generous = self.chosen(1_000, *variants, params=eager, constraints=Constraints(maximum_money=free.estimate.money))
+        self.assertEqual(generous.variant.name, free.variant.name)
 
     def test_the_latency_limit_is_a_hard_constraint(self) -> None:
-        self.assertIsInstance(self.chosen(900, page_size=100, constraints=Constraints(maximum_latency_ms=1.0)), Fallback)
+        self.assertIsInstance(self.chosen(900, exact(1.0), constraints=Constraints(maximum_latency_ms=1.0)), Fallback)
 
     def test_a_ranked_read_is_the_last_narrowing_read_and_is_restricted(self) -> None:
-        # 4,000 IDs survive the required source (restrictable up to 5,000) and are too many to verify
-        sem = semantic(page_size=100, shortlist_start=100, required_recall=0.3)
-        p = problem([anchor(1_000_000, 1_000_000), required("owners", 100_000, 4_000)], sem=sem, keys=5_000)
+        # 4,000 IDs survive the required source (restrictable up to 5,000) and are too many for the exact variant
+        p = problem([anchor(1_000_000, 1_000_000), required("owners", 100_000, 4_000)], variants=[exact(cap=1_000), ranked(100)], keys=5_000)
         result = optimize(p)
-        self.assertEqual(result.semantic.kind, B_)
+        self.assertEqual(result.variant.name, "ranked:100")
         self.assertEqual(order_of(result)[-1], ("anchor", "anchor", True))
 
     def test_a_ranked_read_that_could_not_be_restricted_is_not_offered(self) -> None:
-        sem = semantic(page_size=100, shortlist_start=100, maximum_candidates=1_000)
-        p = problem([anchor(1_000_000, 1_000_000), required("big", 1_000_000, 500_000)], sem=sem, keys=100)
-        result = optimize(p)
-        self.assertTrue(isinstance(result, Fallback) or result.semantic.kind is A)
+        p = problem([anchor(1_000_000, 1_000_000), required("big", 1_000_000, 500_000)], variants=[exact(cap=1_000), ranked(100)], keys=100)
+        self.assertIsInstance(optimize(p), Fallback)
 
-    def test_a_filter_the_sources_did_not_enforce_shrinks_the_verified_pool(self) -> None:
-        full = self.chosen(500, page_size=500, shortlist_allowed=False)
-        half = self.chosen(500, page_size=500, shortlist_allowed=False, unpushed_selectivity=0.5)
-        self.assertLess(half.estimate.money, full.estimate.money)
-
-    def test_the_page_filling_early_caps_the_verification_work(self) -> None:
-        small_page = self.chosen(900, page_size=1, shortlist_allowed=False)
-        big_page = self.chosen(900, page_size=100, shortlist_allowed=False)
-        self.assertLess(small_page.estimate.money, big_page.estimate.money)
-
-    def test_a_custom_recall_model_is_honored(self) -> None:
-        class Perfect:
-            def expected_recall(self, shortlist, pool):
-                return 1.0
-
-        result = self.chosen(900, page_size=100, shortlist_start=100, required_recall=1.0, params=CostParameters(recall_model=Perfect()))
-        self.assertEqual((result.semantic.kind, result.semantic.shortlist_size), (B_, 100))
+    def test_the_decision_is_the_chosen_variants_payload(self) -> None:
+        variant = Variant("tagged", cost=lambda c: Estimate(1.0, 0.0), payload={"why": "toy"})
+        self.assertEqual(self.chosen(10, variant).decision, {"why": "toy"})
+        self.assertIsNone(optimize(problem([anchor(10, 10)])).decision)
 
 
 class RuleTieBreakTests(unittest.TestCase):
@@ -288,26 +282,17 @@ class ParameterValidationTests(unittest.TestCase):
     def test_nonsense_parameters_are_rejected(self) -> None:
         for build in (
             lambda: CostParameters(money_weight=-1),
-            lambda: CostParameters(expected_semantic_selectivity=0),
-            lambda: CostParameters(minimum_expected_recall=1.5),
-            lambda: CostParameters(shortlist_min_saving=1.0),
-            lambda: CostParameters(verifier_batch_size=0),
-            lambda: PowerLawRecall(-1),
-            lambda: SemanticOptions(True, 0, 10, 10, 1, 0.5),
-            lambda: ProviderCost(money_per_call=-1),
+            lambda: CostParameters(approximation_min_saving=1.0),
+            lambda: CostParameters(unpushed_filter_selectivity=0),
+            lambda: CostParameters(maximum_dp_sources=0),
+            lambda: RankedRead(0),
+            lambda: RankedRead(5, -1.0),
             lambda: src("x", StepRole.ANCHOR, -1),
             lambda: problem([required("r", 1, 1)]),                       # no anchor
             lambda: problem([anchor(), anchor()]),                        # duplicate names
         ):
             with self.assertRaises(ValueError):
                 build()
-
-    def test_the_default_recall_model(self) -> None:
-        model = PowerLawRecall(0.5)
-        self.assertEqual(model.expected_recall(100, 50), 1.0)
-        self.assertAlmostEqual(model.expected_recall(25, 100), 0.5)
-        self.assertEqual(PowerLawRecall(1.0).expected_recall(10, 100), 0.1)
-        self.assertEqual(PowerLawRecall(0.0).expected_recall(1, 1_000_000), 1.0)
 
 
 if __name__ == "__main__":

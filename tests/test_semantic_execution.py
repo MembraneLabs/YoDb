@@ -2,206 +2,45 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
-from pathlib import Path
-from tempfile import TemporaryDirectory
 import unittest
+from dataclasses import replace
 
-from yodb.catalog import VectorMetric, load_catalog
+from yodb.catalog import VectorMetric
 from yodb.compilation import PostgresQueryCompiler, QueryCompilerRegistry
 from yodb.errors import ErrorCode, QueryError, QueryExecutionError
 from yodb.execution import QueryExecutionAdapterRegistry, QueryExecutionEngine
-from yodb.planning import (
-    CoordinatorFilter,
-    FederatedPhysicalPlanner,
-    PostgresPlanningAdapter,
-    RecordAssembly,
-    RemoteScan,
-    SemanticPlanPreference,
-    SemanticPolicy,
-    SemanticVerify,
-    SourcePlanningRegistry,
-)
+from yodb.planning import CoordinatorFilter, RecordAssembly, RemoteScan
 from yodb.query import bind_query, parse_query, resolve_query_sources
 from yodb.semantic import (
-    EmbeddingResult,
     ProviderInfo,
+    SemanticExtension,
     SemanticPlanKind,
+    SemanticPlanPreference,
+    SemanticPolicy,
     SemanticRuntime,
-    VerificationResult,
-    VerificationUsage,
-    VerificationVerdict,
+    SemanticVerify,
 )
 
-from test_execution import SourceRowsExecutor, StaticRuntime
-from test_semantic_contract import _active as _unused  # noqa: F401  (keeps import order stable)
-from yodb.inspection import SourceInspection, SourceValidationReport
-from yodb.runtime import CatalogEvaluation, SourceRuntimeState, SourceRuntimeStatus
-from datetime import UTC, datetime
-
-DATASETS = """\
-api_version: yodb/v0.1
-catalog: {name: tickets, version: 1}
-datasets:
-  ticket:
-    description: A support ticket.
-    fields:
-      id:       {type: id,     description: Identity.}
-      subject:  {type: string, description: Subject.}
-      body:     {type: text,   description: Ticket text., semantic_eligible: true}
-      priority: {type: int,    description: Priority.}
-      owner:    {type: string, description: Owner.}
-      memo:     {type: text,   description: Owner memo., semantic_eligible: true}
-"""
-SOURCES = """\
-api_version: yodb/v0.1
-sources:
-  helpdesk:
-    kind: postgres
-    connection_ref: helpdesk
-    read_only: true
-    datasets:
-      ticket:
-        resource: public.tickets
-        identity: [id]
-        fields:
-          id: {physical_name: id}
-          subject: {physical_name: subject}
-          body: {physical_name: body}
-          priority: {physical_name: priority}
-        embeddings:
-          body: {column: body_embedding, model: embed-v1, dimensions: 3, metric: cosine}
-  directory:
-    kind: postgres
-    connection_ref: directory
-    read_only: true
-    datasets:
-      ticket:
-        resource: public.owners
-        identity: [id]
-        fields:
-          id: {physical_name: ticket_id}
-          owner: {physical_name: owner}
-          memo: {physical_name: memo}
-resolution:
-  ticket:
-    identity_source: helpdesk
-    field_sources: {id: helpdesk, subject: helpdesk, body: helpdesk, priority: helpdesk, owner: directory, memo: directory}
-"""
-RELATIONS = """\
-api_version: yodb/v0.1
-relationships:
-  ticket_reference:
-    from: ticket
-    to: ticket
-    description: Placeholder relationship required by the loader.
-    cardinality: one_to_one
-    direction: uni
-    implementations:
-      - from: {source: helpdesk, field: id}
-        to: {source: helpdesk, field: id}
-"""
-_NOW = datetime(2026, 10, 3, tzinfo=UTC)
-EMBEDDER_INFO = ProviderInfo("fake", "embed-v1", "1")
-JUDGE_INFO = ProviderInfo("fake", "judge", "1")
-
-
-def _active() -> CatalogEvaluation:
-    with TemporaryDirectory() as directory:
-        root = Path(directory)
-        for name, text in (("datasets", DATASETS), ("sources", SOURCES), ("relations", RELATIONS)):
-            (root / f"{name}.yaml").write_text(text, encoding="utf-8")
-        catalog = load_catalog(root)
-    return CatalogEvaluation(
-        catalog=catalog,
-        evaluated_at=_NOW,
-        sources={
-            name: SourceRuntimeState(
-                source_name=name,
-                status=SourceRuntimeStatus.VALID,
-                inspection=SourceInspection(source_name=name, source_kind=source.kind, inspected_at=_NOW),
-                validation=SourceValidationReport(source_name=name, inspected_at=_NOW),
-            )
-            for name, source in catalog.sources.items()
-        },
-    )
-
-
-class KeywordVerifier:
-    """Holds iff the proposition's last word occurs in the text (deterministic)."""
-
-    maximum_batch_size = 3
-
-    def __init__(self, *, confidence=0.9, cost_per_candidate=0.01, fail=False, drop=False):
-        self.info = JUDGE_INFO
-        self.confidence = confidence
-        self.cost = cost_per_candidate
-        self.fail = fail
-        self.drop = drop
-        self.calls: list[list[object]] = []
-
-    def verify(self, request):
-        if self.fail:
-            raise RuntimeError("provider down")
-        self.calls.append([c.logical_id for c in request.candidates])
-        needle = request.proposition.split()[-1].lower()
-        verdicts = tuple(
-            VerificationVerdict(
-                c.logical_id,
-                needle in c.text.lower(),
-                self.confidence.get(c.logical_id, 0.9) if isinstance(self.confidence, dict) else self.confidence,
-            )
-            for c in request.candidates
-        )
-        if self.drop:
-            verdicts = verdicts[:-1]
-        usage = VerificationUsage(model_calls=1, input_tokens=10 * len(verdicts), cost=self.cost * len(request.candidates))
-        return VerificationResult(verdicts, usage, JUDGE_INFO)
-
-
-class FakeEmbedder:
-    dimensions = 3
-
-    def __init__(self, info=EMBEDDER_INFO, dimensions=3, fail=False):
-        self.info = info
-        self.dimensions = dimensions
-        self.fail = fail
-        self.requests = []
-
-    def embed(self, request):
-        if self.fail:
-            raise RuntimeError("embed down")
-        self.requests.append(request.texts)
-        return EmbeddingResult(tuple((1.0, 0.0, 0.5) for _ in request.texts), self.info, self.dimensions)
-
-
-def sem(proposition="mentions price", field="body"):
-    return {"semantic": {"field": field, "proposition": proposition}}
-
-
-def q(where, select=("subject",), first=10, order_by=None, **extra):
-    raw = {"from": {"dataset": "ticket"}, "select": list(select), "where": where, "page": {"first": first}, **extra}
-    if order_by:
-        raw["order_by"] = order_by
-    return raw
-
-
-def prio(n=3):
-    return {"field": "priority", "op": "gte", "value": n}
-
-
-TICKETS = tuple(
-    {"id": f"t{i}", "subject": f"S{i}", "body": body, "priority": 5}
-    for i, body in enumerate(
-        ["the PRICE is too high", "love it", "price hike again", "app crashed", "price and cancel", None, "  ", "fine"],
-        start=1,
-    )
+from support.catalogs import SourceRowsExecutor, StaticRuntime
+from support.tickets import (
+    EMBEDDER_INFO,
+    FakeEmbedder,
+    JUDGE_INFO,
+    KeywordVerifier,
+    prio,
+    q,
+    sem,
+    semantic_planner,
+    ticket_catalog,
+    TICKETS,
 )
+
+
 PRICE_IDS = ["t1", "t3", "t5"]
 
 
 def planner_for(policy=SemanticPolicy()):
-    return FederatedPhysicalPlanner(SourcePlanningRegistry([PostgresPlanningAdapter()]), semantic=policy)
+    return semantic_planner(policy)
 
 
 def shortlist_policy(**kwargs):
@@ -211,7 +50,7 @@ def shortlist_policy(**kwargs):
 class Base(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.active = _active()
+        cls.active = ticket_catalog()
 
     def plan(self, raw, policy=SemanticPolicy()):
         bound = bind_query(parse_query(raw), self.active)
@@ -347,8 +186,7 @@ class EngineBase(Base):
             StaticRuntime(self.active),
             QueryCompilerRegistry([PostgresQueryCompiler()]),
             QueryExecutionAdapterRegistry([self.executor]),
-            semantic=semantic,
-            semantic_policy=policy,
+            extensions=(SemanticExtension(semantic, policy=policy),),
         )
 
     def run_query(self, raw, rows=None, **kwargs):
@@ -360,7 +198,7 @@ class PlanAExecutionTests(EngineBase):
     def test_only_records_the_proposition_holds_for_are_returned_with_provenance(self) -> None:
         result = self.run_query(q(sem()))
         self.assertEqual([r["id"] for r in result.rows], PRICE_IDS)
-        report = result.semantic
+        report = result.reports.get("semantic")
         self.assertEqual(report.stats.plan, SemanticPlanKind.VERIFY_ALL)
         self.assertEqual((report.stats.candidates_considered, report.stats.verified, report.stats.qualified), (8, 6, 3))
         self.assertIsNone(report.stats.shortlisted)
@@ -386,7 +224,7 @@ class PlanAExecutionTests(EngineBase):
         # candidates by subject desc: t8 t5 t4 t3 t2 t1; matches are t5 and t3
         self.assertEqual([r["id"] for r in result.rows], ["t5", "t3"])
         self.assertEqual(self.verifier.calls, [["t8", "t5"], ["t4", "t3"]])  # t2, t1 never sent
-        self.assertEqual(result.semantic.stats.verified, 4)
+        self.assertEqual(result.reports.get("semantic").stats.verified, 4)
 
     def test_early_stop_returns_the_same_page_as_verifying_everything(self) -> None:
         for first in (1, 2, 3, 5):
@@ -399,7 +237,7 @@ class PlanAExecutionTests(EngineBase):
         verifier = KeywordVerifier(confidence={"t1": 0.95, "t3": 0.5, "t5": 0.8})
         result = self.run_query(q(sem(), constraints={"minimum_quality": 0.8}), verifier=verifier)
         self.assertEqual([r["id"] for r in result.rows], ["t1", "t5"])
-        self.assertEqual(sorted(result.semantic.records), ["t1", "t5"])
+        self.assertEqual(sorted(result.reports.get("semantic").records), ["t1", "t5"])
 
     def test_the_candidate_cap_stops_the_query_before_any_model_call(self) -> None:
         engine = self.engine({"helpdesk": TICKETS, "directory": ()}, policy=SemanticPolicy(maximum_candidates=5))
@@ -425,7 +263,7 @@ class PlanAExecutionTests(EngineBase):
         self.assertEqual(caught.exception.code, ErrorCode.SEMANTIC_PROVIDER_UNAVAILABLE)
 
     def test_queries_without_a_semantic_term_carry_no_report(self) -> None:
-        self.assertIsNone(self.run_query({"from": {"dataset": "ticket"}, "select": ["subject"]}).semantic)
+        self.assertIsNone(self.run_query({"from": {"dataset": "ticket"}, "select": ["subject"]}).reports.get("semantic"))
 
     def test_multi_source_records_are_enriched_and_filtered_before_verification(self) -> None:
         rows = {
@@ -453,7 +291,7 @@ class PlanBExecutionTests(EngineBase):
         self.assertIn('ORDER BY "body_embedding" <=> %s::vector, "id" ASC', query.sql)
         self.assertEqual(query.parameters, (3, "[1.0,0.0,0.5]", 20))
         self.assertEqual([r["id"] for r in result.rows], ["t1", "t3"])
-        stats = result.semantic.stats
+        stats = result.reports.get("semantic").stats
         self.assertEqual(stats.plan, SemanticPlanKind.VECTOR_SHORTLIST)
         self.assertEqual((stats.candidates_considered, stats.shortlisted, stats.embedding_model_calls), (4, 4, 1))
 
@@ -462,8 +300,8 @@ class PlanBExecutionTests(EngineBase):
         b = self.run_b(q(sem()), rows=shortlist)
         a = self.run_query(q(sem()))
         self.assertEqual([r["id"] for r in a.rows], [r["id"] for r in b.rows])
-        self.assertLess(b.semantic.stats.verified, a.semantic.stats.verified)
-        self.assertLess(b.semantic.stats.usage.cost, a.semantic.stats.usage.cost)
+        self.assertLess(b.reports["semantic"].stats.verified, a.reports["semantic"].stats.verified)
+        self.assertLess(b.reports["semantic"].stats.usage.cost, a.reports["semantic"].stats.usage.cost)
 
     def test_a_required_contributor_runs_first_and_its_ids_restrict_the_ranked_scan(self) -> None:
         rows = {"helpdesk": TICKETS, "directory": ({"id": "t1", "owner": "ann"}, {"id": "t3", "owner": "ann"})}

@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 import math
 from typing import Any
@@ -24,9 +25,10 @@ from .models import (
     BoundNotExpression,
     BoundOrderTerm,
     BoundPredicate,
+    BoundExtensionTerm,
     BoundQuery,
-    BoundSemanticPredicate,
     ComparisonOperator,
+    ExtensionTerm,
     FilterExpression,
     NotExpression,
     OrderTerm,
@@ -34,10 +36,11 @@ from .models import (
     Predicate,
     QueryConstraints,
     QueryRequest,
-    SemanticPredicate,
     SortDirection,
 )
-from .semantic import semantic_predicates, validate_semantic_placement
+from .extensions import TermRegistry, extension_terms, validate_placement
+from .fields import bind_public_field
+from .registry import DEFAULT_TERMS
 
 
 _EQUALITY_OPERATORS = frozenset(
@@ -75,14 +78,17 @@ class QueryValidationPolicy:
     default_page_size: int = 100
     maximum_page_size: int = 500
     maximum_in_values: int = 1_000
-    maximum_semantic_filters: int = 1
-    maximum_proposition_chars: int = 1_000
+    # Per-extension limits by name (e.g. {"semantic": 2}); an extension supplies its own default.
+    limits: Mapping[str, int] = field(default_factory=dict)
+
+    def limit(self, name: str, default: int) -> int:
+        """The configured limit for an extension, or its own default."""
+
+        return self.limits.get(name, default)
 
     def __post_init__(self) -> None:
-        if self.maximum_semantic_filters < 0:
-            raise ValueError("maximum_semantic_filters must not be negative")
-        if self.maximum_proposition_chars <= 0:
-            raise ValueError("maximum_proposition_chars must be positive")
+        if any(value < 0 for value in self.limits.values()):
+            raise ValueError("extension limits must not be negative")
         if self.default_page_size <= 0:
             raise ValueError("default_page_size must be positive")
         if self.maximum_page_size < self.default_page_size:
@@ -96,10 +102,11 @@ def validate_query(
     runtime: InMemoryCatalogRuntime,
     *,
     policy: QueryValidationPolicy = QueryValidationPolicy(),
+    terms: TermRegistry = DEFAULT_TERMS,
 ) -> BoundQuery:
     """Bind a query to the runtime's active catalog or raise a structured error."""
 
-    return bind_query(request, runtime.require_active(), policy=policy)
+    return bind_query(request, runtime.require_active(), policy=policy, terms=terms)
 
 
 def bind_query(
@@ -107,6 +114,7 @@ def bind_query(
     active: CatalogEvaluation,
     *,
     policy: QueryValidationPolicy = QueryValidationPolicy(),
+    terms: TermRegistry = DEFAULT_TERMS,
 ) -> BoundQuery:
     """Validate a parsed request against exactly one active catalog evaluation."""
 
@@ -126,37 +134,39 @@ def bind_query(
         )
     )
     selected_fields = tuple(
-        _bind_public_field(root, field_name, f"select[{index}]")
+        bind_public_field(root, field_name, f"select[{index}]")
         for index, field_name in enumerate(selected_names)
     )
     if "id" not in selected_names:
-        selected_fields = (_bind_public_field(root, "id", "select"), *selected_fields)
+        selected_fields = (bind_public_field(root, "id", "select"), *selected_fields)
 
     bound_filter = (
-        _bind_expression(request.where, root, "where", policy) if request.where is not None else None
+        _bind_expression(request.where, root, "where", policy, terms) if request.where is not None else None
     )
-    validate_semantic_placement(bound_filter, maximum_semantic_filters=policy.maximum_semantic_filters)
+    validate_placement(bound_filter, terms, policy)
     bound_order = _bind_order(request.order_by, root)
     effective_order = _with_id_tiebreaker(bound_order, root)
     page = _validate_page(request.page, policy)
     constraints = request.constraints or QueryConstraints()
     _validate_constraints(constraints, policy)
-    if constraints.minimum_quality is not None and not semantic_predicates(bound_filter):
-        _fail(
-            ErrorCode.QUERY_LIMIT_INVALID,
-            "'constraints.minimum_quality' applies to semantic conditions; the query has none.",
-            "constraints.minimum_quality",
-        )
+    if constraints.minimum_quality is not None:
+        quality_nouns = sorted({e.noun for e in terms if e.uses_minimum_quality})
+        if not any(terms.for_bound(term).uses_minimum_quality for term in extension_terms(bound_filter)):
+            _fail(
+                ErrorCode.QUERY_LIMIT_INVALID,
+                f"'constraints.minimum_quality' applies to {' / '.join(quality_nouns) or 'extension'}s; the query has none.",
+                "constraints.minimum_quality",
+            )
 
-    semantic_payload = {
+    payload = {
         "query_language_version": "yodb/v0.1-query-core",
         "from": {"dataset": root.name, "scope": root.scope},
         "select": sorted(field.name for field in selected_fields),
-        "where": _expression_payload(bound_filter),
+        "where": _expression_payload(bound_filter, terms),
         "order_by": [
             {"field": term.field.name, "direction": term.direction.value} for term in effective_order
         ],
-        "constraints": _semantic_constraints_payload(constraints),
+        "constraints": _constraints_payload(constraints),
     }
     return BoundQuery(
         root=root,
@@ -165,7 +175,7 @@ def bind_query(
         order_by=effective_order,
         page=page,
         constraints=constraints,
-        query_fingerprint=query_fingerprint(semantic_payload),
+        query_fingerprint=query_fingerprint(payload),
         catalog_fingerprint=catalog_fingerprint(catalog),
     )
 
@@ -175,68 +185,38 @@ def _bind_expression(
     root: BoundDataset,
     location: str,
     policy: QueryValidationPolicy,
+    terms: TermRegistry,
 ) -> BoundFilterExpression:
     if isinstance(expression, Predicate):
-        field = _bind_public_field(root, expression.field, f"{location}.field")
+        field = bind_public_field(root, expression.field, f"{location}.field")
         _validate_operator(field, expression, location)
         normalized_value = _normalize_predicate_value(field, expression, location, policy)
         return BoundPredicate(field, expression.operator, normalized_value, expression.value_supplied)
-    if isinstance(expression, SemanticPredicate):
-        return _bind_semantic(expression, root, location, policy)
+    if isinstance(expression, ExtensionTerm):
+        return terms.for_parsed(expression).bind(expression, root, location, policy)
     if isinstance(expression, AllExpression):
         return BoundAllExpression(
             tuple(
-                _bind_expression(item, root, f"{location}.all[{index}]", policy)
+                _bind_expression(item, root, f"{location}.all[{index}]", policy, terms)
                 for index, item in enumerate(expression.expressions)
             )
         )
     if isinstance(expression, AnyExpression):
         return BoundAnyExpression(
             tuple(
-                _bind_expression(item, root, f"{location}.any[{index}]", policy)
+                _bind_expression(item, root, f"{location}.any[{index}]", policy, terms)
                 for index, item in enumerate(expression.expressions)
             )
         )
     if isinstance(expression, NotExpression):
-        return BoundNotExpression(_bind_expression(expression.expression, root, f"{location}.not", policy))
+        return BoundNotExpression(_bind_expression(expression.expression, root, f"{location}.not", policy, terms))
     raise AssertionError(f"Unknown expression: {expression!r}")
-
-
-def _bind_semantic(
-    predicate: SemanticPredicate,
-    root: BoundDataset,
-    location: str,
-    policy: QueryValidationPolicy,
-) -> BoundSemanticPredicate:
-    field = _bind_public_field(root, predicate.field, f"{location}.semantic.field")
-    if field.spec.type not in {LogicalType.STRING, LogicalType.TEXT}:
-        _fail(
-            ErrorCode.QUERY_OPERATOR_NOT_SUPPORTED,
-            f"Field '{field.name}' of type '{field.spec.type.value}' cannot take a semantic condition.",
-            f"{location}.semantic.field",
-        )
-    if not field.spec.semantic_eligible:
-        _fail(
-            ErrorCode.QUERY_OPERATOR_NOT_SUPPORTED,
-            f"Field '{field.name}' is not marked semantic_eligible in the catalog.",
-            f"{location}.semantic.field",
-        )
-    proposition = predicate.proposition.strip()
-    if not proposition:
-        _fail(ErrorCode.QUERY_VALUE_TYPE_INVALID, "A proposition must not be blank.", f"{location}.semantic.proposition")
-    if len(proposition) > policy.maximum_proposition_chars:
-        _fail(
-            ErrorCode.QUERY_LIMIT_INVALID,
-            f"A proposition may not exceed {policy.maximum_proposition_chars} characters.",
-            f"{location}.semantic.proposition",
-        )
-    return BoundSemanticPredicate(field=field, proposition=proposition)
 
 
 def _bind_order(terms: tuple[OrderTerm, ...], root: BoundDataset) -> tuple[BoundOrderTerm, ...]:
     bound: list[BoundOrderTerm] = []
     for index, term in enumerate(terms):
-        field = _bind_public_field(root, term.field, f"order_by[{index}].field")
+        field = bind_public_field(root, term.field, f"order_by[{index}].field")
         if field.spec.type in {LogicalType.JSON, LogicalType.BYTES}:
             _fail(
                 ErrorCode.QUERY_OPERATOR_NOT_SUPPORTED,
@@ -251,20 +231,7 @@ def _with_id_tiebreaker(
     terms: tuple[BoundOrderTerm, ...], root: BoundDataset) -> tuple[BoundOrderTerm, ...]:
     if terms and terms[-1].field.name == "id":
         return terms
-    return (*terms, BoundOrderTerm(_bind_public_field(root, "id", "order_by"), SortDirection.ASC))
-
-
-def _bind_public_field(root: BoundDataset, field_name: str, location: str) -> BoundField:
-    field = root.spec.fields.get(field_name)
-    if field is None:
-        _fail(ErrorCode.FIELD_NOT_FOUND, f"Unknown field '{field_name}' on dataset '{root.name}'.", location)
-    if field.visibility is not Visibility.PUBLIC:
-        _fail(
-            ErrorCode.FIELD_NOT_ACCESSIBLE,
-            f"Field '{field_name}' on dataset '{root.name}' is not publicly queryable.",
-            location,
-        )
-    return BoundField(dataset_name=root.name, scope=root.scope, name=field_name, spec=field)
+    return (*terms, BoundOrderTerm(bind_public_field(root, "id", "order_by"), SortDirection.ASC))
 
 
 def _validate_operator(field: BoundField, predicate: Predicate, location: str) -> None:
@@ -397,7 +364,7 @@ def _validate_constraints(constraints: QueryConstraints, policy: QueryValidation
         )
 
 
-def _expression_payload(expression: BoundFilterExpression | None) -> Any:
+def _expression_payload(expression: BoundFilterExpression | None, terms: TermRegistry) -> Any:
     if expression is None:
         return None
     if isinstance(expression, BoundPredicate):
@@ -407,18 +374,18 @@ def _expression_payload(expression: BoundFilterExpression | None) -> Any:
             "value": expression.value,
             "value_supplied": expression.value_supplied,
         }
-    if isinstance(expression, BoundSemanticPredicate):
-        return {"semantic": {"field": expression.field.name, "proposition": expression.proposition}}
+    if isinstance(expression, BoundExtensionTerm):
+        return terms.for_bound(expression).describe(expression)
     if isinstance(expression, BoundAllExpression):
-        return {"all": sorted((_expression_payload(item) for item in expression.expressions), key=_canonical_sort_key)}
+        return {"all": sorted((_expression_payload(item, terms) for item in expression.expressions), key=_canonical_sort_key)}
     if isinstance(expression, BoundAnyExpression):
-        return {"any": sorted((_expression_payload(item) for item in expression.expressions), key=_canonical_sort_key)}
+        return {"any": sorted((_expression_payload(item, terms) for item in expression.expressions), key=_canonical_sort_key)}
     if isinstance(expression, BoundNotExpression):
-        return {"not": _expression_payload(expression.expression)}
+        return {"not": _expression_payload(expression.expression, terms)}
     raise AssertionError(f"Unknown bound expression: {expression!r}")
 
 
-def _semantic_constraints_payload(constraints: QueryConstraints) -> dict[str, object]:
+def _constraints_payload(constraints: QueryConstraints) -> dict[str, object]:
     """Include only constraints that can alter a query's logical result meaning."""
 
     return {

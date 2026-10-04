@@ -12,14 +12,14 @@ from __future__ import annotations
 
 import json
 import os
-from pathlib import Path
+import psycopg
 import sys
 import time
-from datetime import UTC, datetime
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+from datetime import datetime, UTC
+from pathlib import Path
 
-import psycopg
-
+from yodb.catalog import SourceKind
 from yodb.compilation import PostgresQueryCompiler, QueryCompilerRegistry
 from yodb.connections import (
     MappingPostgresConnectionResolver,
@@ -27,25 +27,27 @@ from yodb.connections import (
     PostgresConnectionSettings,
 )
 from yodb.errors import YoDbError
-from yodb.planning import (
-    ObservationStore,
-    PostgresStatisticsProvider,
-    SemanticPlanPreference,
-    SemanticPolicy,
-    StatisticsService,
+from yodb.execution import PostgresQueryExecutionAdapter, QueryExecutionAdapterRegistry, QueryExecutionEngine
+from yodb.inspection import (
+    InspectionAdapterBinding,
+    PostgresCatalogValidator,
+    PostgresSourceInspector,
+    SourceInspectionRegistry,
 )
-from yodb.catalog import SourceKind
+from yodb.planning import ObservationStore, PostgresStatisticsProvider, StatisticsService
+from yodb.runtime import InMemoryCatalogRuntime
 from yodb.semantic import (
     EmbeddingResult,
     ProviderInfo,
+    SemanticExtension,
+    SemanticPlanPreference,
+    SemanticPolicy,
     SemanticRuntime,
     VerificationResult,
     VerificationUsage,
     VerificationVerdict,
 )
-from yodb.execution import PostgresQueryExecutionAdapter, QueryExecutionAdapterRegistry, QueryExecutionEngine
-from yodb.inspection import InspectionAdapterBinding, PostgresCatalogValidator, PostgresSourceInspector, SourceInspectionRegistry
-from yodb.runtime import InMemoryCatalogRuntime
+
 
 HERE = Path(__file__).parent
 CONNINFO = os.environ.get(
@@ -315,7 +317,7 @@ def run_semantic(cases, engines, executor, oracle_connection, filters, quiet):
                 for entry in executor.log:
                     text = entry["sql"].replace("\n", " ")
                     print(f"    sql[{entry['source']}] {text}  params={entry['params']}  -> {entry['rows']} rows")
-                st = result.semantic.stats
+                st = result.reports["semantic"].stats
                 print(
                     f"    semantic: plan={st.plan.value} considered={st.candidates_considered} shortlisted={st.shortlisted} "
                     f"verified={st.verified} qualified={st.qualified} model_calls={st.usage.model_calls} "
@@ -520,8 +522,8 @@ def main(argv: list[str]) -> int:
     def semantic_engine(**policy):
         info, dims = ToyEmbedder.info, ToyEmbedder.dimensions
         return QueryExecutionEngine(
-            runtime, compilers, registry, semantic=toy,
-            semantic_policy=SemanticPolicy(embedder=info, embedder_dimensions=dims, **policy),
+            runtime, compilers, registry,
+            extensions=(SemanticExtension(toy, policy=SemanticPolicy(embedder=info, embedder_dimensions=dims, **policy)),),
         )
 
     engine = semantic_engine()

@@ -47,12 +47,23 @@ class Predicate:
     value_supplied: bool
 
 
-@dataclass(frozen=True)
-class SemanticPredicate:
-    """Is ``proposition`` true of the record's text ``field``? (before binding)"""
+class ExtensionTerm:
+    """Base of a parsed filter term contributed by an extension operator (see ``extensions``)."""
 
-    field: str
-    proposition: str
+
+class BoundExtensionTerm:
+    """Base of a bound filter term contributed by an extension operator."""
+
+
+class FieldUse(str, Enum):
+    """The logical role a field plays in a source-local query fragment."""
+
+    IDENTITY = "identity"
+    PROJECTION = "projection"
+    FILTER = "filter"
+    ORDER = "order"
+    EXTENSION = "extension"      # read by an extension term (e.g. a semantic condition)
+
 
 @dataclass(frozen=True)
 class AllExpression:
@@ -69,7 +80,7 @@ class NotExpression:
     expression: "FilterExpression"
 
 
-FilterExpression: TypeAlias = Predicate | SemanticPredicate | AllExpression | AnyExpression | NotExpression
+FilterExpression: TypeAlias = Predicate | ExtensionTerm | AllExpression | AnyExpression | NotExpression
 
 
 @dataclass(frozen=True)
@@ -133,18 +144,6 @@ class BoundPredicate:
 
 
 @dataclass(frozen=True)
-class BoundSemanticPredicate:
-    """A validated semantic condition on a public, semantic-eligible text field.
-
-    It asks whether the proposition is *true of the record*.  Vector similarity
-    is never part of its meaning; it is only a possible candidate-generation
-    technique chosen below the logical boundary.
-    """
-
-    field: BoundField
-    proposition: str
-
-@dataclass(frozen=True)
 class BoundAllExpression:
     expressions: tuple["BoundFilterExpression", ...]
 
@@ -161,7 +160,7 @@ class BoundNotExpression:
 
 BoundFilterExpression: TypeAlias = (
     BoundPredicate
-    | BoundSemanticPredicate
+    | BoundExtensionTerm
     | BoundAllExpression
     | BoundAnyExpression
     | BoundNotExpression

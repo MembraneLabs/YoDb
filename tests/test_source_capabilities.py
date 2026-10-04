@@ -8,61 +8,31 @@ executor was written for it.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
-
 import unittest
+from dataclasses import dataclass, replace
 
 from yodb.catalog import LogicalType, SourceKind, VectorMetric
 from yodb.compilation import CompiledOutputColumn, PostgresQueryCompiler, QueryCompilerRegistry
 from yodb.execution import QueryExecutionAdapterRegistry, QueryExecutionEngine
 from yodb.planning import (
-    POSTGRES_CAPABILITIES,
-    BooleanOperator,
     CapabilityPlanningAdapter,
     CoordinatorFilter,
     CoordinatorSortPage,
     FederatedPhysicalPlanner,
     KeyLookupCapability,
+    POSTGRES_CAPABILITIES,
     PostgresPlanningAdapter,
     RemoteScan,
-    SemanticPolicy,
-    SemanticVerify,
-    SourceCapabilities,
     SourceOperationRequest,
     SourcePlanningRegistry,
-    TextOrdering,
     VectorSearchCapability,
 )
-from yodb.query import ComparisonOperator, bind_query, parse_query, resolve_query_sources
-from yodb.semantic import ProviderInfo, SemanticPlanKind
+from yodb.query import bind_query, ComparisonOperator, parse_query, resolve_query_sources
+from yodb.semantic import SemanticExtension, SemanticPlanKind, SemanticPolicy, SemanticVerify
 
-from test_execution import SourceRowsExecutor, StaticRuntime
-from test_planning import _active_catalog as _crm_billing_catalog
-from test_semantic_execution import (
-    EMBEDDER_INFO,
-    TICKETS,
-    FakeEmbedder,
-    KeywordVerifier,
-    _active as _ticket_catalog,
-    prio,
-    q as ticket_query,
-    sem,
-)
-
-STRINGS = frozenset({LogicalType.STRING, LogicalType.ID})
-KIND = SourceKind.NEO4J  # stand-in kind for a second, different database
-
-LIMITED = SourceCapabilities(
-    source_kind=KIND,
-    filter_operators=frozenset({ComparisonOperator.EQ, ComparisonOperator.IN}),
-    filterable_types=STRINGS,
-    boolean_operators=frozenset({BooleanOperator.ALL}),
-    supports_order=False,
-    supports_limit=False,
-    orderable_types=frozenset(),
-    text_ordering=TextOrdering.CODE_POINT,
-    maximum_rows=50,
-)
+from support.capabilities import KIND, LIMITED, STRINGS
+from support.catalogs import crm_billing_catalog as _crm_billing_catalog, SourceRowsExecutor, StaticRuntime
+from support.tickets import EMBEDDER_INFO, prio, q as ticket_query, sem, ticket_catalog as _ticket_catalog
 
 
 def swap_kind(active, source_name):
@@ -75,7 +45,9 @@ def swap_kind(active, source_name):
 
 
 def planner(*adapters, **semantic):
-    return FederatedPhysicalPlanner(SourcePlanningRegistry(list(adapters)), semantic=SemanticPolicy(**semantic))
+    return FederatedPhysicalPlanner(
+        SourcePlanningRegistry(list(adapters)), extensions=(SemanticExtension(policy=SemanticPolicy(**semantic)),)
+    )
 
 
 def nodes(planned):

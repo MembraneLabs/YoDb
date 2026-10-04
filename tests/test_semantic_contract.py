@@ -2,31 +2,32 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+import unittest
+from datetime import datetime, UTC
 from pathlib import Path
 from tempfile import TemporaryDirectory
-import unittest
 
-from yodb.catalog import CatalogValidationError, SourceKind, VectorMetric, load_catalog
+from yodb.catalog import CatalogValidationError, load_catalog, VectorMetric
 from yodb.errors import ErrorCode, QueryError
 from yodb.inspection import SourceInspection, SourceValidationReport
-from yodb.planning import FederatedPhysicalPlanner, PostgresPlanningAdapter, SourcePlanningRegistry
 from yodb.query import (
+    bind_query,
     BoundAllExpression,
     BoundSemanticPredicate,
     DatasetReference,
+    parse_query,
     QueryRequest,
     QueryValidationPolicy,
-    SemanticPredicate,
-    bind_query,
-    parse_query,
     resolve_query_sources,
+    SemanticPredicate,
 )
 from yodb.query.resolution import FieldUse
 from yodb.runtime import CatalogEvaluation, SourceRuntimeState, SourceRuntimeStatus
 from yodb.semantic import (
+    batches,
     EmbeddingRequest,
     EmbeddingResult,
+    passes_quality,
     ProviderInfo,
     SemanticExecutionStats,
     SemanticPlanKind,
@@ -35,9 +36,10 @@ from yodb.semantic import (
     VerificationResult,
     VerificationUsage,
     VerificationVerdict,
-    batches,
-    passes_quality,
 )
+
+from support.tickets import semantic_planner
+
 
 _NOW = datetime(2026, 10, 3, tzinfo=UTC)
 
@@ -193,8 +195,8 @@ class BindingRuleTests(SemanticContractBase):
     def test_semantic_condition_count_is_bounded_by_policy(self) -> None:
         two = {"all": [sem(), sem(proposition="mentions a refund")]}
         self.assertCode(ErrorCode.QUERY_LIMIT_INVALID, self.bind, query(two))
-        self.bind(query(two), policy=QueryValidationPolicy(maximum_semantic_filters=2))
-        self.assertCode(ErrorCode.QUERY_LIMIT_INVALID, self.bind, query(sem()), policy=QueryValidationPolicy(maximum_semantic_filters=0))
+        self.bind(query(two), policy=QueryValidationPolicy(limits={"semantic": 2}))
+        self.assertCode(ErrorCode.QUERY_LIMIT_INVALID, self.bind, query(sem()), policy=QueryValidationPolicy(limits={"semantic": 0}))
 
     def test_proposition_must_be_non_blank_and_bounded(self) -> None:
         self.assertCode(ErrorCode.QUERY_SHAPE_INVALID, self.bind, query(sem(proposition="   ")))  # parser
@@ -227,12 +229,12 @@ class DownstreamTests(SemanticContractBase):
         resolved = resolve_query_sources(self.bind(query(sem())), self.active)
         (source,) = resolved.sources
         uses = {field.field.name: field.uses for field in source.fields}
-        self.assertIn(FieldUse.SEMANTIC, uses["body"])
+        self.assertIn(FieldUse.EXTENSION, uses["body"])
         self.assertNotIn(FieldUse.FILTER, uses["body"])
 
     def test_planner_turns_the_semantic_term_into_a_verification_step(self) -> None:
         resolved = resolve_query_sources(self.bind(query(sem())), self.active)
-        planner = FederatedPhysicalPlanner(SourcePlanningRegistry([PostgresPlanningAdapter()]))
+        planner = semantic_planner()
         kinds = [node.kind for node in planner.plan(resolved).explain.nodes]
         self.assertEqual(kinds, ["remote_scan", "semantic_verify", "coordinator_sort_page", "result_project"])
 

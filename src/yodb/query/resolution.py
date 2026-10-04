@@ -15,7 +15,8 @@ from ..catalog import EmbeddingBinding, SourceKind
 from ..errors import ErrorCode, ErrorDetail, QueryError
 from ..runtime.contracts import CatalogEvaluation
 from .fingerprint import catalog_fingerprint
-from .semantic import semantic_predicates
+from .extensions import TermRegistry, extension_terms
+from .registry import DEFAULT_TERMS
 from .models import (
     BoundAllExpression,
     BoundAnyExpression,
@@ -23,8 +24,9 @@ from .models import (
     BoundFilterExpression,
     BoundNotExpression,
     BoundPredicate,
+    BoundExtensionTerm,
     BoundQuery,
-    BoundSemanticPredicate,
+    FieldUse,
 )
 
 
@@ -33,16 +35,6 @@ class QuerySourceShape(str, Enum):
 
     SINGLE_SOURCE = "single_source"
     MULTI_SOURCE = "multi_source"
-
-
-class FieldUse(str, Enum):
-    """The logical role a field plays in a source-local query fragment."""
-
-    IDENTITY = "identity"
-    PROJECTION = "projection"
-    FILTER = "filter"
-    ORDER = "order"
-    SEMANTIC = "semantic"
 
 
 @dataclass(frozen=True)
@@ -117,7 +109,9 @@ class SourceResolvedQuery:
     logical_id_links: tuple[LogicalIdLink, ...]
 
 
-def resolve_query_sources(query: BoundQuery, active: CatalogEvaluation) -> SourceResolvedQuery:
+def resolve_query_sources(
+    query: BoundQuery, active: CatalogEvaluation, terms: TermRegistry = DEFAULT_TERMS
+) -> SourceResolvedQuery:
     """Resolve fields against the exact active catalog that bound the query.
 
     Every participating source must declare a unique mapping for the root
@@ -147,7 +141,7 @@ def resolve_query_sources(query: BoundQuery, active: CatalogEvaluation) -> Sourc
             f"resolution.{query.root.name}.field_sources.id",
         )
 
-    field_uses = _collect_field_uses(query)
+    field_uses = _collect_field_uses(query, terms)
     source_fields: dict[str, dict[str, frozenset[FieldUse]]] = defaultdict(dict)
     for field_name, uses in field_uses.items():
         source_name = resolution.field_sources.get(field_name)
@@ -279,15 +273,16 @@ def _resolve_field(
     )
 
 
-def _collect_field_uses(query: BoundQuery) -> dict[str, set[FieldUse]]:
+def _collect_field_uses(query: BoundQuery, terms: TermRegistry) -> dict[str, set[FieldUse]]:
     uses: dict[str, set[FieldUse]] = defaultdict(set)
     uses["id"].add(FieldUse.IDENTITY)
     for field in query.select:
         uses[field.name].add(FieldUse.PROJECTION)
     for field in _filter_fields(query.where):
         uses[field.name].add(FieldUse.FILTER)
-    for predicate in semantic_predicates(query.where):
-        uses[predicate.field.name].add(FieldUse.SEMANTIC)
+    for term in extension_terms(query.where):
+        for field, use in terms.for_bound(term).uses(term):
+            uses[field.name].add(use)
     for term in query.order_by:
         uses[term.field.name].add(FieldUse.ORDER)
     return uses
@@ -298,8 +293,8 @@ def _filter_fields(expression: BoundFilterExpression | None) -> tuple[BoundField
         return ()
     if isinstance(expression, BoundPredicate):
         return (expression.field,)
-    if isinstance(expression, BoundSemanticPredicate):
-        return ()  # recorded as FieldUse.SEMANTIC, never as a comparison field
+    if isinstance(expression, BoundExtensionTerm):
+        return ()  # an extension records its own field uses, never a comparison field
     if isinstance(expression, (BoundAllExpression, BoundAnyExpression)):
         return tuple(field for child in expression.expressions for field in _filter_fields(child))
     if isinstance(expression, BoundNotExpression):

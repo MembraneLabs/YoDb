@@ -1,4 +1,4 @@
-"""Cost-based choice of how to read sources and answer a semantic term.
+"""Cost-based choice of how to read sources and which extension variant to use.
 
 The planner always has a correct plan from its fixed rules.  This module finds a
 *cheaper* one when it has enough statistics, and says nothing otherwise.
@@ -9,9 +9,10 @@ What is chosen
   required contributors) are read, and for each read whether the IDs learned so
   far should restrict it;
 * whether enriching (optional) contributors are restricted by the final ID set;
-* how the semantic term is answered: verify everything (Plan A), or verify a
-  shortlist of K ranked rows (Plan B) for the cheapest K that meets the quality
-  requirement.
+* which *variant* of an extension operator to use.  The optimizer knows nothing
+  about what an extension does: it offers :class:`Variant` objects (a cost
+  function, and optionally a demand on how the anchor is read) and the search
+  picks one.
 
 Why dynamic programming works here
 ----------------------------------
@@ -19,9 +20,9 @@ Under the usual independence assumption the number of IDs known after reading a
 *set* of sources does not depend on the order they were read in, so the cheapest
 way to have read a set is the cheapest way to have read a smaller set plus the
 cost of the last read.  That is a DP over subsets: ``2^m * m`` steps instead of
-``m!`` orders.  The semantic term does not disturb it: verification cost depends
-only on the final candidate count (order-independent), and a shortlist is only
-valid as the *last* narrowing read, which is one extra transition.
+``m!`` orders.  An extension does not disturb it: its cost depends only on the
+final candidate count (order-independent), and a ranked-read demand is only valid
+as the *last* narrowing read, which is one extra transition.
 
 Everything is a pure function of :class:`SourceInput` and :class:`CostParameters`,
 so a different cost term, recall model or source behavior is a local change, and
@@ -30,43 +31,15 @@ the brute-force check in the tests uses the very same cost function.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-from dataclasses import dataclass, field
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 import itertools
 import math
-from typing import Protocol
 
-from ..semantic import ProviderCost, SemanticPlanKind
 from .contracts import AssemblyStep, StepRole
 from .statistics import SourceCostProfile
 
 INFINITY = math.inf
-
-
-class RecallModel(Protocol):
-    """Expected fraction of true matches a shortlist of ``shortlist`` rows finds.
-
-    ``pool`` is how many rows the ranking chooses from.  Return 1.0 when the
-    shortlist covers the pool.  Swap this for a model fitted to real data.
-    """
-
-    def expected_recall(self, shortlist: float, pool: float) -> float: ...
-
-
-@dataclass(frozen=True)
-class PowerLawRecall:
-    """``(K / pool) ** exponent``: exponent 1 is a random ranking, 0 is perfect."""
-
-    exponent: float = 0.5
-
-    def __post_init__(self) -> None:
-        if not (math.isfinite(self.exponent) and self.exponent >= 0):
-            raise ValueError("exponent must be a finite non-negative number")
-
-    def expected_recall(self, shortlist: float, pool: float) -> float:
-        if pool <= shortlist or pool <= 0:
-            return 1.0
-        return (shortlist / pool) ** self.exponent
 
 
 @dataclass(frozen=True)
@@ -75,40 +48,23 @@ class CostParameters:
 
     # Latency-equivalent of one unit of money: objective = latency_ms + this * money.
     money_weight: float = 1_000.0
-    verification: ProviderCost = ProviderCost(
-        money_per_call=0.0, money_per_candidate=0.001, latency_ms_per_call=300.0, latency_ms_per_candidate=20.0
-    )
-    embedding: ProviderCost = ProviderCost(money_per_call=0.0001, latency_ms_per_call=80.0)
-    verifier_batch_size: int = 10
-    # Fraction of candidates expected to satisfy the proposition (sets how soon a page fills).
-    expected_semantic_selectivity: float = 0.1
-    # Recall a shortlist must be expected to reach when the caller gave no quality bar.
-    minimum_expected_recall: float = 0.8
-    # Plan B is approximate, so it must beat the exact plan by this fraction to be
-    # preferred (its cost is divided by ``1 - margin`` when compared).  Not applied
-    # when verifying everything is infeasible.
-    shortlist_min_saving: float = 0.2
-    # Extra cost of ranking one row by vector distance.
-    vector_ranking_per_row_ms: float = 0.002
+    # An approximate variant (e.g. a shortlist) must beat the exact one by this
+    # fraction to be preferred (its cost is divided by ``1 - margin`` when
+    # compared).  Not applied when no exact variant is feasible.
+    approximation_min_saving: float = 0.2
     # Fraction of rows kept by filter terms the sources did not enforce.
     unpushed_filter_selectivity: float = 0.5
     maximum_dp_sources: int = 10
-    recall_model: RecallModel = field(default_factory=PowerLawRecall)
 
     def __post_init__(self) -> None:
-        for name in ("money_weight", "vector_ranking_per_row_ms"):
-            value = getattr(self, name)
-            if not (math.isfinite(value) and value >= 0):
-                raise ValueError(f"{name} must be a finite non-negative number")
-        for name in ("expected_semantic_selectivity", "unpushed_filter_selectivity"):
-            if not 0.0 < getattr(self, name) <= 1.0:
-                raise ValueError(f"{name} must be within (0, 1]")
-        if not 0.0 <= self.minimum_expected_recall <= 1.0:
-            raise ValueError("minimum_expected_recall must be within [0, 1]")
-        if not 0.0 <= self.shortlist_min_saving < 1.0:
-            raise ValueError("shortlist_min_saving must be within [0, 1)")
-        if self.verifier_batch_size < 1 or self.maximum_dp_sources < 1:
-            raise ValueError("verifier_batch_size and maximum_dp_sources must be positive")
+        if not (math.isfinite(self.money_weight) and self.money_weight >= 0):
+            raise ValueError("money_weight must be a finite non-negative number")
+        if not 0.0 < self.unpushed_filter_selectivity <= 1.0:
+            raise ValueError("unpushed_filter_selectivity must be within (0, 1]")
+        if not 0.0 <= self.approximation_min_saving < 1.0:
+            raise ValueError("approximation_min_saving must be within [0, 1)")
+        if self.maximum_dp_sources < 1:
+            raise ValueError("maximum_dp_sources must be positive")
 
 
 @dataclass(frozen=True)
@@ -126,24 +82,6 @@ class SourceInput:
     def __post_init__(self) -> None:
         if self.total_rows < 0 or self.filtered_rows < 0:
             raise ValueError("row estimates must not be negative")
-
-
-@dataclass(frozen=True)
-class SemanticOptions:
-    """What the planner knows about answering the semantic term."""
-
-    shortlist_allowed: bool       # Plan B is legal (eligible, anchor is the text's source...)
-    shortlist_start: int          # smallest shortlist worth considering
-    shortlist_cap: int            # largest allowed (candidate cap and the source's own limit)
-    maximum_candidates: int       # more than this reaching the verifier fails at run time
-    page_size: int
-    required_recall: float
-    unpushed_selectivity: float = 1.0   # < 1 when part of the filter still runs in YoDb
-    verify_all_allowed: bool = True     # False when the caller insisted on a shortlist
-
-    def __post_init__(self) -> None:
-        if min(self.shortlist_start, self.shortlist_cap, self.maximum_candidates, self.page_size) < 1:
-            raise ValueError("semantic sizes must be positive")
 
 
 @dataclass(frozen=True)
@@ -169,18 +107,60 @@ class Estimate:
 
 
 @dataclass(frozen=True)
-class SemanticDecision:
-    kind: SemanticPlanKind
-    shortlist_size: int | None
+class RankedRead:
+    """A demand on the combine step: read the anchor *last*, restricted by every
+    required source, returning only its top ``shortlist`` rows.  ``ranking_per_row_ms``
+    is the extra cost of ranking each row the read chooses from."""
+
+    shortlist: int
+    ranking_per_row_ms: float = 0.0
+
+    def __post_init__(self) -> None:
+        if self.shortlist < 1:
+            raise ValueError("shortlist must be positive")
+        if not (math.isfinite(self.ranking_per_row_ms) and self.ranking_per_row_ms >= 0):
+            raise ValueError("ranking_per_row_ms must be a finite non-negative number")
+
+
+@dataclass(frozen=True)
+class Candidates:
+    """What flows out of the combine step into an extension operator."""
+
+    count: float   # rows delivered
+    pool: float    # rows a ranked read chose from (equal to ``count`` when not ranked)
+
+
+@dataclass(frozen=True)
+class Variant:
+    """One legal way to run an extension operator, as the cost model sees it.
+
+    ``cost`` estimates the operator's own work for the candidates it receives,
+    or returns None when this variant cannot satisfy its own requirements (a
+    candidate cap, a quality bar).  ``demand`` states how the anchor must be
+    read for the variant to be valid.  ``payload`` is the operator's own record
+    of the decision, handed back untouched in the result.
+    """
+
+    name: str
+    cost: Callable[[Candidates], Estimate | None]
+    demand: RankedRead | None = None
+    approximate: bool = False
+    payload: object = None
 
 
 @dataclass(frozen=True)
 class OptimizerResult:
     schedule: tuple[AssemblyStep, ...]
-    semantic: SemanticDecision | None
+    variant: Variant | None
     estimate: Estimate
     objective: float
     candidates_considered: int
+
+    @property
+    def decision(self) -> object:
+        """The chosen variant's payload (None when the query has no extension)."""
+
+        return None if self.variant is None else self.variant.payload
 
 
 @dataclass(frozen=True)
@@ -205,7 +185,7 @@ class Problem:
         params: CostParameters,
         *,
         maximum_transfer_keys: int | None,
-        semantic: SemanticOptions | None = None,
+        variants: Sequence[Variant] = (),
         constraints: Constraints = Constraints(),
     ) -> None:
         anchors = [s for s in sources if s.role is StepRole.ANCHOR]
@@ -213,7 +193,7 @@ class Problem:
             raise ValueError("exactly one anchor and unique source names are required")
         self.params = params
         self.transfer_bound = maximum_transfer_keys
-        self.semantic = semantic
+        self.variants = tuple(variants)
         self.constraints = constraints
         self.anchor = anchors[0]
         self.required = [s for s in sources if s.role is StepRole.REQUIRED]
@@ -274,8 +254,8 @@ class Problem:
                 keys *= self.pass_fraction(source)
         return keys
 
-    def ranked_read(self, keys_in: float | None, shortlist: int) -> tuple[_Read, float, float] | None:
-        """Cost, result size, pool size and recall inputs for a ranked anchor read."""
+    def ranked_read(self, keys_in: float | None, demand: RankedRead) -> tuple[_Read, Candidates] | None:
+        """Cost of the anchor read a :class:`RankedRead` demands, and what it delivers."""
 
         anchor = self.anchor
         restrict = bool(self.required)
@@ -286,15 +266,15 @@ class Problem:
             pool = keys_in * self.pass_fraction(anchor)
         else:
             pool = anchor.filtered_rows
-        rows = min(float(shortlist), pool)
+        rows = min(float(demand.shortlist), pool)
         profile = anchor.profile
         latency = (
             profile.call_latency_ms
             + (profile.per_key_latency_ms * keys_in if restrict and keys_in else 0.0)
             + profile.per_row_latency_ms * rows
-            + self.params.vector_ranking_per_row_ms * pool
+            + demand.ranking_per_row_ms * pool
         )
-        return _Read(latency, rows), pool, rows
+        return _Read(latency, rows), Candidates(rows, pool)
 
     def optional_cost(self, keys_in: float) -> float | None:
         total = 0.0
@@ -305,67 +285,53 @@ class Problem:
             total += outcome[0].latency
         return total
 
-    def semantic_estimate(self, candidates: float, kind: SemanticPlanKind) -> Estimate | None:
-        """Latency and money of the verification work for ``candidates`` rows."""
-
-        options = self.semantic
-        assert options is not None
-        params = self.params
-        pool = candidates * options.unpushed_selectivity
-        if kind is SemanticPlanKind.VERIFY_ALL and pool > options.maximum_candidates:
-            return None                                  # would exceed the candidate cap at run time
-        verified = min(pool, options.page_size / params.expected_semantic_selectivity)
-        calls = math.ceil(verified / params.verifier_batch_size) if verified > 0 else 0
-        cost = params.verification
-        latency = calls * cost.latency_ms_per_call + verified * cost.latency_ms_per_candidate
-        money = calls * cost.money_per_call + verified * cost.money_per_candidate
-        if kind is SemanticPlanKind.VECTOR_SHORTLIST:
-            latency += params.embedding.latency_ms_per_call
-            money += params.embedding.money_per_call
-        return Estimate(latency, money)
-
-    def ranking_objective(self, estimate: Estimate, kind: SemanticPlanKind | None) -> float:
-        """The number plans are compared by: the objective, with the approximate plan
-        charged for the margin it must clear to beat the exact one."""
+    def ranking_objective(self, estimate: Estimate, variant: Variant | None) -> float:
+        """The number plans are compared by: the objective, with an approximate
+        variant charged for the margin it must clear to beat an exact one."""
 
         objective = estimate.objective(self.params)
-        if kind is SemanticPlanKind.VECTOR_SHORTLIST:
-            objective /= 1.0 - self.params.shortlist_min_saving
+        if variant is not None and variant.approximate:
+            objective /= 1.0 - self.params.approximation_min_saving
         return objective
+
+    def finish(self, scan_latency: float, candidates: Candidates, variant: Variant | None) -> Estimate | None:
+        """Add the enrichers' reads and the variant's own work to the reading cost."""
+
+        optional = self.optional_cost(candidates.count)
+        if optional is None:
+            return None
+        latency, money = scan_latency + optional, 0.0
+        if variant is not None:
+            own = variant.cost(candidates)
+            if own is None:
+                return None
+            latency += own.latency_ms
+            money += own.money
+        return Estimate(latency, money)
 
     # --- evaluating one explicit plan (used by the tests as the oracle) ----------
 
-    def evaluate(
-        self,
-        order: Sequence[tuple[str, bool]],
-        kind: SemanticPlanKind | None = None,
-        shortlist: int | None = None,
-    ) -> Estimate | None:
+    def evaluate(self, order: Sequence[tuple[str, bool]], variant: Variant | None = None) -> Estimate | None:
         """Estimate of reading the narrowing sources in ``order`` with the given
-        restrict flags, then the optional sources, then the semantic step."""
+        restrict flags, then the enrichers, then the variant's own work."""
 
         if sorted(name for name, _ in order) != sorted(s.name for s in self.narrowing):
             raise ValueError("order must name every narrowing source exactly once")
         by_name = {s.name: s for s in self.narrowing}
         latency = 0.0
         read: frozenset[str] = frozenset()
-        candidates = None
+        candidates: Candidates | None = None
         for index, (name, restrict) in enumerate(order):
             source = by_name[name]
             keys_in = None if not read else self.keys_after(read)
-            last = index == len(order) - 1
-            if kind is SemanticPlanKind.VECTOR_SHORTLIST and source is self.anchor:
-                if not last or shortlist is None:
+            if variant is not None and variant.demand is not None and source is self.anchor:
+                if index != len(order) - 1:
                     return None
-                ranked = self.ranked_read(keys_in, shortlist)
+                ranked = self.ranked_read(keys_in, variant.demand)
                 if ranked is None:
                     return None
-                outcome, pool, rows = ranked
-                latency += outcome.latency
-                candidates = rows
-                recall = self.params.recall_model.expected_recall(float(shortlist), pool)
-                if self.semantic is None or recall < self.semantic.required_recall:
-                    return None
+                latency += ranked[0].latency
+                candidates = ranked[1]
             else:
                 outcome = self.plain_read(source, keys_in, restrict)
                 if outcome is None:
@@ -373,26 +339,21 @@ class Problem:
                 latency += outcome.latency
             read = read | {name}
         if candidates is None:
-            candidates = self.keys_after(read)
-        optional = self.optional_cost(candidates)
-        if optional is None:
-            return None
-        latency += optional
-        money = 0.0
-        if kind is not None:
-            semantic = self.semantic_estimate(candidates, kind)
-            if semantic is None:
-                return None
-            latency += semantic.latency_ms
-            money += semantic.money
-        return Estimate(latency, money)
+            final = self.keys_after(read)
+            candidates = Candidates(final, final)
+        return self.finish(latency, candidates, variant)
 
 
-def optimize(problem: Problem, *, rule_order: Sequence[str] | None = None, rule_kind: SemanticPlanKind | None = None) -> OptimizerResult | Fallback:
-    """Find the cheapest feasible schedule and semantic variant.
+def optimize(
+    problem: Problem,
+    *,
+    rule_order: Sequence[str] | None = None,
+    rule_variant: Variant | None = None,
+) -> OptimizerResult | Fallback:
+    """Find the cheapest feasible schedule and variant.
 
-    ``rule_order``/``rule_kind`` describe the planner's fixed-rule plan; ties are
-    resolved toward it so the optimizer only deviates when strictly cheaper.
+    ``rule_order``/``rule_variant`` describe the planner's fixed-rule plan; ties
+    are resolved toward it so the optimizer only deviates when strictly cheaper.
     """
 
     params = problem.params
@@ -402,7 +363,6 @@ def optimize(problem: Problem, *, rule_order: Sequence[str] | None = None, rule_
     n = len(narrowing)
     names = [s.name for s in narrowing]
     full = (1 << n) - 1
-
     rule_position = {name: i for i, name in enumerate(rule_order or ())}
 
     def closeness(order) -> tuple[int, ...]:
@@ -437,117 +397,73 @@ def optimize(problem: Problem, *, rule_order: Sequence[str] | None = None, rule_
             best[mask] = candidate
 
     considered = 0
-    options: list[tuple[float, Estimate, tuple[tuple[str, bool], ...], SemanticDecision | None]] = []
+    options: list[tuple[float, Estimate, tuple[tuple[str, bool], ...], Variant | None, Candidates]] = []
 
-    def consider(scan_latency: float, order, candidates: float, decision: SemanticDecision | None, kind) -> None:
+    def consider(scan_latency: float, order, candidates: Candidates, variant: Variant | None) -> None:
         nonlocal considered
         considered += 1
-        optional = problem.optional_cost(candidates)
-        if optional is None:
-            return
-        latency, money = scan_latency + optional, 0.0
-        if kind is not None:
-            semantic = problem.semantic_estimate(candidates, kind)
-            if semantic is None:
-                return
-            latency += semantic.latency_ms
-            money += semantic.money
-        estimate = Estimate(latency, money)
-        if estimate.within(problem.constraints):
-            options.append((problem.ranking_objective(estimate, kind), estimate, order, decision))
+        estimate = problem.finish(scan_latency, candidates, variant)
+        if estimate is not None and estimate.within(problem.constraints):
+            options.append((problem.ranking_objective(estimate, variant), estimate, order, variant, candidates))
 
-    semantic = problem.semantic
-    if semantic is None:
-        if full in best:
-            consider(best[full][0], best[full][1], problem.keys_after(frozenset(names)), None, None)
-    else:
-        if full in best and semantic.verify_all_allowed:  # Plan A: any order
-            consider(
-                best[full][0], best[full][1], problem.keys_after(frozenset(names)),
-                SemanticDecision(SemanticPlanKind.VERIFY_ALL, None), SemanticPlanKind.VERIFY_ALL,
-            )
-        anchor_last = full ^ 1  # every narrowing source except the anchor (index 0)
-        if semantic.shortlist_allowed and anchor_last in best:
+    anchor_last = full ^ 1  # every narrowing source except the anchor (index 0)
+    for variant in problem.variants or (None,):
+        demand = None if variant is None else variant.demand
+        if demand is None:
+            if full in best:
+                final = problem.keys_after(frozenset(names))
+                consider(best[full][0], best[full][1], Candidates(final, final), variant)
+        elif anchor_last in best:
             cost_before, order_before = best[anchor_last]
-            read = frozenset(names[1:])
-            keys_in = problem.keys_after(read) if read else None
-            for size in _shortlist_ladder(semantic):
-                ranked = problem.ranked_read(keys_in, size)
-                if ranked is None:
-                    continue
-                outcome, pool, rows = ranked
-                if params.recall_model.expected_recall(float(size), pool) < semantic.required_recall:
-                    continue
-                restricted = bool(problem.required)
+            keys_in = problem.keys_after(frozenset(names[1:])) if len(names) > 1 else None
+            ranked = problem.ranked_read(keys_in, demand)
+            if ranked is not None:
                 consider(
-                    cost_before + outcome.latency,
-                    (*order_before, (problem.anchor.name, restricted)),
-                    rows,
-                    SemanticDecision(SemanticPlanKind.VECTOR_SHORTLIST, size),
-                    SemanticPlanKind.VECTOR_SHORTLIST,
+                    cost_before + ranked[0].latency,
+                    (*order_before, (problem.anchor.name, bool(problem.required))),
+                    ranked[1],
+                    variant,
                 )
     if not options:
         return Fallback("no candidate plan is estimated to satisfy the limits and quality requirement")
 
     def rank(option):
-        objective, _, order, decision = option
+        objective, _, order, variant, _ = option
         matches_rules = (
             rule_order is not None
             and [name for name, _ in order[: len(rule_order)]] == list(rule_order)
-            and (rule_kind is None or (decision is not None and decision.kind is rule_kind))
+            and (rule_variant is None or variant is rule_variant)
         )
         # Lowest objective first; on an exact tie keep the planner's own plan.
         return (objective, 0 if matches_rules else 1)
 
-    objective, estimate, order, decision = min(options, key=rank)
-    candidates_final = (
-        decision is not None and decision.kind is SemanticPlanKind.VECTOR_SHORTLIST and decision.shortlist_size or None
-    )
-    steps = [AssemblyStep(name, StepRole.ANCHOR if name == problem.anchor.name else StepRole.REQUIRED, restrict) for name, restrict in order]
-    keys_final = (
-        problem.ranked_read(problem.keys_after(frozenset(names[1:])) if len(names) > 1 else None, candidates_final)[2]
-        if candidates_final
-        else problem.keys_after(frozenset(names))
-    )
+    objective, estimate, order, variant, candidates = min(options, key=rank)
+    steps = [
+        AssemblyStep(name, StepRole.ANCHOR if name == problem.anchor.name else StepRole.REQUIRED, restrict)
+        for name, restrict in order
+    ]
     for source in problem.optional:
-        outcome = problem.best_read(source, keys_final)
+        outcome = problem.best_read(source, candidates.count)
         steps.append(AssemblyStep(source.name, StepRole.OPTIONAL, bool(outcome and outcome[1])))
-    return OptimizerResult(tuple(steps), decision, estimate, objective, considered)
+    return OptimizerResult(tuple(steps), variant, estimate, objective, considered)
 
 
-def _shortlist_ladder(options: SemanticOptions) -> list[int]:
-    """Shortlist sizes to try: the start, doubling, up to and including the cap."""
-
-    sizes: list[int] = []
-    size = options.shortlist_start
-    while size < options.shortlist_cap:
-        sizes.append(size)
-        size *= 2
-    sizes.append(options.shortlist_cap)
-    return sorted(set(sizes))
-
-
-def brute_force(problem: Problem, *, with_semantic: bool = True) -> tuple[float, Estimate] | None:
-    """Reference answer: try every order, every restrict flag and every semantic variant.
+def brute_force(problem: Problem) -> tuple[float, Estimate] | None:
+    """Reference answer: try every order, every restrict flag and every variant.
 
     Exponential; used by the tests to check the DP finds the same optimum.
     """
 
     best: tuple[float, Estimate] | None = None
     names = [s.name for s in problem.narrowing]
-    variants: list[tuple[SemanticPlanKind | None, int | None]] = [(None, None)]
-    if problem.semantic is not None and with_semantic:
-        variants = [(SemanticPlanKind.VERIFY_ALL, None)] if problem.semantic.verify_all_allowed else []
-        if problem.semantic.shortlist_allowed:
-            variants += [(SemanticPlanKind.VECTOR_SHORTLIST, size) for size in _shortlist_ladder(problem.semantic)]
     for permutation in itertools.permutations(names):
         for flags in itertools.product((True, False), repeat=len(permutation)):
             order = list(zip(permutation, flags))
-            for kind, size in variants:
-                estimate = problem.evaluate(order, kind, size)
+            for variant in problem.variants or (None,):
+                estimate = problem.evaluate(order, variant)
                 if estimate is None or not estimate.within(problem.constraints):
                     continue
-                objective = problem.ranking_objective(estimate, kind)
+                objective = problem.ranking_objective(estimate, variant)
                 if best is None or objective < best[0]:
                     best = (objective, estimate)
     return best

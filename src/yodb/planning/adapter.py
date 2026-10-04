@@ -12,9 +12,9 @@ from ..query.models import (
     BoundAllExpression,
     BoundAnyExpression,
     BoundFilterExpression,
+    BoundExtensionTerm,
     BoundNotExpression,
     BoundPredicate,
-    BoundSemanticPredicate,
 )
 from ..query.resolution import SingleSourceQueryBinding
 from .capabilities import BooleanOperator, SourceCapabilities
@@ -94,8 +94,8 @@ class CapabilityPlanningAdapter(SourcePlanningAdapter):
                 reasons.append(f"the source cannot filter on type '{expression.field.spec.type.value}'")
                 return False
             return True
-        if isinstance(expression, BoundSemanticPredicate):
-            reasons.append("a semantic condition is not a source filter")
+        if isinstance(expression, BoundExtensionTerm):
+            reasons.append("an extension term is not a source filter")
             return False
         if isinstance(expression, (BoundAllExpression, BoundAnyExpression)):
             operator = BooleanOperator.ALL if isinstance(expression, BoundAllExpression) else BooleanOperator.ANY

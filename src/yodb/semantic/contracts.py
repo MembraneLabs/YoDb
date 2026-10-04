@@ -263,6 +263,11 @@ class SemanticQueryReport:
     stats: SemanticExecutionStats
     records: dict[object, SemanticRecordMetadata]
 
+    def restricted_to(self, ids) -> "SemanticQueryReport":
+        """The same report keeping per-record metadata only for the returned rows."""
+
+        return SemanticQueryReport(self.stats, {key: meta for key, meta in self.records.items() if key in ids})
+
 
 @dataclass(frozen=True)
 class SemanticRuntime:

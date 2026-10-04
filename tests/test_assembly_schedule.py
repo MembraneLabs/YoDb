@@ -2,40 +2,28 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
 import unittest
+from dataclasses import replace
 
 from yodb.compilation import PostgresQueryCompiler, QueryCompilerRegistry
 from yodb.execution import ExecutionTrace, QueryExecutionAdapterRegistry
 from yodb.execution.federated import FederatedPlanExecutor
-from yodb.planning import (
-    AssemblyStep,
-    FederatedPhysicalPlanner,
-    PlannerPolicy,
-    PostgresPlanningAdapter,
-    RecordAssembly,
-    SemanticPolicy,
-    SourcePlanningRegistry,
-    StepRole,
-    default_schedule,
+from yodb.planning import AssemblyStep, default_schedule, RecordAssembly, StepRole
+from yodb.semantic import SemanticExtension, SemanticPlanKind, SemanticPolicy, SemanticRuntime
+
+from support.catalogs import SourceRowsExecutor
+from support.tickets import (
+    DIRECTORY,
+    EMBEDDER_INFO,
+    FakeEmbedder,
+    HELPDESK,
+    KeywordVerifier,
+    OWNER,
+    plan,
+    prio,
+    q,
+    sem,
 )
-from yodb.query import bind_query, parse_query, resolve_query_sources
-from yodb.semantic import SemanticPlanKind, SemanticRuntime
-
-from test_execution import SourceRowsExecutor
-from test_semantic_execution import EMBEDDER_INFO, FakeEmbedder, KeywordVerifier, _active, prio, q, sem
-
-ACTIVE = _active()
-OWNER = {"field": "owner", "op": "eq", "value": "ann"}
-HELPDESK = tuple({"id": f"t{i}", "subject": f"S{i}", "body": f"price {i}", "priority": 5} for i in range(1, 7))
-DIRECTORY = (
-    {"id": "t2", "owner": "ann"}, {"id": "t4", "owner": "ann"}, {"id": "t6", "owner": "ann"},
-)
-
-
-def plan(raw, *, policy=PlannerPolicy(), semantic=SemanticPolicy()):
-    planner = FederatedPhysicalPlanner(SourcePlanningRegistry([PostgresPlanningAdapter()]), policy=policy, semantic=semantic)
-    return planner.plan(resolve_query_sources(bind_query(parse_query(raw), ACTIVE), ACTIVE))
 
 
 def assembly_of(planned) -> RecordAssembly:
@@ -54,7 +42,7 @@ def with_assembly(node, **changes):
 def run(planned, helpdesk=HELPDESK, directory=DIRECTORY, semantic=None, trace=None):
     executor = SourceRowsExecutor({"helpdesk": helpdesk, "directory": directory})
     runner = FederatedPlanExecutor(
-        QueryCompilerRegistry([PostgresQueryCompiler()]), QueryExecutionAdapterRegistry([executor]), semantic=semantic
+        QueryCompilerRegistry([PostgresQueryCompiler()]), QueryExecutionAdapterRegistry([executor]), extensions=(SemanticExtension(semantic),)
     )
     rows = runner.execute(planned.plan, trace=trace)
     return rows, executor.queries
@@ -95,7 +83,6 @@ class ScheduleFollowingTests(unittest.TestCase):
 
     def test_an_explicit_anchor_first_schedule_restricts_the_required_scan_by_the_anchor_ids(self) -> None:
         planned = self.planned()
-        node = assembly_of(planned)
         anchor_first = (AssemblyStep("helpdesk", StepRole.ANCHOR), AssemblyStep("directory", StepRole.REQUIRED))
         rows, queries = run(replace(planned, plan=with_assembly(planned.plan, schedule=anchor_first)))
         self.assertEqual(names(queries), ["helpdesk", "directory"])
@@ -148,7 +135,7 @@ class ShortlistSafetyTests(unittest.TestCase):
         anchor = queries[-1]
         self.assertIn("<=>", anchor.sql)
         self.assertIn('"id" IN (', anchor.sql)
-        self.assertEqual(trace.semantic_stats.plan, SemanticPlanKind.VECTOR_SHORTLIST)
+        self.assertEqual(trace.reports["semantic"].stats.plan, SemanticPlanKind.VECTOR_SHORTLIST)
 
     def test_a_learned_set_too_large_to_restrict_the_anchor_falls_back_to_a_plain_scan(self) -> None:
         planned = self.semantic_plan()
@@ -156,8 +143,8 @@ class ShortlistSafetyTests(unittest.TestCase):
         rows, queries, trace = self.execute(planned)
         anchor = queries[-1]
         self.assertNotIn("<=>", anchor.sql)                  # no unrestricted ranked read
-        self.assertEqual(trace.semantic_stats.plan, SemanticPlanKind.VERIFY_ALL)
-        self.assertIsNone(trace.semantic_stats.shortlisted)
+        self.assertEqual(trace.reports["semantic"].stats.plan, SemanticPlanKind.VERIFY_ALL)
+        self.assertIsNone(trace.reports["semantic"].stats.shortlisted)
         self.assertEqual({r["id"] for r in rows}, {"t2", "t4", "t6"})  # still the right answer
 
     def test_the_fallback_scan_keeps_a_row_guard(self) -> None:
@@ -172,7 +159,7 @@ class ShortlistSafetyTests(unittest.TestCase):
         planned = replace(planned, plan=with_assembly(planned.plan, schedule=anchor_first))
         rows, queries, trace = self.execute(planned)
         self.assertNotIn("<=>", queries[0].sql)
-        self.assertEqual(trace.semantic_stats.plan, SemanticPlanKind.VERIFY_ALL)
+        self.assertEqual(trace.reports["semantic"].stats.plan, SemanticPlanKind.VERIFY_ALL)
         self.assertEqual({r["id"] for r in rows}, {"t2", "t4", "t6"})
 
     def test_a_single_source_shortlist_needs_no_restriction(self) -> None:
@@ -180,7 +167,7 @@ class ShortlistSafetyTests(unittest.TestCase):
         trace = ExecutionTrace()
         _, queries = run(planned, semantic=self.runtime(), trace=trace)
         self.assertIn("<=>", queries[0].sql)
-        self.assertEqual(trace.semantic_stats.plan, SemanticPlanKind.VECTOR_SHORTLIST)
+        self.assertEqual(trace.reports["semantic"].stats.plan, SemanticPlanKind.VECTOR_SHORTLIST)
 
 
 def planned_row_cap(planned) -> int:
