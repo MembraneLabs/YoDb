@@ -15,7 +15,7 @@ all of it (no Docker volume is created).
 # 1. start (port 55432, loopback only) and wait until ready
 docker run -d --name yodb-e2e-pg --tmpfs /var/lib/postgresql/data \
   -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=yodb_e2e \
-  -p 127.0.0.1:55432:5432 postgres:16-alpine
+  -p 127.0.0.1:55432:5432 pgvector/pgvector:pg17
 until docker exec yodb-e2e-pg pg_isready -U postgres -d yodb_e2e; do sleep 1; done; sleep 2
 
 # 2. seed tables + the read-only role `yodb_ro` (the only role YoDb uses)
@@ -40,6 +40,16 @@ Exit code is non-zero when any case fails.
 | `support.tickets_summary` | 6 | second contributor; orphan c30, NULL tier (c08) |
 | `billing.dup_accounts` | 3 | duplicate identity -> catalog must be **rejected** (`catalog_dup/`) |
 | `crm.events` | 10,500 | exceeds the 10,000-row scan guard |
+
+## Semantic cases (`V`)
+
+`helpdesk.tickets` (20 tickets, 5-dim keyword-count embeddings built in SQL by
+`helpdesk.toy_embed`; the runner's `ToyEmbedder` computes the same vector) and
+`helpdesk.owners` (second source). Every V case runs under Plan A and Plan B,
+compares with a native SQL keyword oracle, and prints the plan, SQL, and the
+semantic stats (considered / shortlisted / verified / qualified / cost). Needs the
+`pgvector/pgvector` image. On a 20-row table Plan B verifies about as many
+records as Plan A because the shortlist covers the table; savings need a large one.
 
 ## Case families
 

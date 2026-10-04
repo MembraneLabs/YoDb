@@ -1,7 +1,8 @@
 -- Throwaway end-to-end data for YoDb. Run as the postgres superuser against
 -- database yodb_e2e. Idempotent: drops and recreates everything it owns.
-DROP SCHEMA IF EXISTS crm, billing, support CASCADE;
-CREATE SCHEMA crm; CREATE SCHEMA billing; CREATE SCHEMA support;
+CREATE EXTENSION IF NOT EXISTS vector;
+DROP SCHEMA IF EXISTS crm, billing, support, helpdesk CASCADE;
+CREATE SCHEMA crm; CREATE SCHEMA billing; CREATE SCHEMA support; CREATE SCHEMA helpdesk;
 
 -- CRM: identity source for `customer`. 12 customers with NULLs, a duplicate
 -- name (c01/c12 -> tie-break by id), and mixed case ("Acme" vs "acme").
@@ -66,12 +67,50 @@ INSERT INTO billing.dup_accounts VALUES ('c01','a'), ('c01','b'), ('c02','basic'
 CREATE TABLE crm.events (event_id text PRIMARY KEY, label text);
 INSERT INTO crm.events SELECT 'e' || g, 'event-' || g FROM generate_series(1, 10500) g;
 
+-- Semantic search: tickets with a toy 5-dim embedding (keyword counts + bias).
+-- The Python ToyEmbedder in run_e2e.py computes exactly the same vector.
+CREATE FUNCTION helpdesk.kw(t text, k text) RETURNS int LANGUAGE sql IMMUTABLE AS
+  $$ SELECT (length(lower(t)) - length(replace(lower(t), k, ''))) / length(k) $$;
+CREATE FUNCTION helpdesk.toy_embed(t text) RETURNS vector(5) LANGUAGE sql IMMUTABLE AS
+  $$ SELECT ('[' || helpdesk.kw(t,'price') || ',' || helpdesk.kw(t,'cancel') || ',' ||
+             helpdesk.kw(t,'refund') || ',' || helpdesk.kw(t,'bug') || ',1]')::vector(5) $$;
+CREATE TABLE helpdesk.tickets (
+  ticket_id text PRIMARY KEY, subject text, body text, priority integer, body_embedding vector(5)
+);
+INSERT INTO helpdesk.tickets (ticket_id, subject, body, priority) VALUES
+ ('t01','A01','The price is far too high, we may cancel',                5),
+ ('t02','A02','Love the product',                                         2),
+ ('t03','A03','Price increase again, thinking to cancel the plan',         4),
+ ('t04','A04','App crashed, found a bug',                                  3),
+ ('t05','A05','Please refund the price difference',                        5),
+ ('t06','A06',NULL,                                                        5),
+ ('t07','A07','   ',                                                       5),
+ ('t08','A08','We will cancel unless price drops',                         1),
+ ('t09','A09','Great support, no complaints',                              4),
+ ('t10','A10','Cancel my account, price too steep and a bug too',          5),
+ ('t11','A11','Refund requested after bug, no cancel intended',            3),
+ ('t12','A12','PRICE and CANCEL in capitals',                              4),
+ ('t13','A13','Feature request: dark mode',                                2),
+ ('t14','A14','price price price',                                         5),
+ ('t15','A15','Considering to cancel, price comparison with rivals',       3),
+ ('t16','A16','Billing question',                                          4),
+ ('t17','A17','Bug in export',                                             5),
+ ('t18','A18','cancel',                                                    5),
+ ('t19','A19','Price matching, will not cancel',                           2),
+ ('t20','A20','Happy customer',                                            5);
+UPDATE helpdesk.tickets SET body_embedding = helpdesk.toy_embed(body) WHERE body IS NOT NULL;
+-- The owner of each ticket lives in a second source.
+CREATE TABLE helpdesk.owners (ticket_id text PRIMARY KEY, owner text);
+INSERT INTO helpdesk.owners VALUES
+ ('t01','ann'),('t03','ann'),('t04','bob'),('t05','ann'),('t08','bob'),('t10','ann'),
+ ('t12','bob'),('t15','ann'),('t18','ann'),('t19','bob');
+
 -- Least-privilege, read-only role used by YoDb.
 DO $$ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'yodb_ro') THEN
     CREATE ROLE yodb_ro LOGIN PASSWORD 'yodb_ro';
   END IF;
 END $$;
-GRANT USAGE ON SCHEMA crm, billing, support TO yodb_ro;
-GRANT SELECT ON ALL TABLES IN SCHEMA crm, billing, support TO yodb_ro;
+GRANT USAGE ON SCHEMA crm, billing, support, helpdesk TO yodb_ro;
+GRANT SELECT ON ALL TABLES IN SCHEMA crm, billing, support, helpdesk TO yodb_ro;
 ANALYZE;

@@ -46,6 +46,9 @@ class ErrorCode(str, Enum):
     QUERY_PLAN_INVARIANT_VIOLATION = "query_plan_invariant_violation"
     QUERY_ROW_LIMIT_EXCEEDED = "query_row_limit_exceeded"
     QUERY_COORDINATOR_LIMIT_EXCEEDED = "query_coordinator_limit_exceeded"
+    QUERY_SEMANTIC_BUDGET_EXCEEDED = "query_semantic_budget_exceeded"
+    SEMANTIC_PROVIDER_UNAVAILABLE = "semantic_provider_unavailable"
+    SEMANTIC_PROVIDER_FAILED = "semantic_provider_failed"
     QUERY_EXECUTION_UNSUPPORTED = "query_execution_unsupported"
     QUERY_EXECUTION_FAILED = "query_execution_failed"
 

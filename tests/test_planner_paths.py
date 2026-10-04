@@ -245,8 +245,9 @@ class ExecutionTests(unittest.TestCase):
             {"id": "a", "name": "Same", "status": "x"},
             {"id": "c", "name": "Low", "status": "x"},
         )
-        asc = self.ids(_q(["name"], order_by=[{"field": "name", "direction": "asc"}]), crm=crm, billing=())
-        desc = self.ids(_q(["name"], order_by=[{"field": "name", "direction": "desc"}]), crm=crm, billing=())
+        # multi-source, so the order is applied by the coordinator
+        asc = self.ids(_q(["name", "plan"], order_by=[{"field": "name", "direction": "asc"}]), crm=crm, billing=())
+        desc = self.ids(_q(["name", "plan"], order_by=[{"field": "name", "direction": "desc"}]), crm=crm, billing=())
         self.assertEqual(asc, ["c", "a", "b", "d"])   # NULLS LAST
         self.assertEqual(desc, ["d", "a", "b", "c"])  # NULLS FIRST, id ASC tiebreak
 
@@ -255,6 +256,16 @@ class ExecutionTests(unittest.TestCase):
         billing = ({"id": "c1", "plan": "enterprise"}, {"id": "c3", "plan": "enterprise"})
         where = _eq("plan", "enterprise")
         self.assertEqual(self.ids(_q(["name", "plan"], where, [{"field": "name", "direction": "desc"}], 1), billing=billing), ["c1"])
+
+    def test_an_order_and_page_the_source_enforced_are_not_re_sorted(self) -> None:
+        # The source returns rows in its own collation order; Python must not
+        # reorder them (it would use code-point order instead).
+        crm = ({"id": "x", "name": "acme", "status": "s"}, {"id": "y", "name": "Bravo", "status": "s"})
+        rows = self.run_query(_q(["name"], order_by=[{"field": "name", "direction": "asc"}], first=2), crm=crm)
+        self.assertEqual([r["id"] for r in rows], ["x", "y"])
+        # multi-source: the coordinator owns the order, so code-point order applies
+        rows = self.run_query(_q(["name", "plan"], order_by=[{"field": "name", "direction": "asc"}], first=2), crm=crm, billing=())
+        self.assertEqual([r["id"] for r in rows], ["y", "x"])
 
     # --- guards and invariants ------------------------------------------------
 
@@ -281,10 +292,10 @@ class ExecutionTests(unittest.TestCase):
     def test_coordinator_row_cap_applies_to_sort_stage(self) -> None:
         active = _multi_active_catalog()
         planner = FederatedPhysicalPlanner(SourcePlanningRegistry([PostgresPlanningAdapter()]))
-        planned = planner.plan(resolve_query_sources(bind_query(parse_query(_q(["name"])), active), active))
+        planned = planner.plan(resolve_query_sources(bind_query(parse_query(_q(["name", "plan"])), active), active))
         executor = FederatedPlanExecutor(
             QueryCompilerRegistry([PostgresQueryCompiler()]),
-            QueryExecutionAdapterRegistry([SourceRowsExecutor({"crm": self.CRM})]),
+            QueryExecutionAdapterRegistry([SourceRowsExecutor({"crm": self.CRM, "billing": ()})]),
             policy=FederatedExecutionPolicy(maximum_coordinator_rows=2),
         )
         with self.assertRaises(QueryExecutionError) as caught:

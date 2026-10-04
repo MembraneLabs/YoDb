@@ -6,9 +6,11 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Protocol, TypeAlias, runtime_checkable
 
-from ..catalog import SourceKind
+from ..catalog import SourceKind, VectorMetric
 from ..query.models import BoundFilterExpression, BoundOrderTerm, BoundQuery, ComparisonOperator
 from ..query.resolution import ResolvedField, SingleSourceQueryBinding, SourceResolvedQuery
+from ..semantic import SemanticPlanKind
+from .capabilities import SourceCapabilities
 
 
 class PlanLocationKind(str, Enum):
@@ -86,14 +88,31 @@ class SourcePlanningAdapter(Protocol):
     def source_kind(self) -> SourceKind: ...
 
     @property
-    def supports_key_lookup(self) -> bool:
-        """Whether a scan may be restricted to a bounded set of logical IDs."""
+    def capabilities(self) -> "SourceCapabilities":
+        """Everything the planner may rely on this source doing exactly."""
 
     def plan_remote_scan(
         self,
         source: SingleSourceQueryBinding,
         requested: SourceOperationRequest,
     ) -> PushdownDecision: ...
+
+
+@dataclass(frozen=True)
+class VectorSearch:
+    """Return the ``shortlist_size`` rows nearest to the query vector.
+
+    The planner fixes everything except ``query_vector``; the executor fills it
+    in after embedding the proposition.  The search runs under the scan's other
+    filters and key restriction, never instead of them.
+    """
+
+    column: str
+    metric: VectorMetric
+    model: str
+    dimensions: int
+    shortlist_size: int
+    query_vector: tuple[float, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -110,6 +129,10 @@ class RemoteScan:
     # Filled in by the executor at run time (never by the planner): a bounded
     # set of logical IDs learned from another scan, ANDed with ``pushed_filter``.
     key_filter: tuple[object, ...] | None = None
+    vector_search: VectorSearch | None = None
+    # Largest ID set this scan's source accepts as a restriction; None means the
+    # source cannot be restricted, so the executor never tries.
+    key_lookup_limit: int | None = None
 
 
 @dataclass(frozen=True)
@@ -123,6 +146,32 @@ class RecordAssembly:
     # Largest logical-ID set the executor may transfer between sources to
     # restrict a later scan; ``None`` disables transfer.
     maximum_transfer_keys: int | None = None
+
+
+@dataclass(frozen=True)
+class SemanticVerify:
+    """Keep the input records for which the proposition is true.
+
+    Candidates are ordered by ``order_by`` and verified in batches until
+    ``first`` records qualify, so a page that fills early costs fewer model
+    calls.  ``plan`` records whether the input was shortlisted by vector search.
+    """
+
+    input: "PhysicalPlan"
+    field: ResolvedField
+    proposition: str
+    plan: SemanticPlanKind
+    order_by: tuple[BoundOrderTerm, ...]
+    first: int | None
+    minimum_quality: float | None
+    maximum_candidates: int
+    maximum_cost: float | None
+    maximum_latency_ms: int | None
+    embedding_model: str | None
+    embedding_dimensions: int | None
+    properties: PlanProperties
+    # Why this plan was chosen (e.g. why a shortlist was unavailable).
+    choice_reasons: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -143,6 +192,8 @@ class CoordinatorSortPage:
     first: int | None
     after: str | None
     properties: PlanProperties
+    # Why the coordinator, not a source, orders (e.g. collation differences).
+    notes: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -154,7 +205,9 @@ class ResultProject:
     properties: PlanProperties
 
 
-PhysicalPlan: TypeAlias = RemoteScan | RecordAssembly | CoordinatorFilter | CoordinatorSortPage | ResultProject
+PhysicalPlan: TypeAlias = (
+    RemoteScan | RecordAssembly | CoordinatorFilter | SemanticVerify | CoordinatorSortPage | ResultProject
+)
 
 
 @dataclass(frozen=True)
@@ -167,6 +220,7 @@ class PlanExplanationNode:
     ordering: tuple[str, ...] = ()
     limit: int | None = None
     key_transfer_max_keys: int | None = None
+    detail: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

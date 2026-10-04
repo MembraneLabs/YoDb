@@ -11,6 +11,7 @@ from .models import (
     BoundOrderTerm,
     BoundPredicate,
     BoundQuery,
+    BoundSemanticPredicate,
     ComparisonOperator,
     DatasetReference,
     NotExpression,
@@ -19,6 +20,7 @@ from .models import (
     Predicate,
     QueryConstraints,
     QueryRequest,
+    SemanticPredicate,
     SortDirection,
 )
 from .parser import parse_query
@@ -31,6 +33,7 @@ from .resolution import (
     SourceResolvedQuery,
     resolve_query_sources,
 )
+from .semantic import semantic_predicates, validate_semantic_placement
 from .validation import QueryValidationPolicy, bind_query, validate_query
 
 __all__ = [
@@ -44,6 +47,7 @@ __all__ = [
     "BoundOrderTerm",
     "BoundPredicate",
     "BoundQuery",
+    "BoundSemanticPredicate",
     "ComparisonOperator",
     "DatasetReference",
     "FieldUse",
@@ -56,6 +60,7 @@ __all__ = [
     "QueryRequest",
     "QuerySourceShape",
     "QueryValidationPolicy",
+    "SemanticPredicate",
     "SortDirection",
     "ResolvedField",
     "SingleSourceQueryBinding",
@@ -63,5 +68,7 @@ __all__ = [
     "bind_query",
     "parse_query",
     "resolve_query_sources",
+    "semantic_predicates",
     "validate_query",
+    "validate_semantic_placement",
 ]

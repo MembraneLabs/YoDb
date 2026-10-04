@@ -8,6 +8,7 @@ from typing import Any, Mapping, Protocol, runtime_checkable
 
 from ..catalog import SourceKind
 from ..compilation import CompiledQuery
+from ..semantic import SemanticQueryReport
 
 
 LogicalRow = Mapping[str, object]
@@ -24,6 +25,8 @@ class QueryExecutionResult:
     rows: tuple[LogicalRow, ...]
     query_fingerprint: str
     catalog_fingerprint: str
+    # Present only for queries with a semantic condition.
+    semantic: SemanticQueryReport | None = None
 
     @classmethod
     def from_rows(
@@ -32,6 +35,7 @@ class QueryExecutionResult:
         *,
         query_fingerprint: str,
         catalog_fingerprint: str,
+        semantic: SemanticQueryReport | None = None,
     ) -> "QueryExecutionResult":
         """Freeze adapter-returned row mappings before exposing them."""
 
@@ -39,6 +43,7 @@ class QueryExecutionResult:
             rows=tuple(MappingProxyType(dict(row)) for row in rows),
             query_fingerprint=query_fingerprint,
             catalog_fingerprint=catalog_fingerprint,
+            semantic=semantic,
         )
 
 

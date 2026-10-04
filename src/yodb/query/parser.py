@@ -18,6 +18,7 @@ from .models import (
     Predicate,
     QueryConstraints,
     QueryRequest,
+    SemanticPredicate,
     SortDirection,
 )
 
@@ -25,6 +26,7 @@ from .models import (
 _QUERY_KEYS = frozenset({"from", "select", "where", "order_by", "page", "constraints"})
 _FROM_KEYS = frozenset({"dataset", "as"})
 _PREDICATE_KEYS = frozenset({"field", "op", "value"})
+_SEMANTIC_KEYS = frozenset({"field", "proposition"})
 _ORDER_KEYS = frozenset({"field", "direction"})
 _PAGE_KEYS = frozenset({"first", "after"})
 _CONSTRAINT_KEYS = frozenset(
@@ -36,10 +38,16 @@ def parse_query(raw: Mapping[str, Any]) -> QueryRequest:
     """Parse one logical query without accessing the catalog or a source."""
 
     root = _mapping(raw, "query")
-    if "traverse" in root or "semantic" in root:
+    if "traverse" in root:
         _fail(
             ErrorCode.QUERY_FEATURE_NOT_SUPPORTED,
-            "Traversal and semantic search are reserved for a later query-model increment.",
+            "Traversal is reserved for a later query-model increment.",
+        )
+    if "semantic" in root:
+        _fail(
+            ErrorCode.QUERY_FEATURE_NOT_SUPPORTED,
+            "A semantic condition is a filter term: use {'semantic': {'field': ..., 'proposition': ...}} inside 'where'.",
+            "semantic",
         )
     _reject_unknown(root, _QUERY_KEYS, "query")
     if "from" not in root:
@@ -76,6 +84,19 @@ def _parse_select(raw: Any) -> tuple[str, ...] | None:
 def _parse_expression(raw: Any, location: str) -> FilterExpression:
     value = _mapping(raw, location)
     keys = set(value)
+    if "semantic" in keys:
+        if len(keys) != 1:
+            _fail(
+                ErrorCode.QUERY_EXPRESSION_INVALID,
+                "A semantic term must contain only 'semantic'.",
+                location,
+            )
+        body = _mapping(value["semantic"], f"{location}.semantic")
+        _reject_unknown(body, _SEMANTIC_KEYS, f"{location}.semantic")
+        return SemanticPredicate(
+            field=_non_empty_string(body.get("field"), f"{location}.semantic.field"),
+            proposition=_non_empty_string(body.get("proposition"), f"{location}.semantic.proposition"),
+        )
     boolean_keys = keys & {"all", "any", "not"}
     if boolean_keys:
         if len(keys) != 1 or len(boolean_keys) != 1:

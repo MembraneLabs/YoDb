@@ -48,6 +48,13 @@ class Predicate:
 
 
 @dataclass(frozen=True)
+class SemanticPredicate:
+    """Is ``proposition`` true of the record's text ``field``? (before binding)"""
+
+    field: str
+    proposition: str
+
+@dataclass(frozen=True)
 class AllExpression:
     expressions: tuple["FilterExpression", ...]
 
@@ -62,7 +69,7 @@ class NotExpression:
     expression: "FilterExpression"
 
 
-FilterExpression: TypeAlias = Predicate | AllExpression | AnyExpression | NotExpression
+FilterExpression: TypeAlias = Predicate | SemanticPredicate | AllExpression | AnyExpression | NotExpression
 
 
 @dataclass(frozen=True)
@@ -126,6 +133,18 @@ class BoundPredicate:
 
 
 @dataclass(frozen=True)
+class BoundSemanticPredicate:
+    """A validated semantic condition on a public, semantic-eligible text field.
+
+    It asks whether the proposition is *true of the record*.  Vector similarity
+    is never part of its meaning; it is only a possible candidate-generation
+    technique chosen below the logical boundary.
+    """
+
+    field: BoundField
+    proposition: str
+
+@dataclass(frozen=True)
 class BoundAllExpression:
     expressions: tuple["BoundFilterExpression", ...]
 
@@ -141,7 +160,11 @@ class BoundNotExpression:
 
 
 BoundFilterExpression: TypeAlias = (
-    BoundPredicate | BoundAllExpression | BoundAnyExpression | BoundNotExpression
+    BoundPredicate
+    | BoundSemanticPredicate
+    | BoundAllExpression
+    | BoundAnyExpression
+    | BoundNotExpression
 )
 
 

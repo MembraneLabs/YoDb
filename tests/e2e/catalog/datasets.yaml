@@ -23,3 +23,11 @@ datasets:
     fields:
       id:    {type: id,     description: Identity.}
       label: {type: string, description: Label.}
+  ticket:
+    description: A support ticket (semantic search over its text).
+    fields:
+      id:       {type: id,     description: Identity.}
+      subject:  {type: string, description: Subject.}
+      body:     {type: text,   description: Ticket text., semantic_eligible: true}
+      priority: {type: int,    description: Priority.}
+      owner:    {type: string, description: Ticket owner.}

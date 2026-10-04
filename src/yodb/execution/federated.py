@@ -7,12 +7,13 @@ semantics are enforced over normalized rows at the coordinator.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from functools import cmp_to_key
+import time
 from typing import Any
 
 from ..compilation import QueryCompilerRegistry
-from ..errors import ErrorCode, ErrorDetail, QueryExecutionError
+from ..errors import ErrorCode, ErrorDetail, QueryExecutionError, YoDbError
 from ..planning import (
     CoordinatorFilter,
     CoordinatorSortPage,
@@ -20,6 +21,19 @@ from ..planning import (
     RecordAssembly,
     RemoteScan,
     ResultProject,
+    SemanticVerify,
+)
+from ..semantic import (
+    EmbeddingRequest,
+    SemanticExecutionStats,
+    SemanticPlanKind,
+    SemanticRecordMetadata,
+    SemanticRuntime,
+    VerificationCandidate,
+    VerificationRequest,
+    VerificationUsage,
+    batches,
+    passes_quality,
 )
 from ..query.models import (
     BoundAllExpression,
@@ -45,6 +59,20 @@ class FederatedExecutionPolicy:
             raise ValueError("maximum_coordinator_rows must be positive")
 
 
+@dataclass
+class ExecutionTrace:
+    """What an execution observed beyond its rows (filled in by the executor)."""
+
+    semantic_stats: SemanticExecutionStats | None = None
+    semantic_records: dict[object, SemanticRecordMetadata] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class _Run:
+    timeout_seconds: float | None
+    trace: ExecutionTrace | None
+
+
 class FederatedPlanExecutor:
     """Interpret the small physical-plan vocabulary used by V0.1."""
 
@@ -54,20 +82,24 @@ class FederatedPlanExecutor:
         executors: QueryExecutionAdapterRegistry,
         *,
         policy: FederatedExecutionPolicy = FederatedExecutionPolicy(),
+        semantic: SemanticRuntime | None = None,
     ) -> None:
         self._compilers = compilers
         self._executors = executors
         self._policy = policy
+        self._semantic = semantic
 
     def execute(
         self,
         plan: PhysicalPlan,
         *,
         timeout_seconds: float | None = None,
+        trace: ExecutionTrace | None = None,
     ) -> tuple[LogicalRow, ...]:
-        return self._execute(plan, timeout_seconds=timeout_seconds)
+        return self._execute(plan, _Run(timeout_seconds, trace))
 
-    def _execute(self, plan: PhysicalPlan, *, timeout_seconds: float | None) -> tuple[LogicalRow, ...]:
+    def _execute(self, plan: PhysicalPlan, run: _Run) -> tuple[LogicalRow, ...]:
+        timeout_seconds = run.timeout_seconds
         if isinstance(plan, RemoteScan):
             compiler = self._compilers.adapter_for(plan.source.source_kind)
             compiled = compiler.compile_scan(plan)
@@ -85,15 +117,13 @@ class FederatedPlanExecutor:
                 )
             return rows
         if isinstance(plan, RecordAssembly):
-            return self._assemble(plan, timeout_seconds=timeout_seconds)
+            return self._assemble(plan, run)
         if isinstance(plan, CoordinatorFilter):
-            return tuple(
-                row
-                for row in self._execute(plan.input, timeout_seconds=timeout_seconds)
-                if _matches(plan.expression, row)
-            )
+            return tuple(row for row in self._execute(plan.input, run) if _matches(plan.expression, row))
+        if isinstance(plan, SemanticVerify):
+            return self._verify(plan, run)
         if isinstance(plan, CoordinatorSortPage):
-            rows = list(self._execute(plan.input, timeout_seconds=timeout_seconds))
+            rows = list(self._execute(plan.input, run))
             if len(rows) > self._policy.maximum_coordinator_rows:
                 _fail(
                     ErrorCode.QUERY_COORDINATOR_LIMIT_EXCEEDED,
@@ -105,17 +135,122 @@ class FederatedPlanExecutor:
                 rows = rows[: plan.first]
             return tuple(rows)
         if isinstance(plan, ResultProject):
-            rows = self._execute(plan.input, timeout_seconds=timeout_seconds)
+            rows = self._execute(plan.input, run)
             names = tuple(field.field.name for field in plan.projection)
             return tuple({name: row.get(name) for name in names} for row in rows)
         raise AssertionError(f"Unknown physical plan: {plan!r}")
 
-    def _assemble(
-        self,
-        plan: RecordAssembly,
-        *,
-        timeout_seconds: float | None,
-    ) -> tuple[LogicalRow, ...]:
+    def _verify(self, node: SemanticVerify, run: _Run) -> tuple[LogicalRow, ...]:
+        """Verify candidates in the caller's order until the page is full.
+
+        Early stop is exact: the page is the first ``first`` qualifying records
+        in ``order_by`` order, so verifying in that order and stopping when
+        enough qualify returns the same page as verifying everything.
+        """
+
+        runtime = self._semantic
+        if runtime is None:
+            _fail(ErrorCode.SEMANTIC_PROVIDER_UNAVAILABLE, "No verification provider is configured.")
+        started = time.perf_counter()
+        input_plan = node.input
+        embedding_calls = 0
+        shortlisted: int | None = None
+        if node.plan is SemanticPlanKind.VECTOR_SHORTLIST:
+            if runtime.embedder is None:
+                _fail(ErrorCode.SEMANTIC_PROVIDER_UNAVAILABLE, "No embedding provider is configured.")
+            vector = self._embed(runtime.embedder, node, run)
+            input_plan = _with_query_vector(node.input, vector)
+            embedding_calls = 1
+        rows = self._execute(input_plan, run)
+        considered = len(rows)
+        if node.plan is SemanticPlanKind.VECTOR_SHORTLIST:
+            shortlisted = considered
+        if considered > node.maximum_candidates:
+            _fail(
+                ErrorCode.QUERY_SEMANTIC_BUDGET_EXCEEDED,
+                f"{considered} candidates exceed the semantic limit of {node.maximum_candidates}; "
+                "add filters or use a shortlist.",
+            )
+        name = node.field.field.name
+        # A record with no text cannot be judged and never qualifies.
+        candidates = [row for row in rows if isinstance(row.get(name), str) and row[name].strip()]
+        if node.order_by:
+            candidates.sort(key=cmp_to_key(lambda left, right: _compare_rows(left, right, node.order_by)))
+        by_id = {row["id"]: row for row in candidates}
+
+        qualified: list[LogicalRow] = []
+        usage = VerificationUsage()
+        verified = 0
+        info = runtime.verifier.info
+        for batch in batches(
+            tuple(VerificationCandidate(row["id"], row[name]) for row in candidates), runtime.batch_size
+        ):
+            if node.first is not None and len(qualified) >= node.first:
+                break
+            if node.maximum_latency_ms is not None and (time.perf_counter() - started) * 1000 >= node.maximum_latency_ms:
+                _fail(ErrorCode.QUERY_SEMANTIC_BUDGET_EXCEEDED, "The semantic latency budget was exhausted.")
+            request = VerificationRequest(node.proposition, batch, run.timeout_seconds)
+            try:
+                result = runtime.verifier.verify(request)
+                result.require_complete_for(request)
+            except YoDbError:
+                raise
+            except Exception as error:
+                raise QueryExecutionError(
+                    ErrorDetail(
+                        code=ErrorCode.SEMANTIC_PROVIDER_FAILED,
+                        message="The verification provider failed or returned an invalid result.",
+                        retryable=False,
+                    )
+                ) from error
+            usage = usage + result.usage
+            info = result.info
+            verified += len(batch)
+            if node.maximum_cost is not None and usage.cost > node.maximum_cost:
+                _fail(ErrorCode.QUERY_SEMANTIC_BUDGET_EXCEEDED, "The semantic cost budget was exceeded.")
+            verdicts = {verdict.logical_id: verdict for verdict in result.verdicts}
+            for candidate in batch:
+                verdict = verdicts[candidate.logical_id]
+                if passes_quality(verdict, node.minimum_quality):
+                    qualified.append(by_id[candidate.logical_id])
+                    if run.trace is not None:
+                        run.trace.semantic_records[candidate.logical_id] = SemanticRecordMetadata(
+                            plan=node.plan, holds=True, confidence=verdict.confidence, info=info
+                        )
+        if run.trace is not None:
+            run.trace.semantic_stats = SemanticExecutionStats(
+                plan=node.plan,
+                candidates_considered=considered,
+                shortlisted=shortlisted,
+                verified=verified,
+                qualified=len(qualified),
+                usage=usage,
+                embedding_model_calls=embedding_calls,
+            )
+        return tuple(qualified)
+
+    @staticmethod
+    def _embed(embedder, node: SemanticVerify, run: _Run) -> tuple[float, ...]:
+        try:
+            result = embedder.embed(EmbeddingRequest((node.proposition,), run.timeout_seconds))
+        except YoDbError:
+            raise
+        except Exception as error:
+            raise QueryExecutionError(
+                ErrorDetail(
+                    code=ErrorCode.SEMANTIC_PROVIDER_FAILED,
+                    message="The embedding provider failed.",
+                    retryable=False,
+                )
+            ) from error
+        if result.info.model != node.embedding_model or result.dimensions != node.embedding_dimensions or len(result.vectors) != 1:
+            _fail(
+                ErrorCode.QUERY_PLAN_INVARIANT_VIOLATION,
+                "The embedding provider does not match the stored embedding model and dimensions.",
+            )
+        return result.vectors[0]
+
+    def _assemble(self, plan: RecordAssembly, run: _Run) -> tuple[LogicalRow, ...]:
         """Run the scans in a key-transfer order, then left-enrich the anchor.
 
         Contributors with a pushed filter are *required matches*: an anchor row
@@ -133,7 +268,7 @@ class FederatedPlanExecutor:
         required_rows: list[tuple[RemoteScan, tuple[LogicalRow, ...]]] = []
         required_ids: list[set[object]] = []
         for contributor in required:
-            rows = self._scan(contributor, keys, plan.maximum_transfer_keys, timeout_seconds)
+            rows = self._scan(contributor, keys, plan.maximum_transfer_keys, run)
             ids = {row["id"] for row in rows}
             required_rows.append((contributor, rows))
             required_ids.append(ids)
@@ -141,14 +276,14 @@ class FederatedPlanExecutor:
             if not keys:
                 return ()
 
-        anchor_rows = self._scan(plan.anchor, keys, plan.maximum_transfer_keys, timeout_seconds)
+        anchor_rows = self._scan(plan.anchor, keys, plan.maximum_transfer_keys, run)
         self._ensure_unique_ids(anchor_rows, plan.anchor.source.source_name)
         records: dict[object, dict[str, object]] = {row["id"]: dict(row) for row in anchor_rows}
         if not records:
             return ()
 
         optional_rows = [
-            (contributor, self._scan(contributor, set(records), plan.maximum_transfer_keys, timeout_seconds))
+            (contributor, self._scan(contributor, set(records), plan.maximum_transfer_keys, run))
             for contributor in optional
         ]
         for contributor, rows in (*required_rows, *optional_rows):
@@ -168,13 +303,16 @@ class FederatedPlanExecutor:
         scan: RemoteScan,
         keys: set[object] | None,
         maximum_keys: int | None,
-        timeout_seconds: float | None,
+        run: _Run,
     ) -> tuple[LogicalRow, ...]:
         """Execute one scan, restricted to ``keys`` when that set is small enough."""
 
-        if keys is not None and maximum_keys is not None and len(keys) <= maximum_keys:
+        bound = None
+        if maximum_keys is not None and scan.key_lookup_limit is not None:
+            bound = min(maximum_keys, scan.key_lookup_limit)  # the source may accept fewer
+        if keys is not None and bound is not None and len(keys) <= bound:
             scan = replace(scan, key_filter=tuple(sorted(keys, key=str)))
-        rows = self._execute(scan, timeout_seconds=timeout_seconds)
+        rows = self._execute(scan, run)
         self._ensure_unique_ids(rows, scan.source.source_name)
         return rows
 
@@ -187,6 +325,20 @@ class FederatedPlanExecutor:
                 f"Source '{source_name}' returned missing or duplicate logical IDs for record assembly.",
                 source_name=source_name,
             )
+
+
+def _with_query_vector(plan: PhysicalPlan, vector: tuple[float, ...]) -> PhysicalPlan:
+    """Fill the embedded query vector into the one scan that searches by vector."""
+
+    if isinstance(plan, RemoteScan):
+        if plan.vector_search is None:
+            return plan
+        return replace(plan, vector_search=replace(plan.vector_search, query_vector=vector))
+    if isinstance(plan, RecordAssembly):
+        return replace(plan, anchor=_with_query_vector(plan.anchor, vector))
+    if isinstance(plan, CoordinatorFilter):
+        return replace(plan, input=_with_query_vector(plan.input, vector))
+    raise AssertionError(f"Unexpected node under SemanticVerify: {plan!r}")
 
 
 def _matches(expression: BoundFilterExpression | None, row: LogicalRow) -> bool:

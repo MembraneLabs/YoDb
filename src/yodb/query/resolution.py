@@ -8,13 +8,14 @@ those sources can be linked by the dataset's stable logical identity.
 from __future__ import annotations
 
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 
-from ..catalog import SourceKind
+from ..catalog import EmbeddingBinding, SourceKind
 from ..errors import ErrorCode, ErrorDetail, QueryError
 from ..runtime.contracts import CatalogEvaluation
 from .fingerprint import catalog_fingerprint
+from .semantic import semantic_predicates
 from .models import (
     BoundAllExpression,
     BoundAnyExpression,
@@ -23,6 +24,7 @@ from .models import (
     BoundNotExpression,
     BoundPredicate,
     BoundQuery,
+    BoundSemanticPredicate,
 )
 
 
@@ -40,6 +42,7 @@ class FieldUse(str, Enum):
     PROJECTION = "projection"
     FILTER = "filter"
     ORDER = "order"
+    SEMANTIC = "semantic"
 
 
 @dataclass(frozen=True)
@@ -71,6 +74,8 @@ class SingleSourceQueryBinding:
     resource: str
     logical_id: ResolvedField
     fields: tuple[ResolvedField, ...]
+    # Logical text field -> vector column describing it in this source.
+    embeddings: dict[str, EmbeddingBinding] = field(default_factory=dict)
 
     @property
     def projection_fields(self) -> tuple[ResolvedField, ...]:
@@ -219,6 +224,9 @@ def _resolve_source_binding(
         resource=representation.resource,
         logical_id=logical_id,
         fields=resolved_fields,
+        embeddings={
+            name: representation.embeddings[name] for name in fields if name in representation.embeddings
+        },
     )
 
 
@@ -278,6 +286,8 @@ def _collect_field_uses(query: BoundQuery) -> dict[str, set[FieldUse]]:
         uses[field.name].add(FieldUse.PROJECTION)
     for field in _filter_fields(query.where):
         uses[field.name].add(FieldUse.FILTER)
+    for predicate in semantic_predicates(query.where):
+        uses[predicate.field.name].add(FieldUse.SEMANTIC)
     for term in query.order_by:
         uses[term.field.name].add(FieldUse.ORDER)
     return uses
@@ -288,6 +298,8 @@ def _filter_fields(expression: BoundFilterExpression | None) -> tuple[BoundField
         return ()
     if isinstance(expression, BoundPredicate):
         return (expression.field,)
+    if isinstance(expression, BoundSemanticPredicate):
+        return ()  # recorded as FieldUse.SEMANTIC, never as a comparison field
     if isinstance(expression, (BoundAllExpression, BoundAnyExpression)):
         return tuple(field for child in expression.expressions for field in _filter_fields(child))
     if isinstance(expression, BoundNotExpression):

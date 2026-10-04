@@ -27,6 +27,15 @@ from yodb.connections import (
     PostgresConnectionSettings,
 )
 from yodb.errors import YoDbError
+from yodb.planning import SemanticPlanPreference, SemanticPolicy
+from yodb.semantic import (
+    EmbeddingResult,
+    ProviderInfo,
+    SemanticRuntime,
+    VerificationResult,
+    VerificationUsage,
+    VerificationVerdict,
+)
 from yodb.execution import PostgresQueryExecutionAdapter, QueryExecutionAdapterRegistry, QueryExecutionEngine
 from yodb.inspection import InspectionAdapterBinding, PostgresCatalogValidator, PostgresSourceInspector, SourceInspectionRegistry
 from yodb.runtime import InMemoryCatalogRuntime
@@ -178,6 +187,162 @@ CASES = [
 ]
 
 
+# --- semantic cases: toy providers + native-SQL keyword oracle ---------------------
+
+VOCABULARY = ("price", "cancel", "refund", "bug")
+
+
+class ToyEmbedder:
+    """Keyword counts + bias; identical to helpdesk.toy_embed in seed.sql."""
+
+    info = ProviderInfo("toy", "toy-v1", "1")
+    dimensions = 5
+
+    def embed(self, request):
+        vectors = tuple(
+            tuple(float(text.lower().count(word)) for word in VOCABULARY) + (1.0,) for text in request.texts
+        )
+        return EmbeddingResult(vectors, self.info, self.dimensions)
+
+
+class ToyVerifier:
+    """Holds iff every vocabulary word named in the proposition occurs in the text."""
+
+    info = ProviderInfo("toy", "keyword-judge", "1")
+    maximum_batch_size = 5
+
+    def verify(self, request):
+        needles = [w for w in VOCABULARY if w in request.proposition.lower()]
+        verdicts = tuple(
+            VerificationVerdict(c.logical_id, all(n in c.text.lower() for n in needles), 0.95)
+            for c in request.candidates
+        )
+        usage = VerificationUsage(model_calls=1, input_tokens=20 * len(verdicts), cost=0.001 * len(verdicts))
+        return VerificationResult(verdicts, usage, self.info)
+
+
+TICKET_FROM = "helpdesk.tickets t LEFT JOIN helpdesk.owners o ON o.ticket_id = t.ticket_id"
+TICKET_COLUMN = {"id": "t.ticket_id", "subject": "t.subject", "body": "t.body", "priority": "t.priority", "owner": "o.owner"}
+
+
+def keywords_sql(proposition):
+    words = [w for w in VOCABULARY if w in proposition.lower()]
+    return " AND ".join(f"position('{w}' in lower(t.body)) > 0" for w in words)
+
+
+@dataclass
+class SemanticCase:
+    name: str
+    proposition: str
+    where: list                      # extra (non-semantic) filter terms, YoDb syntax
+    sql_where: str = "TRUE"          # their oracle SQL
+    select: tuple = ("subject",)
+    order: list | None = None        # YoDb order_by pairs
+    sql_order: str = "t.ticket_id"
+    first: int = 100
+    constraints: dict | None = None
+    engines: tuple = ("A", "B")      # which plan configurations to run
+    note: str = ""
+
+
+def semantic_query(case):
+    terms = [*case.where, {"semantic": {"field": "body", "proposition": case.proposition}}]
+    query = q(case.select, terms[0] if len(terms) == 1 else AND(*terms), case.order, case.first, dataset="ticket")
+    if case.constraints:
+        query["constraints"] = case.constraints
+    return query
+
+
+SEMANTIC_CASES = [
+    SemanticCase("V01 price AND cancel, priority >= 3", "mentions price and cancel", [p("priority", "gte", 3)], "t.priority >= 3"),
+    SemanticCase("V02 single keyword, no other filter", "mentions refund", []),
+    SemanticCase("V03 page of 2 in subject order (early stop)", "mentions price and cancel", [], order=[("subject", "desc")],
+                 sql_order="t.subject DESC, t.ticket_id", first=2, note="verification stops once the page is full"),
+    SemanticCase("V04 multi-source: owner filter + semantic", "mentions price and cancel", [p("owner", "eq", "ann")], "o.owner = 'ann'",
+                 select=("subject", "owner"), note="owner scan runs first; its ids restrict the ranked scan"),
+    SemanticCase("V05 minimum_quality 0.99 removes every positive", "mentions cancel", [], constraints={"minimum_quality": 0.99},
+                 note="toy verifier reports 0.95"),
+    SemanticCase("V06 no match at all", "mentions price and refund and bug and cancel", []),
+    SemanticCase("V07 shortlist of 3 (recall loss)", "mentions cancel", [], first=3, engines=("A", "Bsmall"),
+                 note="B ranks only the 3 nearest rows; matches ranked lower are never seen. A is the reference"),
+    SemanticCase("V07b shortlist of 3, page of 9", "mentions cancel", [], first=9, engines=("A", "Bsmall"),
+                 note="a page larger than the shortlist: B returns at most its shortlist"),
+    SemanticCase("V08 candidate cap (A with max 5 candidates)", "mentions price", [], engines=("Acap",)),
+]
+
+
+def run_semantic(cases, engines, executor, oracle_connection, filters, quiet):
+    passed = failed = 0
+    failures = []
+    for case in cases:
+        if filters and not any(f.lower() in case.name.lower() for f in filters):
+            continue
+        print(f"\n=== {case.name}")
+        if case.note:
+            print(f"    note: {case.note}")
+        query = semantic_query(case)
+        print(f"    query: {json.dumps(query)}")
+        fields = ["id", *[f for f in case.select if f != "id"]]
+        sql = (
+            f"SELECT {', '.join(TICKET_COLUMN[f] for f in fields)} FROM {TICKET_FROM} "
+            f"WHERE ({case.sql_where}) AND ({keywords_sql(case.proposition)}) ORDER BY {case.sql_order} LIMIT {case.first}"
+        )
+        with oracle_connection.cursor() as cursor:
+            cursor.execute(sql)
+            expected = [tuple(row) for row in cursor.fetchall()]
+        if case.constraints and case.constraints.get("minimum_quality", 0) > 0.95:
+            expected = []  # the toy verifier's confidence is 0.95
+        # Every true match (no page limit): what an approximate shortlist is judged against.
+        with oracle_connection.cursor() as cursor:
+            cursor.execute(sql.rsplit(" LIMIT ", 1)[0])
+            all_matches = {tuple(row) for row in cursor.fetchall()}
+        verified = {}
+        for label in case.engines:
+            engine = engines[label]
+            executor.log.clear()
+            print(f"  -- engine {label}")
+            try:
+                print("    plan:")
+                print("\n".join(format_explain(engine.explain(query))))
+                result = engine.execute(query, timeout_seconds=10)
+                for entry in executor.log:
+                    text = entry["sql"].replace("\n", " ")
+                    print(f"    sql[{entry['source']}] {text}  params={entry['params']}  -> {entry['rows']} rows")
+                st = result.semantic.stats
+                print(
+                    f"    semantic: plan={st.plan.value} considered={st.candidates_considered} shortlisted={st.shortlisted} "
+                    f"verified={st.verified} qualified={st.qualified} model_calls={st.usage.model_calls} "
+                    f"cost={st.usage.cost:.4f} embeddings={st.embedding_model_calls}"
+                )
+                got = [tuple(row.get(f) for f in fields) for row in result.rows]
+                if not quiet:
+                    for row in got[:8]:
+                        print(f"      {row}")
+                verified[label] = st.verified
+                if label == "Bsmall":
+                    ok = set(got) <= all_matches
+                    outcome = (
+                        f"PASS (every row is a true match; returned {len(got)} of the {len(expected)}-row reference page, "
+                        f"{len(all_matches)} true matches exist)"
+                        if ok else "FAIL (returned a non-match)"
+                    )
+                else:
+                    ok = got == expected
+                    outcome = f"PASS ({len(got)} rows match the SQL oracle)" if ok else f"FAIL (expected {expected}, got {got})"
+            except YoDbError as error:
+                print(f"    error: {error.code.value}: {error.detail.message}")
+                ok = label == "Acap" and "budget" in error.code.value
+                outcome = f"PASS (rejected with {error.code.value})" if ok else f"FAIL (unexpected error {error.code.value})"
+            print(f"    => {outcome}")
+            passed += ok
+            if not ok:
+                failed += 1
+                failures.append(f"{case.name} [{label}]")
+        if "A" in verified and "B" in verified:
+            print(f"  -- verifier work: A verified {verified['A']}, B verified {verified['B']}")
+    return passed, failed, failures
+
+
 # --- harness ------------------------------------------------------------------
 
 class RecordingExecutor(PostgresQueryExecutionAdapter):
@@ -224,6 +389,7 @@ def format_explain(explanation) -> list[str]:
             extra.append(f"limit={node.limit}")
         if node.key_transfer_max_keys:
             extra.append(f"key_transfer<={node.key_transfer_max_keys}")
+        extra.extend(d for d in node.detail if d.startswith("note:"))
         lines.append(f"    {node.kind:<22}@{node.location:<12}{' '.join(extra)}")
     return lines
 
@@ -261,7 +427,24 @@ def main(argv: list[str]) -> int:
     print(f"   => {'PASS (rejected before any query can run)' if dup_ok else 'FAIL (activated!)'}")
 
     executor = RecordingExecutor(connections)
-    engine = QueryExecutionEngine(runtime, QueryCompilerRegistry([PostgresQueryCompiler()]), QueryExecutionAdapterRegistry([executor]))
+    toy = SemanticRuntime(ToyVerifier(), ToyEmbedder(), verification_batch_size=5)
+    compilers = QueryCompilerRegistry([PostgresQueryCompiler()])
+    registry = QueryExecutionAdapterRegistry([executor])
+
+    def semantic_engine(**policy):
+        info, dims = ToyEmbedder.info, ToyEmbedder.dimensions
+        return QueryExecutionEngine(
+            runtime, compilers, registry, semantic=toy,
+            semantic_policy=SemanticPolicy(embedder=info, embedder_dimensions=dims, **policy),
+        )
+
+    engine = semantic_engine()
+    semantic_engines = {
+        "B": engine,
+        "A": semantic_engine(preference=SemanticPlanPreference.VERIFY_ALL),
+        "Bsmall": semantic_engine(minimum_shortlist=3, shortlist_oversample=1),
+        "Acap": semantic_engine(preference=SemanticPlanPreference.VERIFY_ALL, maximum_candidates=5),
+    }
     oracle_connection = psycopg.connect(CONNINFO)
     passed = 1 if dup_ok else 0
     failed = 0 if dup_ok else 1
@@ -317,6 +500,8 @@ def main(argv: list[str]) -> int:
         else:
             failed += 1
             failures.append(case.name)
+    sp, sf, sfails = run_semantic(SEMANTIC_CASES, semantic_engines, executor, oracle_connection, filters, quiet)
+    passed, failed, failures = passed + sp, failed + sf, failures + sfails
     oracle_connection.close()
     connections.close()
     print(f"\n== {passed} passed, {failed} failed")

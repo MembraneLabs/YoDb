@@ -107,7 +107,7 @@ class FederatedPhysicalPlannerTests(unittest.TestCase):
                 "page": {"first": 3},
             }
         )
-        scan = planned.plan.input.input  # whole filter pushed: no coordinator filter
+        scan = planned.plan.input  # filter, order and page all pushed: no coordinator nodes
         self.assertIsInstance(scan, RemoteScan)
         self.assertEqual(scan.source.source_name, "crm")
         self.assertIsNotNone(scan.pushed_filter)

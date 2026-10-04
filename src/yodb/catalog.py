@@ -96,10 +96,34 @@ class SourceFieldSpec(StrictModel):
     physical_name: str
 
 
+class VectorMetric(str, Enum):
+    COSINE = "cosine"
+    L2 = "l2"
+    INNER_PRODUCT = "inner_product"
+
+
+class EmbeddingBinding(StrictModel):
+    """A vector column holding precomputed embeddings of one logical text field.
+
+    The embedding is a physical retrieval aid for ``SemanticFilter``; callers
+    never name it.  ``model``, ``dimensions``, ``metric`` and ``version`` must
+    describe how the stored vectors were produced so a query embedding is only
+    ever compared with vectors of the same space.
+    """
+
+    column: str
+    model: str
+    dimensions: int = Field(gt=0)
+    metric: VectorMetric = VectorMetric.COSINE
+    version: str = "1"
+
+
 class SourceDatasetSpec(StrictModel):
     resource: str
     identity: tuple[str, ...] = Field(min_length=1)
     fields: dict[str, SourceFieldSpec]
+    # Logical text field name -> the vector column embedding it in this source.
+    embeddings: dict[str, EmbeddingBinding] = Field(default_factory=dict)
 
 
 class SourceSpec(StrictModel):
@@ -238,6 +262,22 @@ def _validate_catalog(catalog: Catalog) -> None:
                         f"sources.{source_name}.datasets.{dataset_name}.identity field "
                         f"'{identity_field}' is not mapped"
                     )
+            for field_name, embedding in representation.embeddings.items():
+                location = f"sources.{source_name}.datasets.{dataset_name}.embeddings.{field_name}"
+                logical_field = catalog.datasets[dataset_name].fields.get(field_name)
+                if logical_field is None or field_name not in representation.fields:
+                    raise CatalogValidationError(
+                        f"{location} must name a logical field mapped in the same source representation"
+                    )
+                if not logical_field.semantic_eligible or logical_field.type not in {
+                    LogicalType.STRING,
+                    LogicalType.TEXT,
+                }:
+                    raise CatalogValidationError(
+                        f"{location} requires a string/text field with semantic_eligible: true"
+                    )
+                if not embedding.column.strip() or not embedding.model.strip() or not embedding.version.strip():
+                    raise CatalogValidationError(f"{location} column, model and version must not be blank")
 
     _validate_resolutions(catalog)
     _validate_relationships(catalog)

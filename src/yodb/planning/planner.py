@@ -2,18 +2,23 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from enum import Enum
 from hashlib import sha256
 import json
 
+from ..catalog import LogicalType
 from ..errors import ErrorCode, ErrorDetail, QueryError
 from ..query.models import (
     BoundAllExpression,
     BoundFilterExpression,
     BoundPredicate,
+    BoundSemanticPredicate,
     BoundQuery,
     ComparisonOperator,
 )
+from ..query.semantic import semantic_predicates
+from ..semantic import ProviderInfo, SemanticPlanKind
 from ..query.resolution import QuerySourceShape, ResolvedField, SingleSourceQueryBinding, SourceResolvedQuery
 from .contracts import (
     CoordinatorFilter,
@@ -28,10 +33,13 @@ from .contracts import (
     ResultCompleteness,
     ResultProject,
     ResultShape,
+    SemanticVerify,
     SourceOperationRequest,
+    VectorSearch,
     coordinator_location,
     remote_location,
 )
+from .capabilities import TextOrdering
 from .registry import SourcePlanningRegistry
 
 
@@ -51,12 +59,46 @@ class PlannerPolicy:
             raise ValueError("maximum_transfer_keys must not be negative")
 
 
+class SemanticPlanPreference(str, Enum):
+    AUTO = "auto"                          # shortlist when eligible, else verify all
+    VERIFY_ALL = "verify_all"              # always Plan A
+    VECTOR_SHORTLIST = "vector_shortlist"  # Plan B or a planning error
+
+
+@dataclass(frozen=True)
+class SemanticPolicy:
+    """Planner limits and rules for semantic conditions.
+
+    The plan choice here is a fixed rule (shortlist whenever it is eligible),
+    not a cost estimate; statistics-driven choice is a later increment.
+    """
+
+    preference: SemanticPlanPreference = SemanticPlanPreference.AUTO
+    maximum_candidates: int = 1_000     # most records ever sent to the verifier
+    shortlist_oversample: int = 10      # shortlist >= page size x this
+    minimum_shortlist: int = 20
+    # What the configured EmbeddingProvider produces; None means no embedder.
+    embedder: ProviderInfo | None = None
+    embedder_dimensions: int | None = None
+
+    def __post_init__(self) -> None:
+        if min(self.maximum_candidates, self.shortlist_oversample, self.minimum_shortlist) < 1:
+            raise ValueError("semantic limits must be positive")
+
+
 class FederatedPhysicalPlanner:
     """Create a correct, executable baseline before enumerating alternatives."""
 
-    def __init__(self, adapters: SourcePlanningRegistry, *, policy: PlannerPolicy = PlannerPolicy()) -> None:
+    def __init__(
+        self,
+        adapters: SourcePlanningRegistry,
+        *,
+        policy: PlannerPolicy = PlannerPolicy(),
+        semantic: SemanticPolicy = SemanticPolicy(),
+    ) -> None:
         self._adapters = adapters
         self._policy = policy
+        self._semantic = semantic
 
     def plan(self, resolved: SourceResolvedQuery) -> PlannedQuery:
         query = resolved.query
@@ -66,11 +108,26 @@ class FederatedPhysicalPlanner:
                 "Cursor execution is unavailable until signed cursor verification is implemented.",
                 "page.after",
             )
-        scans, fully_pushed = self._build_scans(resolved)
+        semantic = semantic_predicates(query.where)
+        # Everything except the semantic term is planned exactly as before; the
+        # semantic term becomes a SemanticVerify node over the resulting records.
+        core = resolved
+        if semantic:
+            core = replace(resolved, query=replace(query, where=_without_semantic(query.where)))
+        scans, fully_pushed, page_pushed = self._build_scans(core, allow_complete=not semantic)
+        choice = None
+        if semantic:
+            choice = self._choose_semantic_plan(core, semantic[0], scans, fully_pushed)
+            if choice.vector_search is not None:
+                anchor, *rest = scans
+                scans = (
+                    replace(anchor, vector_search=choice.vector_search, limit=choice.vector_search.shortlist_size, maximum_rows=None),
+                    *rest,
+                )
         if resolved.shape is QuerySourceShape.SINGLE_SOURCE:
             current: PhysicalPlan = scans[0]
         else:
-            current = self._assembly(scans, resolved)
+            current = self._assembly(scans, core)
 
         # The coordinator re-evaluates the filter unless every term was
         # accepted by its owning source (then the sources already enforced it
@@ -78,23 +135,45 @@ class FederatedPhysicalPlanner:
         if not fully_pushed:
             current = CoordinatorFilter(
                 input=current,
-                expression=query.where,
+                expression=core.query.where,
                 properties=_properties_from(
                     current.properties,
                     location=coordinator_location(),
                 ),
             )
-        current = CoordinatorSortPage(
-            input=current,
-            order_by=query.order_by,
-            first=query.page.first,
-            after=query.page.after,
-            properties=_properties_from(
-                current.properties,
-                ordering=query.order_by,
-                location=coordinator_location(),
-            ),
-        )
+        if choice is not None:
+            sem = semantic[0]
+            current = SemanticVerify(
+                input=current,
+                field=next(f for scan in scans for f in scan.projection if f.field.name == sem.field.name),
+                proposition=sem.proposition,
+                plan=choice.kind,
+                order_by=query.order_by,
+                first=_effective_limit(query),
+                minimum_quality=query.constraints.minimum_quality,
+                maximum_candidates=self._semantic.maximum_candidates,
+                maximum_cost=query.constraints.maximum_cost,
+                maximum_latency_ms=query.constraints.maximum_latency_ms,
+                embedding_model=None if choice.vector_search is None else choice.vector_search.model,
+                embedding_dimensions=None if choice.vector_search is None else choice.vector_search.dimensions,
+                properties=_properties_from(current.properties, location=coordinator_location()),
+                choice_reasons=choice.reasons,
+            )
+        # When the one source enforced the exact order and page, re-sorting here
+        # would substitute Python's string ordering for the source's collation.
+        if not page_pushed:
+            current = CoordinatorSortPage(
+                input=current,
+                order_by=query.order_by,
+                first=query.page.first,
+                after=query.page.after,
+                notes=self._ordering_notes(query, scans),
+                properties=_properties_from(
+                    current.properties,
+                    ordering=query.order_by,
+                    location=coordinator_location(),
+                ),
+            )
         projection = _result_projection(query, scans)
         current = ResultProject(
             input=current,
@@ -127,8 +206,94 @@ class FederatedPhysicalPlanner:
             explain=explanation,
         )
 
-    def _build_scans(self, resolved: SourceResolvedQuery) -> tuple[tuple[RemoteScan, ...], bool]:
-        """Return the scans and whether sources alone enforce the whole filter.
+    def _ordering_notes(self, query: BoundQuery, scans: tuple[RemoteScan, ...]) -> tuple[str, ...]:
+        """Flag text ordering done by YoDb that the owning source would collate differently."""
+
+        if len(scans) < 2:
+            return ()
+        owner = {f.field.name: f.source_name for scan in scans for f in scan.projection if f.field.name != "id"}
+        differing = sorted(
+            {
+                owner[term.field.name]
+                for term in query.order_by
+                if term.field.spec.type in {LogicalType.STRING, LogicalType.TEXT} and term.field.name in owner
+                and self._adapters.adapter_for(
+                    next(s.source.source_kind for s in scans if s.source.source_name == owner[term.field.name])
+                ).capabilities.text_ordering
+                is TextOrdering.SOURCE_DEFINED
+            }
+        )
+        if not differing:
+            return ()
+        return (
+            "text is ordered by YoDb in code-point order; "
+            f"the owning source's collation differs for: {', '.join(differing)}",
+        )
+
+    def _choose_semantic_plan(
+        self,
+        resolved: SourceResolvedQuery,
+        semantic: BoundSemanticPredicate,
+        scans: tuple[RemoteScan, ...],
+        fully_pushed: bool,
+    ) -> "_SemanticChoice":
+        """Pick Plan A or B by a fixed eligibility rule and say why."""
+
+        reasons: list[str] = []
+        policy = self._semantic
+        anchor = resolved.identity_source
+        core_has_filter = resolved.query.where is not None
+        binding = anchor.embeddings.get(semantic.field.name)
+        if policy.preference is SemanticPlanPreference.VERIFY_ALL:
+            reasons.append("preference is verify_all")
+        else:
+            if binding is None:
+                reasons.append(
+                    "the identity source has no embedding for the field"
+                    if any(f.field.name == semantic.field.name for f in anchor.fields)
+                    else "the text field is not owned by the identity source"
+                )
+            elif policy.embedder is None or policy.embedder_dimensions is None:
+                reasons.append("no embedding provider is configured")
+            elif policy.embedder.model != binding.model or policy.embedder_dimensions != binding.dimensions:
+                reasons.append("the embedding provider does not match the stored embedding model/dimensions")
+            vector_caps = self._adapters.adapter_for(anchor.source_kind).capabilities.vector_search
+            if vector_caps is None:
+                reasons.append("the source cannot do vector search")
+            else:
+                if binding is not None and binding.metric not in vector_caps.metrics:
+                    reasons.append(f"the source cannot rank by '{binding.metric.value}' distance")
+                if not vector_caps.combines_with_filters and (
+                    core_has_filter or resolved.shape is QuerySourceShape.MULTI_SOURCE
+                ):
+                    reasons.append("the source cannot combine vector ranking with other filters or key restrictions")
+            if not fully_pushed:
+                reasons.append("a filter term is not enforced by its source, so a shortlist would precede it")
+        if not reasons:
+            first = _effective_limit(resolved.query)
+            size = min(policy.maximum_candidates, max(policy.minimum_shortlist, first * policy.shortlist_oversample))
+            if vector_caps.maximum_shortlist is not None:
+                size = min(size, vector_caps.maximum_shortlist)
+            return _SemanticChoice(
+                SemanticPlanKind.VECTOR_SHORTLIST,
+                VectorSearch(
+                    column=binding.column,
+                    metric=binding.metric,
+                    model=binding.model,
+                    dimensions=binding.dimensions,
+                    shortlist_size=size,
+                ),
+                (f"shortlist of {size}",),
+            )
+        if policy.preference is SemanticPlanPreference.VECTOR_SHORTLIST:
+            _fail(ErrorCode.QUERY_PLAN_UNSUPPORTED, "Vector shortlist is unavailable: " + "; ".join(reasons), "where")
+        return _SemanticChoice(SemanticPlanKind.VERIFY_ALL, None, tuple(reasons))
+
+    def _build_scans(
+        self, resolved: SourceResolvedQuery, *, allow_complete: bool = True
+    ) -> tuple[tuple[RemoteScan, ...], bool, bool]:
+        """Return the scans, whether sources alone enforce the whole filter, and
+        whether the single source also enforced the exact order and page.
 
         That holds when the single source accepted the entire filter, or when
         the filter is a pure conjunction whose every leaf was accepted by its
@@ -138,10 +303,11 @@ class FederatedPhysicalPlanner:
         """
 
         source_filters = _source_local_filters(resolved)
-        complete = resolved.shape is QuerySourceShape.SINGLE_SOURCE
+        complete = resolved.shape is QuerySourceShape.SINGLE_SOURCE and allow_complete
         total_leaves = _conjunctive_predicates(resolved.query.where)
         pushed_leaves = 0
         every_source_accepted = True
+        page_pushed = False
         scans = []
         for source in resolved.sources:
             projection = _source_projection(source)
@@ -164,6 +330,16 @@ class FederatedPhysicalPlanner:
                     every_source_accepted = False
                 else:
                     pushed_leaves += len(_conjunctive_predicates(requested.filter) or ())
+            if complete:
+                page_pushed = (
+                    decision.accepted_filter is requested.filter
+                    and decision.accepted_order == requested.order_by
+                    and decision.accepted_limit == requested.limit
+                )
+            caps = self._adapters.adapter_for(source.source_kind).capabilities
+            row_cap = self._policy.maximum_rows_per_source
+            if caps.maximum_rows is not None:
+                row_cap = min(row_cap, caps.maximum_rows)
             needs_guard = not complete or decision.accepted_limit != requested.limit
             scans.append(
                 RemoteScan(
@@ -172,7 +348,8 @@ class FederatedPhysicalPlanner:
                     pushed_filter=decision.accepted_filter,
                     order_by=decision.accepted_order,
                     limit=decision.accepted_limit,
-                    maximum_rows=self._policy.maximum_rows_per_source if needs_guard else None,
+                    maximum_rows=row_cap if needs_guard else None,
+                    key_lookup_limit=None if caps.key_lookup is None else caps.key_lookup.maximum_keys,
                     properties=PlanProperties(
                         output_fields=projection,
                         logical_id=source.logical_id,
@@ -193,14 +370,11 @@ class FederatedPhysicalPlanner:
                 and every_source_accepted
                 and pushed_leaves == len(total_leaves)
             )
-        return tuple(scans), fully_pushed
+        return tuple(scans), fully_pushed, page_pushed
 
     def _assembly(self, scans: tuple[RemoteScan, ...], resolved: SourceResolvedQuery) -> RecordAssembly:
         anchor, *contributors = scans
         fields = _deduplicate_fields(field for scan in scans for field in scan.projection)
-        transfer_allowed = self._policy.maximum_transfer_keys > 0 and all(
-            self._adapters.adapter_for(scan.source.source_kind).supports_key_lookup for scan in scans
-        )
         return RecordAssembly(
             anchor=anchor,
             contributors=tuple(contributors),
@@ -222,8 +396,31 @@ class FederatedPhysicalPlanner:
                 result_shape=ResultShape.RECORDS,
                 catalog_fingerprint=resolved.query.catalog_fingerprint,
             ),
-            maximum_transfer_keys=self._policy.maximum_transfer_keys if transfer_allowed else None,
+            # Each scan carries its own source's limit; 0 disables transfer.
+            maximum_transfer_keys=self._policy.maximum_transfer_keys or None,
         )
+
+
+@dataclass(frozen=True)
+class _SemanticChoice:
+    kind: SemanticPlanKind
+    vector_search: VectorSearch | None
+    reasons: tuple[str, ...]
+
+
+def _without_semantic(expression: BoundFilterExpression | None) -> BoundFilterExpression | None:
+    """Drop the semantic conjunct (placement was validated to be conjunctive)."""
+
+    if expression is None or isinstance(expression, BoundPredicate):
+        return expression
+    if isinstance(expression, BoundSemanticPredicate):
+        return None
+    if isinstance(expression, BoundAllExpression):
+        kept = tuple(item for item in (_without_semantic(child) for child in expression.expressions) if item is not None)
+        if not kept:
+            return None
+        return kept[0] if len(kept) == 1 else BoundAllExpression(kept)
+    raise AssertionError(f"A semantic term cannot sit under {type(expression).__name__}")
 
 
 def _source_projection(source: SingleSourceQueryBinding) -> tuple[ResolvedField, ...]:
@@ -346,11 +543,14 @@ def _plan_shape(plan: PhysicalPlan) -> dict[str, object]:
             "order": [(term.field.name, term.direction.value) for term in plan.order_by],
             "limit": plan.limit,
             "maximum_rows": plan.maximum_rows,
+            "vector": None if plan.vector_search is None else [plan.vector_search.metric.value, plan.vector_search.shortlist_size],
         }
     if isinstance(plan, RecordAssembly):
         return {"kind": "record_assembly", "anchor": _plan_shape(plan.anchor), "contributors": [_plan_shape(item) for item in plan.contributors], "required_contributor_matches": list(plan.required_contributor_matches), "maximum_transfer_keys": plan.maximum_transfer_keys}
     if isinstance(plan, CoordinatorFilter):
         return {"kind": "coordinator_filter", "input": _plan_shape(plan.input), "filter": _filter_shape(plan.expression)}
+    if isinstance(plan, SemanticVerify):
+        return {"kind": "semantic_verify", "input": _plan_shape(plan.input), "field": plan.field.field.name, "plan": plan.plan.value, "first": plan.first, "maximum_candidates": plan.maximum_candidates, "minimum_quality": plan.minimum_quality is not None}
     if isinstance(plan, CoordinatorSortPage):
         return {"kind": "coordinator_sort_page", "input": _plan_shape(plan.input), "order": [(term.field.name, term.direction.value) for term in plan.order_by], "first": plan.first}
     if isinstance(plan, ResultProject):
@@ -381,14 +581,19 @@ def _explain_nodes(plan: PhysicalPlan) -> list[PlanExplanationNode]:
                 pushed_filter_fields=_filter_fields(plan.pushed_filter),
                 ordering=tuple(f"{term.field.name} {term.direction.value}" for term in plan.order_by),
                 limit=plan.limit,
+                detail=()
+                if plan.vector_search is None
+                else (f"vector_search={plan.vector_search.metric.value} top {plan.vector_search.shortlist_size}",),
             )
         ]
     if isinstance(plan, RecordAssembly):
         return [*_explain_nodes(plan.anchor), *[node for child in plan.contributors for node in _explain_nodes(child)], PlanExplanationNode("record_assembly", "coordinator", tuple(field.field.name for field in plan.properties.output_fields), key_transfer_max_keys=plan.maximum_transfer_keys)]
     if isinstance(plan, CoordinatorFilter):
         return [*_explain_nodes(plan.input), PlanExplanationNode("coordinator_filter", "coordinator", tuple(field.field.name for field in plan.properties.output_fields), residual_filter=plan.expression is not None)]
+    if isinstance(plan, SemanticVerify):
+        return [*_explain_nodes(plan.input), PlanExplanationNode("semantic_verify", "coordinator", tuple(field.field.name for field in plan.properties.output_fields), limit=plan.first, detail=(f"plan={plan.plan.value}", f"semantic_field={plan.field.field.name}", f"max_candidates={plan.maximum_candidates}", *(f"note: {reason}" for reason in plan.choice_reasons)))]
     if isinstance(plan, CoordinatorSortPage):
-        return [*_explain_nodes(plan.input), PlanExplanationNode("coordinator_sort_page", "coordinator", tuple(field.field.name for field in plan.properties.output_fields), ordering=tuple(f"{term.field.name} {term.direction.value}" for term in plan.order_by), limit=plan.first)]
+        return [*_explain_nodes(plan.input), PlanExplanationNode("coordinator_sort_page", "coordinator", tuple(field.field.name for field in plan.properties.output_fields), ordering=tuple(f"{term.field.name} {term.direction.value}" for term in plan.order_by), limit=plan.first, detail=tuple(f"note: {note}" for note in plan.notes))]
     if isinstance(plan, ResultProject):
         return [*_explain_nodes(plan.input), PlanExplanationNode("result_project", "coordinator", tuple(field.field.name for field in plan.projection))]
     raise AssertionError(f"Unknown physical plan: {plan!r}")

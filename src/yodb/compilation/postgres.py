@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from ..catalog import SourceKind
+from ..catalog import SourceKind, VectorMetric
 from ..errors import ErrorCode, ErrorDetail, QueryError
 from ..query.models import (
     BoundAllExpression,
@@ -17,6 +17,13 @@ from ..query.models import (
 from ..planning import RemoteScan
 from ..query.resolution import QuerySourceShape, ResolvedField, SourceResolvedQuery
 from .contracts import CompiledOutputColumn, CompiledPostgresQuery
+
+# pgvector distance operators: smaller distance = nearer for all three.
+_VECTOR_OPERATORS = {
+    VectorMetric.COSINE: "<=>",
+    VectorMetric.L2: "<->",
+    VectorMetric.INNER_PRODUCT: "<#>",
+}
 
 
 _COMPILED_OPERATORS = frozenset(
@@ -140,10 +147,26 @@ class PostgresQueryCompiler:
             placeholders = ", ".join("%s" for _ in scan.key_filter)
             key_where = f"{_column(scan.source.logical_id)} IN ({placeholders})"
             where = key_where if where is None else f"({where}) AND {key_where}"
+        vector = scan.vector_search
+        if vector is not None:
+            if vector.query_vector is None:
+                _fail(
+                    ErrorCode.QUERY_COMPILATION_UNSUPPORTED,
+                    "A vector-search scan requires the embedded query vector before compilation.",
+                )
+            # Rows without an embedding cannot be ranked; keep them out of the shortlist.
+            not_null = f"{_quote_identifier(vector.column)} IS NOT NULL"
+            where = not_null if where is None else f"({where}) AND {not_null}"
         statements = [f"SELECT {projections}", f"FROM {_resource(scan.source.resource)}"]
         if where is not None:
             statements.append(f"WHERE {where}")
-        if scan.order_by:
+        if vector is not None:
+            parameters.append("[" + ",".join(repr(float(x)) for x in vector.query_vector) + "]")
+            statements.append(
+                f"ORDER BY {_quote_identifier(vector.column)} {_VECTOR_OPERATORS[vector.metric]} %s::vector, "
+                f"{_column(scan.source.logical_id)} ASC"
+            )
+        elif scan.order_by:
             statements.append(
                 "ORDER BY "
                 + ", ".join(
