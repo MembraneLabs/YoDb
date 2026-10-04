@@ -7,7 +7,7 @@ from .contracts import (
     QueryExecutionResult,
 )
 from .engine import QueryExecutionEngine
-from .federated import ExecutionTrace, FederatedExecutionPolicy, FederatedPlanExecutor
+from .federated import ExecutionTrace, FederatedExecutionPolicy, FederatedPlanExecutor, ScanActual
 from .postgres import PostgresQueryExecutionAdapter
 from .registry import QueryExecutionAdapterRegistry
 
@@ -20,6 +20,7 @@ __all__ = [
     "QueryExecutionEngine",
     "QueryExecutionResult",
     "ExecutionTrace",
+    "ScanActual",
     "FederatedExecutionPolicy",
     "FederatedPlanExecutor",
 ]

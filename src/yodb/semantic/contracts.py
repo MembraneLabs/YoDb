@@ -236,6 +236,27 @@ class SemanticExecutionStats:
 
 
 @dataclass(frozen=True)
+class ProviderCost:
+    """What one provider call is expected to cost, for planning (not billing).
+
+    A provider may expose this as an optional ``cost_hint`` attribute; the planner
+    falls back to defaults when it does not.  ``money`` is in the same units as
+    ``VerificationUsage.cost`` and ``constraints.maximum_cost``.
+    """
+
+    money_per_call: float = 0.0
+    money_per_candidate: float = 0.0
+    latency_ms_per_call: float = 0.0
+    latency_ms_per_candidate: float = 0.0
+
+    def __post_init__(self) -> None:
+        for name in ("money_per_call", "money_per_candidate", "latency_ms_per_call", "latency_ms_per_candidate"):
+            value = getattr(self, name)
+            if not (math.isfinite(value) and value >= 0):
+                raise ValueError(f"{name} must be a finite non-negative number")
+
+
+@dataclass(frozen=True)
 class SemanticQueryReport:
     """What a semantic query did and, per returned record, why it qualified."""
 

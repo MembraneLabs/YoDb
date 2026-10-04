@@ -51,6 +51,14 @@ semantic stats (considered / shortlisted / verified / qualified / cost). Needs t
 `pgvector/pgvector` image. On a 20-row table Plan B verifies about as many
 records as Plan A because the shortlist covers the table; savings need a large one.
 
+## Optimizer cases (`O`)
+
+`bulk.items` and `bulk.tags` (200,000 rows each; `kind` has 1,000 distinct values,
+`tag` has 2). Each case runs once with the fixed rules and once with statistics read from
+real `pg_stats`. O1/O2 fail under the rules (the huge filter exceeds the 10,000-row
+guard) and succeed under the cost-based plan; O3 shows the optimizer declining and the
+query failing safely either way; O4 shows no change when the rules are already right.
+
 ## Case families
 
 `S` single-source pushdown, `C` coordinator-only operators, `M` multi-source

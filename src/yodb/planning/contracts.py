@@ -113,6 +113,9 @@ class VectorSearch:
     dimensions: int
     shortlist_size: int
     query_vector: tuple[float, ...] | None = None
+    # Row guard for the plain scan the executor falls back to when the ranked
+    # search would be unsafe (see ``RecordAssembly.schedule``).
+    fallback_maximum_rows: int | None = None
 
 
 @dataclass(frozen=True)
@@ -135,6 +138,40 @@ class RemoteScan:
     key_lookup_limit: int | None = None
 
 
+class StepRole(str, Enum):
+    ANCHOR = "anchor"        # identity source: its rows are the result records
+    REQUIRED = "required"    # contributor with a pushed filter: an inner-join restriction
+    OPTIONAL = "optional"    # contributor that only enriches
+
+
+@dataclass(frozen=True)
+class AssemblyStep:
+    """Read one source; ``restrict`` asks for the IDs learned so far to narrow it.
+
+    The executor still checks at run time that the learned ID set fits the
+    source's lookup limit and falls back to a plain (guarded) scan when it
+    does not, so a plan is never wrong because an estimate was.
+    """
+
+    source_name: str
+    role: StepRole
+    restrict: bool = True
+
+
+def default_schedule(
+    anchor: "RemoteScan", contributors: tuple["RemoteScan", ...], required: tuple[str, ...]
+) -> tuple[AssemblyStep, ...]:
+    """The fixed rule: required contributors, then the anchor, then enrichers."""
+
+    required_steps = tuple(
+        AssemblyStep(c.source.source_name, StepRole.REQUIRED) for c in contributors if c.source.source_name in required
+    )
+    optional_steps = tuple(
+        AssemblyStep(c.source.source_name, StepRole.OPTIONAL) for c in contributors if c.source.source_name not in required
+    )
+    return (*required_steps, AssemblyStep(anchor.source.source_name, StepRole.ANCHOR), *optional_steps)
+
+
 @dataclass(frozen=True)
 class RecordAssembly:
     """Left-enrich root records with contributor fields using logical identity."""
@@ -146,6 +183,9 @@ class RecordAssembly:
     # Largest logical-ID set the executor may transfer between sources to
     # restrict a later scan; ``None`` disables transfer.
     maximum_transfer_keys: int | None = None
+    # The order sources are read in and which reads are restricted by learned
+    # IDs.  Always complete: one step per source.
+    schedule: tuple[AssemblyStep, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -229,6 +269,8 @@ class PlanExplanation:
     catalog_fingerprint: str
     plan_fingerprint: str
     nodes: tuple[PlanExplanationNode, ...]
+    # How the plan was chosen: cost-based with its estimates, or the fixed rules and why.
+    optimizer: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

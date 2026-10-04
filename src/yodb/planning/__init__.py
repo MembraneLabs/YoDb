@@ -1,6 +1,7 @@
 """Executable federated physical-plan contracts and source planning adapters."""
 
 from .contracts import (
+    AssemblyStep,
     CoordinatorFilter,
     CoordinatorSortPage,
     PhysicalPlan,
@@ -19,7 +20,9 @@ from .contracts import (
     SemanticVerify,
     SourceOperationRequest,
     SourcePlanningAdapter,
+    StepRole,
     VectorSearch,
+    default_schedule,
 )
 from .adapter import CapabilityPlanningAdapter
 from .capabilities import (
@@ -31,9 +34,62 @@ from .capabilities import (
 )
 from .postgres import POSTGRES_CAPABILITIES, PostgresPlanningAdapter
 from .registry import SourcePlanningRegistry
+from .optimizer import (
+    Constraints,
+    CostParameters,
+    Fallback,
+    OptimizerResult,
+    PowerLawRecall,
+    Problem,
+    RecallModel,
+    SemanticOptions,
+    SourceInput,
+    optimize,
+)
 from .planner import FederatedPhysicalPlanner, PlannerPolicy, SemanticPlanPreference, SemanticPolicy
+from .postgres_statistics import PostgresStatisticsProvider
+from .statistics import (
+    ColumnStatistics,
+    CostDefaults,
+    ObservationStore,
+    ScanEstimate,
+    ScanKey,
+    SelectivityDefaults,
+    SourceCostProfile,
+    SourceStatistics,
+    StatisticsProvider,
+    StatisticsService,
+    estimate_selectivity,
+    filter_signature,
+)
 
 __all__ = [
+    "ColumnStatistics",
+    "Constraints",
+    "CostDefaults",
+    "CostParameters",
+    "Fallback",
+    "ObservationStore",
+    "OptimizerResult",
+    "PostgresStatisticsProvider",
+    "PowerLawRecall",
+    "Problem",
+    "RecallModel",
+    "ScanEstimate",
+    "ScanKey",
+    "SelectivityDefaults",
+    "SemanticOptions",
+    "SourceCostProfile",
+    "SourceInput",
+    "SourceStatistics",
+    "StatisticsProvider",
+    "StatisticsService",
+    "estimate_selectivity",
+    "filter_signature",
+    "optimize",
+    "AssemblyStep",
+    "StepRole",
+    "default_schedule",
     "BooleanOperator",
     "CapabilityPlanningAdapter",
     "KeyLookupCapability",

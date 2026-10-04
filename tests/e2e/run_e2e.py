@@ -27,7 +27,14 @@ from yodb.connections import (
     PostgresConnectionSettings,
 )
 from yodb.errors import YoDbError
-from yodb.planning import SemanticPlanPreference, SemanticPolicy
+from yodb.planning import (
+    ObservationStore,
+    PostgresStatisticsProvider,
+    SemanticPlanPreference,
+    SemanticPolicy,
+    StatisticsService,
+)
+from yodb.catalog import SourceKind
 from yodb.semantic import (
     EmbeddingResult,
     ProviderInfo,
@@ -343,6 +350,83 @@ def run_semantic(cases, engines, executor, oracle_connection, filters, quiet):
     return passed, failed, failures
 
 
+# --- optimizer cases: the same query with fixed rules and with statistics ---------------
+
+@dataclass
+class OptimizerCase:
+    name: str
+    where: object
+    sql_where: str
+    select: tuple = ("kind", "tag")
+    rules: str = "ok"        # "ok" or an error-code fragment the fixed-rule plan is expected to hit
+    stats: str = "ok"        # the same for the statistics-driven plan
+    note: str = ""
+
+
+OPTIMIZER_CASES = [
+    OptimizerCase("O1 selective anchor, huge contributor filter", AND(p("kind", "eq", "k8"), p("tag", "eq", "hot")),
+                  "i.kind = 'k8' AND t.tag = 'hot'", rules="row_limit",
+                  note="tag='hot' keeps ~100,000 rows: the rules read it first and hit the 10,000-row guard"),
+    OptimizerCase("O2 selective IN plus a huge filter", AND(p("kind", "in", ["k1", "k2", "k3"]), p("tag", "eq", "cold")),
+                  "i.kind IN ('k1','k2','k3') AND t.tag = 'cold'", rules="row_limit"),
+    OptimizerCase("O3 only the huge filter: nothing can be narrowed", p("tag", "eq", "hot"), "t.tag = 'hot'",
+                  select=("tag",), rules="row_limit", stats="row_limit",
+                  note="no plan fits the guard, so the optimizer declines and the rules plan fails safely too"),
+    OptimizerCase("O4 selective anchor, enrichment only", p("kind", "eq", "k8"), "i.kind = 'k8'",
+                  note="both plans read the anchor first and restrict the enricher by its IDs"),
+]
+
+
+def run_optimizer_cases(cases, engines, executor, oracle_connection, filters, quiet):
+    passed = failed = 0
+    failures = []
+    for case in cases:
+        if filters and not any(f.lower() in case.name.lower() for f in filters):
+            continue
+        print(f"\n=== {case.name}")
+        if case.note:
+            print(f"    note: {case.note}")
+        query = q(case.select, case.where, None, 500, dataset="item")
+        print(f"    query: {json.dumps(query)}")
+        fields = ["id", *[f for f in case.select if f != "id"]]
+        columns = {"id": "i.item_id", "kind": "i.kind", "tag": "t.tag"}
+        with oracle_connection.cursor() as cursor:
+            cursor.execute(
+                f"SELECT {', '.join(columns[f] for f in fields)} FROM bulk.items i LEFT JOIN bulk.tags t USING (item_id) "
+                f"WHERE {case.sql_where} ORDER BY i.item_id LIMIT 500"
+            )
+            expected = [tuple(row) for row in cursor.fetchall()]
+        for label, expectation in (("rules", case.rules), ("stats", case.stats)):
+            engine = engines[label]
+            executor.log.clear()
+            print(f"  -- engine {label}")
+            try:
+                print("    plan:")
+                print("\n".join(format_explain(engine.explain(query))))
+                started = time.perf_counter()
+                result = engine.execute(query, timeout_seconds=30)
+                elapsed = (time.perf_counter() - started) * 1000
+                read = 0
+                for entry in executor.log:
+                    text = entry["sql"].replace("\n", " ")
+                    shown = text if len(entry["params"]) < 6 else text[:160] + " ..."
+                    print(f"    sql[{entry['source']}] {shown}  -> {entry['rows']} rows")
+                    read += entry["rows"]
+                got = [tuple(row.get(f) for f in fields) for row in result.rows]
+                ok = expectation == "ok" and got == sorted(got) and got == expected
+                outcome = f"PASS ({len(got)} rows match the SQL oracle; {read} rows read from sources, {elapsed:.0f} ms)" if ok else f"FAIL (expectation={expectation}, got {len(got)} rows)"
+            except YoDbError as error:
+                print(f"    error: {error.code.value}: {error.detail.message}")
+                ok = expectation != "ok" and expectation in error.code.value
+                outcome = f"PASS (rejected with {error.code.value})" if ok else f"FAIL (unexpected error {error.code.value})"
+            print(f"    => {outcome}")
+            passed += ok
+            if not ok:
+                failed += 1
+                failures.append(f"{case.name} [{label}]")
+    return passed, failed, failures
+
+
 # --- harness ------------------------------------------------------------------
 
 class RecordingExecutor(PostgresQueryExecutionAdapter):
@@ -389,8 +473,10 @@ def format_explain(explanation) -> list[str]:
             extra.append(f"limit={node.limit}")
         if node.key_transfer_max_keys:
             extra.append(f"key_transfer<={node.key_transfer_max_keys}")
-        extra.extend(d for d in node.detail if d.startswith("note:"))
+        extra.extend(d for d in node.detail if d.startswith(("note:", "schedule:")))
         lines.append(f"    {node.kind:<22}@{node.location:<12}{' '.join(extra)}")
+    if explanation.optimizer:
+        lines.append("    optimizer: " + " ".join(explanation.optimizer))
     return lines
 
 
@@ -502,6 +588,15 @@ def main(argv: list[str]) -> int:
             failures.append(case.name)
     sp, sf, sfails = run_semantic(SEMANTIC_CASES, semantic_engines, executor, oracle_connection, filters, quiet)
     passed, failed, failures = passed + sp, failed + sf, failures + sfails
+    statistics = StatisticsService(
+        {SourceKind.POSTGRES: PostgresStatisticsProvider(connections)}, observations=ObservationStore()
+    )
+    optimizer_engines = {
+        "rules": QueryExecutionEngine(runtime, compilers, registry),
+        "stats": QueryExecutionEngine(runtime, compilers, registry, statistics=statistics),
+    }
+    op, of, ofails = run_optimizer_cases(OPTIMIZER_CASES, optimizer_engines, executor, oracle_connection, filters, quiet)
+    passed, failed, failures = passed + op, failed + of, failures + ofails
     oracle_connection.close()
     connections.close()
     print(f"\n== {passed} passed, {failed} failed")

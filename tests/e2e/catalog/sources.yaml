@@ -73,7 +73,32 @@ sources:
         fields:
           id:    {physical_name: ticket_id}
           owner: {physical_name: owner}
+  items:
+    kind: postgres
+    connection_ref: e2e-support
+    read_only: true
+    datasets:
+      item:
+        resource: bulk.items
+        identity: [id]
+        fields:
+          id:   {physical_name: item_id}
+          kind: {physical_name: kind}
+  tags:
+    kind: postgres
+    connection_ref: e2e-support
+    read_only: true
+    datasets:
+      item:
+        resource: bulk.tags
+        identity: [id]
+        fields:
+          id:  {physical_name: item_id}
+          tag: {physical_name: tag}
 resolution:
+  item:
+    identity_source: items
+    field_sources: {id: items, kind: items, tag: tags}
   ticket:
     identity_source: desk
     field_sources: {id: desk, subject: desk, body: desk, priority: desk, owner: owners}

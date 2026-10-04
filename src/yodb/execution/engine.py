@@ -6,11 +6,15 @@ from collections.abc import Mapping
 from typing import Any
 
 from ..compilation import QueryCompilerRegistry
+from dataclasses import replace
+
 from ..planning import (
+    CostParameters,
     FederatedPhysicalPlanner,
     PostgresPlanningAdapter,
     SemanticPolicy,
     SourcePlanningRegistry,
+    StatisticsService,
 )
 from ..semantic import SemanticQueryReport, SemanticRuntime
 from ..query import QueryValidationPolicy, bind_query, parse_query, resolve_query_sources
@@ -37,6 +41,8 @@ class QueryExecutionEngine:
         planner: FederatedPhysicalPlanner | None = None,
         semantic: SemanticRuntime | None = None,
         semantic_policy: SemanticPolicy | None = None,
+        statistics: StatisticsService | None = None,
+        cost_parameters: CostParameters | None = None,
     ) -> None:
         self._catalog_runtime = catalog_runtime
         self._compilers = compilers
@@ -49,8 +55,13 @@ class QueryExecutionEngine:
             embedder=None if embedder is None else embedder.info,
             embedder_dimensions=None if embedder is None else embedder.dimensions,
         )
+        costs = cost_parameters or _costs_from_providers(CostParameters(), semantic)
+        self._statistics = statistics
         self._planner = planner or FederatedPhysicalPlanner(
-            SourcePlanningRegistry([PostgresPlanningAdapter()]), semantic=policy
+            SourcePlanningRegistry([PostgresPlanningAdapter()]),
+            semantic=policy,
+            statistics=statistics,
+            costs=costs,
         )
         self._plan_executor = FederatedPlanExecutor(compilers, executors, semantic=semantic)
 
@@ -69,6 +80,10 @@ class QueryExecutionEngine:
         planned = self._planner.plan(resolved)
         trace = ExecutionTrace()
         rows = self._plan_executor.execute(planned.plan, timeout_seconds=timeout_seconds, trace=trace)
+        if self._statistics is not None:
+            # Teach the estimator what unrestricted scans really returned.
+            for actual in trace.scan_actuals:
+                self._statistics.observe(actual.scan.source, actual.scan.pushed_filter, actual.rows)
         report = None
         if trace.semantic_stats is not None:
             returned = {row["id"] for row in rows}
@@ -91,3 +106,18 @@ class QueryExecutionEngine:
         bound = bind_query(request, active, policy=self._validation_policy)
         resolved = resolve_query_sources(bound, active)
         return self._planner.plan(resolved).explain
+
+
+def _costs_from_providers(costs: CostParameters, semantic: SemanticRuntime | None) -> CostParameters:
+    """Use the providers' own cost hints and batch size when they publish them."""
+
+    if semantic is None:
+        return costs
+    verification = getattr(semantic.verifier, "cost_hint", None)
+    embedding = getattr(semantic.embedder, "cost_hint", None) if semantic.embedder is not None else None
+    return replace(
+        costs,
+        verifier_batch_size=semantic.batch_size,
+        verification=verification or costs.verification,
+        embedding=embedding or costs.embedding,
+    )

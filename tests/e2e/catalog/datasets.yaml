@@ -31,3 +31,9 @@ datasets:
       body:     {type: text,   description: Ticket text., semantic_eligible: true}
       priority: {type: int,    description: Priority.}
       owner:    {type: string, description: Ticket owner.}
+  item:
+    description: An item described by two large sources (optimizer cases).
+    fields:
+      id:   {type: id,     description: Identity.}
+      kind: {type: string, description: Item kind.}
+      tag:  {type: string, description: Item tag.}

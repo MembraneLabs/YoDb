@@ -22,6 +22,7 @@ from ..planning import (
     RemoteScan,
     ResultProject,
     SemanticVerify,
+    StepRole,
 )
 from ..semantic import (
     EmbeddingRequest,
@@ -59,18 +60,29 @@ class FederatedExecutionPolicy:
             raise ValueError("maximum_coordinator_rows must be positive")
 
 
+@dataclass(frozen=True)
+class ScanActual:
+    """A scan that read its whole filtered result, and how many rows that was."""
+
+    scan: RemoteScan
+    rows: int
+
+
 @dataclass
 class ExecutionTrace:
     """What an execution observed beyond its rows (filled in by the executor)."""
 
     semantic_stats: SemanticExecutionStats | None = None
     semantic_records: dict[object, SemanticRecordMetadata] = field(default_factory=dict)
+    scan_actuals: list[ScanActual] = field(default_factory=list)
 
 
-@dataclass(frozen=True)
+@dataclass
 class _Run:
     timeout_seconds: float | None
     trace: ExecutionTrace | None
+    # Set when a planned shortlist could not be used safely and a plain scan ran.
+    fell_back: bool = False
 
 
 class FederatedPlanExecutor:
@@ -115,6 +127,14 @@ class FederatedPlanExecutor:
                     ),
                     source_name=plan.source.source_name,
                 )
+            if (
+                run.trace is not None
+                and plan.limit is None
+                and plan.vector_search is None
+                and plan.key_filter is None
+            ):
+                # A complete, unrestricted result: exactly what the planner wants to learn from.
+                run.trace.scan_actuals.append(ScanActual(plan, len(rows)))
             return rows
         if isinstance(plan, RecordAssembly):
             return self._assemble(plan, run)
@@ -163,7 +183,10 @@ class FederatedPlanExecutor:
             embedding_calls = 1
         rows = self._execute(input_plan, run)
         considered = len(rows)
-        if node.plan is SemanticPlanKind.VECTOR_SHORTLIST:
+        # If the ranked read could not be used safely the scan was a plain one,
+        # so what actually ran (and what is reported) is verify-all.
+        actual = SemanticPlanKind.VERIFY_ALL if run.fell_back else node.plan
+        if actual is SemanticPlanKind.VECTOR_SHORTLIST:
             shortlisted = considered
         if considered > node.maximum_candidates:
             _fail(
@@ -215,11 +238,11 @@ class FederatedPlanExecutor:
                     qualified.append(by_id[candidate.logical_id])
                     if run.trace is not None:
                         run.trace.semantic_records[candidate.logical_id] = SemanticRecordMetadata(
-                            plan=node.plan, holds=True, confidence=verdict.confidence, info=info
+                            plan=actual, holds=True, confidence=verdict.confidence, info=info
                         )
         if run.trace is not None:
             run.trace.semantic_stats = SemanticExecutionStats(
-                plan=node.plan,
+                plan=actual,
                 candidates_considered=considered,
                 shortlisted=shortlisted,
                 verified=verified,
@@ -251,42 +274,60 @@ class FederatedPlanExecutor:
         return result.vectors[0]
 
     def _assemble(self, plan: RecordAssembly, run: _Run) -> tuple[LogicalRow, ...]:
-        """Run the scans in a key-transfer order, then left-enrich the anchor.
+        """Read the sources in the plan's schedule order, then left-enrich the anchor.
 
-        Contributors with a pushed filter are *required matches*: an anchor row
-        survives only if the contributor also returned it.  They run first and
-        each narrows the ID set (intersection) that restricts the next scan and
-        finally the anchor.  Optional contributors run last, restricted to the
-        anchor IDs.  A key set larger than ``plan.maximum_transfer_keys`` is not
-        transferred (that scan runs unrestricted, still under its row guard),
-        and an empty key set ends the query without further source reads.
+        Anchor and *required* contributors bound the result: a record survives
+        only if each of them returned it.  Every one of them therefore narrows
+        the learned ID set (an intersection) that a later restricted read may
+        use.  Optional contributors never narrow it; they only enrich.
+
+        A restricted read falls back to a plain guarded scan when the learned
+        set exceeds the source's lookup limit, and an empty set ends the query
+        without further source reads.  A ranked (shortlist) anchor read is only
+        valid once every required contributor has narrowed it; otherwise the
+        shortlist would be cut before the required matches and could come back
+        short, so it falls back to a plain scan and Plan A verification.
         """
 
-        required = [c for c in plan.contributors if c.source.source_name in plan.required_contributor_matches]
-        optional = [c for c in plan.contributors if c.source.source_name not in plan.required_contributor_matches]
+        scans = {plan.anchor.source.source_name: plan.anchor}
+        scans.update({c.source.source_name: c for c in plan.contributors})
+        required_total = sum(1 for step in plan.schedule if step.role is StepRole.REQUIRED)
         keys: set[object] | None = None
-        required_rows: list[tuple[RemoteScan, tuple[LogicalRow, ...]]] = []
+        required_done = 0
         required_ids: list[set[object]] = []
-        for contributor in required:
-            rows = self._scan(contributor, keys, plan.maximum_transfer_keys, run)
-            ids = {row["id"] for row in rows}
-            required_rows.append((contributor, rows))
-            required_ids.append(ids)
-            keys = ids if keys is None else keys & ids
-            if not keys:
-                return ()
+        enrichment: list[tuple[RemoteScan, tuple[LogicalRow, ...]]] = []
+        anchor_rows: tuple[LogicalRow, ...] = ()
+        for step in plan.schedule:
+            scan = scans[step.source_name]
+            narrowing = step.role is not StepRole.OPTIONAL
+            if step.role is StepRole.ANCHOR and scan.vector_search is not None:
+                safe = required_done == required_total and (
+                    required_total == 0 or self._can_restrict(scan, keys if step.restrict else None, plan)
+                )
+                if not safe:
+                    run.fell_back = True
+                    scan = replace(
+                        scan,
+                        vector_search=None,
+                        limit=None,
+                        maximum_rows=scan.vector_search.fallback_maximum_rows,
+                    )
+            rows = self._scan(scan, keys if step.restrict else None, plan.maximum_transfer_keys, run)
+            if step.role is StepRole.ANCHOR:
+                anchor_rows = rows
+            else:
+                enrichment.append((scan, rows))
+            if step.role is StepRole.REQUIRED:
+                required_done += 1
+                required_ids.append({row["id"] for row in rows})
+            if narrowing:
+                ids = {row["id"] for row in rows}
+                keys = ids if keys is None else keys & ids
+                if not keys:
+                    return ()
 
-        anchor_rows = self._scan(plan.anchor, keys, plan.maximum_transfer_keys, run)
-        self._ensure_unique_ids(anchor_rows, plan.anchor.source.source_name)
         records: dict[object, dict[str, object]] = {row["id"]: dict(row) for row in anchor_rows}
-        if not records:
-            return ()
-
-        optional_rows = [
-            (contributor, self._scan(contributor, set(records), plan.maximum_transfer_keys, run))
-            for contributor in optional
-        ]
-        for contributor, rows in (*required_rows, *optional_rows):
+        for _, rows in enrichment:
             for row in rows:
                 target = records.get(row["id"])
                 if target is not None:
@@ -298,6 +339,21 @@ class FederatedPlanExecutor:
             if all(logical_id in ids for ids in required_ids)
         )
 
+    @staticmethod
+    def _can_restrict(scan: RemoteScan, keys: set[object] | None, plan: RecordAssembly) -> bool:
+        """Whether ``keys`` would actually narrow ``scan`` (its source accepts a set this size)."""
+
+        bound = FederatedPlanExecutor._bound(scan, plan.maximum_transfer_keys)
+        return keys is not None and bound is not None and len(keys) <= bound
+
+    @staticmethod
+    def _bound(scan: RemoteScan, maximum_keys: int | None) -> int | None:
+        """The largest ID set this scan may be restricted by (None: never restricted)."""
+
+        if maximum_keys is None or scan.key_lookup_limit is None:
+            return None
+        return min(maximum_keys, scan.key_lookup_limit)
+
     def _scan(
         self,
         scan: RemoteScan,
@@ -307,10 +363,9 @@ class FederatedPlanExecutor:
     ) -> tuple[LogicalRow, ...]:
         """Execute one scan, restricted to ``keys`` when that set is small enough."""
 
-        bound = None
-        if maximum_keys is not None and scan.key_lookup_limit is not None:
-            bound = min(maximum_keys, scan.key_lookup_limit)  # the source may accept fewer
-        if keys is not None and bound is not None and len(keys) <= bound:
+        bound = self._bound(scan, maximum_keys)
+        restricted = keys is not None and bound is not None and len(keys) <= bound
+        if restricted:
             scan = replace(scan, key_filter=tuple(sorted(keys, key=str)))
         rows = self._execute(scan, run)
         self._ensure_unique_ids(rows, scan.source.source_name)

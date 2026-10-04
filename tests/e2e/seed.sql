@@ -1,8 +1,8 @@
 -- Throwaway end-to-end data for YoDb. Run as the postgres superuser against
 -- database yodb_e2e. Idempotent: drops and recreates everything it owns.
 CREATE EXTENSION IF NOT EXISTS vector;
-DROP SCHEMA IF EXISTS crm, billing, support, helpdesk CASCADE;
-CREATE SCHEMA crm; CREATE SCHEMA billing; CREATE SCHEMA support; CREATE SCHEMA helpdesk;
+DROP SCHEMA IF EXISTS crm, billing, support, helpdesk, bulk CASCADE;
+CREATE SCHEMA crm; CREATE SCHEMA billing; CREATE SCHEMA support; CREATE SCHEMA helpdesk; CREATE SCHEMA bulk;
 
 -- CRM: identity source for `customer`. 12 customers with NULLs, a duplicate
 -- name (c01/c12 -> tie-break by id), and mixed case ("Acme" vs "acme").
@@ -105,12 +105,20 @@ INSERT INTO helpdesk.owners VALUES
  ('t01','ann'),('t03','ann'),('t04','bob'),('t05','ann'),('t08','bob'),('t10','ann'),
  ('t12','bob'),('t15','ann'),('t18','ann'),('t19','bob');
 
+-- Optimizer cases: two 200,000-row sources describing the same items.
+-- kind has 1,000 distinct values (kind = 'k8' keeps 200 rows); tag has 2
+-- (tag = 'hot' keeps 100,000 rows, ten times the 10,000-row scan guard).
+CREATE TABLE bulk.items (item_id text PRIMARY KEY, kind text, body text);
+INSERT INTO bulk.items SELECT 'i' || g, 'k' || (g % 1000), 'item ' || g FROM generate_series(1, 200000) g;
+CREATE TABLE bulk.tags (item_id text PRIMARY KEY, tag text);
+INSERT INTO bulk.tags SELECT 'i' || g, CASE WHEN g % 2 = 0 THEN 'hot' ELSE 'cold' END FROM generate_series(1, 200000) g;
+
 -- Least-privilege, read-only role used by YoDb.
 DO $$ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'yodb_ro') THEN
     CREATE ROLE yodb_ro LOGIN PASSWORD 'yodb_ro';
   END IF;
 END $$;
-GRANT USAGE ON SCHEMA crm, billing, support, helpdesk TO yodb_ro;
-GRANT SELECT ON ALL TABLES IN SCHEMA crm, billing, support, helpdesk TO yodb_ro;
+GRANT USAGE ON SCHEMA crm, billing, support, helpdesk, bulk TO yodb_ro;
+GRANT SELECT ON ALL TABLES IN SCHEMA crm, billing, support, helpdesk, bulk TO yodb_ro;
 ANALYZE;

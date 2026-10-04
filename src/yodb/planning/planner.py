@@ -28,6 +28,7 @@ from .contracts import (
     PlanExplanationNode,
     PlanProperties,
     PlannedQuery,
+    AssemblyStep,
     RecordAssembly,
     RemoteScan,
     ResultCompleteness,
@@ -35,12 +36,25 @@ from .contracts import (
     ResultShape,
     SemanticVerify,
     SourceOperationRequest,
+    StepRole,
     VectorSearch,
     coordinator_location,
+    default_schedule,
     remote_location,
 )
 from .capabilities import TextOrdering
+from .optimizer import (
+    Constraints,
+    CostParameters,
+    Fallback,
+    OptimizerResult,
+    Problem,
+    SemanticOptions,
+    SourceInput,
+    optimize,
+)
 from .registry import SourcePlanningRegistry
+from .statistics import StatisticsService
 
 
 @dataclass(frozen=True)
@@ -95,10 +109,14 @@ class FederatedPhysicalPlanner:
         *,
         policy: PlannerPolicy = PlannerPolicy(),
         semantic: SemanticPolicy = SemanticPolicy(),
+        statistics: StatisticsService | None = None,
+        costs: CostParameters = CostParameters(),
     ) -> None:
         self._adapters = adapters
         self._policy = policy
         self._semantic = semantic
+        self._statistics = statistics
+        self._costs = costs
 
     def plan(self, resolved: SourceResolvedQuery) -> PlannedQuery:
         query = resolved.query
@@ -118,16 +136,36 @@ class FederatedPhysicalPlanner:
         choice = None
         if semantic:
             choice = self._choose_semantic_plan(core, semantic[0], scans, fully_pushed)
-            if choice.vector_search is not None:
-                anchor, *rest = scans
-                scans = (
-                    replace(anchor, vector_search=choice.vector_search, limit=choice.vector_search.shortlist_size, maximum_rows=None),
-                    *rest,
+
+        # Fixed rules always give a correct plan.  With enough statistics the
+        # optimizer may replace the read order and the semantic variant by a
+        # cheaper one; otherwise it says why it declined.
+        schedule: tuple = ()
+        optimizer_notes: tuple[str, ...] = ()
+        if semantic or resolved.shape is QuerySourceShape.MULTI_SOURCE:
+            outcome = self._optimize(core, scans, choice, fully_pushed, semantic[0] if semantic else None, query)
+            if isinstance(outcome, OptimizerResult):
+                schedule = outcome.schedule
+                choice = self._apply_semantic_decision(choice, outcome.semantic)
+                optimizer_notes = (
+                    "strategy=cost_based",
+                    f"estimated_latency_ms={outcome.estimate.latency_ms:.1f}",
+                    f"estimated_money={outcome.estimate.money:.6f}",
+                    f"candidates_considered={outcome.candidates_considered}",
                 )
+            else:
+                optimizer_notes = ("strategy=rules", f"reason={outcome.reason}")
+
+        if choice is not None and choice.vector_search is not None:
+            anchor, *rest = scans
+            scans = (
+                replace(anchor, vector_search=choice.vector_search, limit=choice.vector_search.shortlist_size, maximum_rows=None),
+                *rest,
+            )
         if resolved.shape is QuerySourceShape.SINGLE_SOURCE:
             current: PhysicalPlan = scans[0]
         else:
-            current = self._assembly(scans, core)
+            current = self._assembly(scans, core, schedule)
 
         # The coordinator re-evaluates the filter unless every term was
         # accepted by its owning source (then the sources already enforced it
@@ -195,6 +233,7 @@ class FederatedPhysicalPlanner:
             catalog_fingerprint=query.catalog_fingerprint,
             plan_fingerprint=fingerprint,
             nodes=tuple(_explain_nodes(current)),
+            optimizer=optimizer_notes,
         )
         return PlannedQuery(
             query=query,
@@ -205,6 +244,92 @@ class FederatedPhysicalPlanner:
             plan_fingerprint=fingerprint,
             explain=explanation,
         )
+
+    def _optimize(
+        self,
+        core: SourceResolvedQuery,
+        scans: tuple[RemoteScan, ...],
+        choice: "_SemanticChoice | None",
+        fully_pushed: bool,
+        semantic: BoundSemanticPredicate | None,
+        query: BoundQuery,
+    ) -> OptimizerResult | Fallback:
+        if self._statistics is None:
+            return Fallback("no statistics are configured")
+        inputs: list[SourceInput] = []
+        for index, scan in enumerate(scans):
+            estimate = self._statistics.estimate_scan(scan.source, scan.pushed_filter)
+            if not estimate.known or estimate.filtered_rows is None:
+                return Fallback(f"statistics are unavailable for source '{scan.source.source_name}'")
+            caps = self._adapters.adapter_for(scan.source.source_kind).capabilities
+            role = StepRole.ANCHOR if index == 0 else (StepRole.REQUIRED if scan.pushed_filter is not None else StepRole.OPTIONAL)
+            inputs.append(
+                SourceInput(
+                    name=scan.source.source_name,
+                    role=role,
+                    total_rows=estimate.total_rows,
+                    filtered_rows=estimate.filtered_rows,
+                    profile=estimate.profile,
+                    key_limit=None if caps.key_lookup is None else caps.key_lookup.maximum_keys,
+                    row_cap=self._row_cap(scan.source.source_kind) if scan.maximum_rows is not None else None,
+                )
+            )
+        options = None
+        if semantic is not None and choice is not None:
+            anchor_caps = self._adapters.adapter_for(core.identity_source.source_kind).capabilities
+            cap = self._semantic.maximum_candidates
+            if anchor_caps.vector_search is not None and anchor_caps.vector_search.maximum_shortlist is not None:
+                cap = min(cap, anchor_caps.vector_search.maximum_shortlist)
+            shortlist_allowed = choice.vector_search is not None
+            options = SemanticOptions(
+                shortlist_allowed=shortlist_allowed,
+                shortlist_start=min(choice.vector_search.shortlist_size, cap) if shortlist_allowed else 1,
+                shortlist_cap=cap if shortlist_allowed else 1,
+                maximum_candidates=self._semantic.maximum_candidates,
+                page_size=_effective_limit(query),
+                required_recall=(
+                    query.constraints.minimum_quality
+                    if query.constraints.minimum_quality is not None
+                    else self._costs.minimum_expected_recall
+                ),
+                unpushed_selectivity=1.0 if fully_pushed else self._costs.unpushed_filter_selectivity,
+                verify_all_allowed=self._semantic.preference is not SemanticPlanPreference.VECTOR_SHORTLIST,
+            )
+        problem = Problem(
+            inputs,
+            self._costs,
+            maximum_transfer_keys=self._policy.maximum_transfer_keys or None,
+            semantic=options,
+            constraints=Constraints(
+                maximum_money=query.constraints.maximum_cost,
+                maximum_latency_ms=None if query.constraints.maximum_latency_ms is None else float(query.constraints.maximum_latency_ms),
+            ),
+        )
+        rule_order = [s.source_name for s in default_schedule(scans[0], scans[1:], tuple(
+            scan.source.source_name for scan in scans[1:] if scan.pushed_filter is not None
+        )) if s.role is not StepRole.OPTIONAL]
+        return optimize(problem, rule_order=rule_order, rule_kind=None if choice is None else choice.kind)
+
+    @staticmethod
+    def _apply_semantic_decision(choice: "_SemanticChoice | None", decision) -> "_SemanticChoice | None":
+        """Fold the optimizer's semantic variant into the rule choice (never widening what is legal)."""
+
+        if choice is None or decision is None:
+            return choice
+        if decision.kind is SemanticPlanKind.VECTOR_SHORTLIST:
+            assert choice.vector_search is not None  # the optimizer only offers it when legal
+            vector = replace(choice.vector_search, shortlist_size=decision.shortlist_size)
+            note = f"cost-based: shortlist of {decision.shortlist_size}"
+            return _SemanticChoice(decision.kind, vector, (*choice.reasons, note))
+        if choice.kind is SemanticPlanKind.VECTOR_SHORTLIST:
+            return _SemanticChoice(decision.kind, None, ("cost-based: verifying every candidate is cheaper than a shortlist",))
+        return choice
+
+    def _row_cap(self, source_kind) -> int:
+        """Most rows one scan may return: the policy bound, or the source's own if lower."""
+
+        declared = self._adapters.adapter_for(source_kind).capabilities.maximum_rows
+        return self._policy.maximum_rows_per_source if declared is None else min(self._policy.maximum_rows_per_source, declared)
 
     def _ordering_notes(self, query: BoundQuery, scans: tuple[RemoteScan, ...]) -> tuple[str, ...]:
         """Flag text ordering done by YoDb that the owning source would collate differently."""
@@ -282,6 +407,7 @@ class FederatedPhysicalPlanner:
                     model=binding.model,
                     dimensions=binding.dimensions,
                     shortlist_size=size,
+                    fallback_maximum_rows=self._row_cap(anchor.source_kind),
                 ),
                 (f"shortlist of {size}",),
             )
@@ -337,9 +463,7 @@ class FederatedPhysicalPlanner:
                     and decision.accepted_limit == requested.limit
                 )
             caps = self._adapters.adapter_for(source.source_kind).capabilities
-            row_cap = self._policy.maximum_rows_per_source
-            if caps.maximum_rows is not None:
-                row_cap = min(row_cap, caps.maximum_rows)
+            row_cap = self._row_cap(source.source_kind)
             needs_guard = not complete or decision.accepted_limit != requested.limit
             scans.append(
                 RemoteScan(
@@ -372,9 +496,15 @@ class FederatedPhysicalPlanner:
             )
         return tuple(scans), fully_pushed, page_pushed
 
-    def _assembly(self, scans: tuple[RemoteScan, ...], resolved: SourceResolvedQuery) -> RecordAssembly:
+    def _assembly(
+        self,
+        scans: tuple[RemoteScan, ...],
+        resolved: SourceResolvedQuery,
+        schedule: tuple[AssemblyStep, ...] = (),
+    ) -> RecordAssembly:
         anchor, *contributors = scans
         fields = _deduplicate_fields(field for scan in scans for field in scan.projection)
+        required_names = tuple(scan.source.source_name for scan in contributors if scan.pushed_filter is not None)
         return RecordAssembly(
             anchor=anchor,
             contributors=tuple(contributors),
@@ -383,9 +513,7 @@ class FederatedPhysicalPlanner:
             # executor must retain only anchor records present in that scan.
             # This keeps a non-returned contributor from being mistaken for a
             # logical NULL during the defensive residual evaluation.
-            required_contributor_matches=tuple(
-                scan.source.source_name for scan in contributors if scan.pushed_filter is not None
-            ),
+            required_contributor_matches=required_names,
             properties=PlanProperties(
                 output_fields=fields,
                 logical_id=anchor.properties.logical_id,
@@ -398,6 +526,7 @@ class FederatedPhysicalPlanner:
             ),
             # Each scan carries its own source's limit; 0 disables transfer.
             maximum_transfer_keys=self._policy.maximum_transfer_keys or None,
+            schedule=schedule or default_schedule(anchor, tuple(contributors), required_names),
         )
 
 
@@ -546,7 +675,7 @@ def _plan_shape(plan: PhysicalPlan) -> dict[str, object]:
             "vector": None if plan.vector_search is None else [plan.vector_search.metric.value, plan.vector_search.shortlist_size],
         }
     if isinstance(plan, RecordAssembly):
-        return {"kind": "record_assembly", "anchor": _plan_shape(plan.anchor), "contributors": [_plan_shape(item) for item in plan.contributors], "required_contributor_matches": list(plan.required_contributor_matches), "maximum_transfer_keys": plan.maximum_transfer_keys}
+        return {"kind": "record_assembly", "anchor": _plan_shape(plan.anchor), "contributors": [_plan_shape(item) for item in plan.contributors], "required_contributor_matches": list(plan.required_contributor_matches), "maximum_transfer_keys": plan.maximum_transfer_keys, "schedule": [[step.source_name, step.role.value, step.restrict] for step in plan.schedule]}
     if isinstance(plan, CoordinatorFilter):
         return {"kind": "coordinator_filter", "input": _plan_shape(plan.input), "filter": _filter_shape(plan.expression)}
     if isinstance(plan, SemanticVerify):
@@ -587,7 +716,7 @@ def _explain_nodes(plan: PhysicalPlan) -> list[PlanExplanationNode]:
             )
         ]
     if isinstance(plan, RecordAssembly):
-        return [*_explain_nodes(plan.anchor), *[node for child in plan.contributors for node in _explain_nodes(child)], PlanExplanationNode("record_assembly", "coordinator", tuple(field.field.name for field in plan.properties.output_fields), key_transfer_max_keys=plan.maximum_transfer_keys)]
+        return [*_explain_nodes(plan.anchor), *[node for child in plan.contributors for node in _explain_nodes(child)], PlanExplanationNode("record_assembly", "coordinator", tuple(field.field.name for field in plan.properties.output_fields), key_transfer_max_keys=plan.maximum_transfer_keys, detail=("schedule: " + " -> ".join(f"{step.role.value}:{step.source_name}{'*' if step.restrict else ''}" for step in plan.schedule),))]
     if isinstance(plan, CoordinatorFilter):
         return [*_explain_nodes(plan.input), PlanExplanationNode("coordinator_filter", "coordinator", tuple(field.field.name for field in plan.properties.output_fields), residual_filter=plan.expression is not None)]
     if isinstance(plan, SemanticVerify):
