@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
 from ..catalog import SourceKind
+from ..planning import RemoteScan
 from ..query.resolution import SourceResolvedQuery
 
 
@@ -45,6 +46,9 @@ class QueryCompilerAdapter(Protocol):
 
     def compile(self, query: SourceResolvedQuery) -> CompiledQuery:
         """Return a backend-native, parameterized command or a typed error."""
+
+    def compile_scan(self, scan: RemoteScan) -> CompiledQuery:
+        """Compile one planner-validated physical remote scan fragment."""
 
 
 @dataclass(frozen=True)

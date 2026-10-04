@@ -154,7 +154,7 @@ def _create_psycopg_pool(
         min_size=min_size,
         max_size=max_size,
         timeout=timeout_seconds,
-        kwargs={"autocommit": False},
+        kwargs={"autocommit": False, "options": "-c TimeZone=UTC"},
         open=True,
     )
 
