@@ -1,0 +1,68 @@
+api_version: yodb/v0.1
+sources:
+  crm:
+    kind: postgres
+    connection_ref: e2e-crm
+    read_only: true
+    datasets:
+      customer:
+        resource: crm.accounts
+        identity: [id]
+        fields:
+          id:        {physical_name: account_id}
+          name:      {physical_name: company_name}
+          status:    {physical_name: account_status}
+          seats:     {physical_name: seats}
+          signup_at: {physical_name: signup_at}
+          is_vip:    {physical_name: is_vip}
+          country:   {physical_name: country}
+      event:
+        resource: crm.events
+        identity: [id]
+        fields:
+          id:    {physical_name: event_id}
+          label: {physical_name: label}
+  billing:
+    kind: postgres
+    connection_ref: e2e-billing
+    read_only: true
+    datasets:
+      customer:
+        resource: billing.customers
+        identity: [id]
+        fields:
+          id:         {physical_name: customer_id}
+          plan:       {physical_name: plan}
+          mrr:        {physical_name: mrr}
+          auto_renew: {physical_name: auto_renew}
+  support:
+    kind: postgres
+    connection_ref: e2e-support
+    read_only: true
+    datasets:
+      customer:
+        resource: support.tickets_summary
+        identity: [id]
+        fields:
+          id:           {physical_name: customer_id}
+          tier:         {physical_name: tier}
+          open_tickets: {physical_name: open_tickets}
+resolution:
+  customer:
+    identity_source: crm
+    field_sources:
+      id: crm
+      name: crm
+      status: crm
+      seats: crm
+      signup_at: crm
+      is_vip: crm
+      country: crm
+      plan: billing
+      mrr: billing
+      auto_renew: billing
+      tier: support
+      open_tickets: support
+  event:
+    identity_source: crm
+    field_sources: {id: crm, label: crm}

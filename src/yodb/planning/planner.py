@@ -40,10 +40,15 @@ class PlannerPolicy:
     """Hard baseline planner limits; runtime enforces the same scan guards."""
 
     maximum_rows_per_source: int = 10_000
+    # Largest logical-ID set transferred between sources to restrict a later
+    # scan (0 disables transfer).  Above this the executor runs a plain scan.
+    maximum_transfer_keys: int = 1_000
 
     def __post_init__(self) -> None:
         if self.maximum_rows_per_source < 1:
             raise ValueError("maximum_rows_per_source must be positive")
+        if self.maximum_transfer_keys < 0:
+            raise ValueError("maximum_transfer_keys must not be negative")
 
 
 class FederatedPhysicalPlanner:
@@ -61,23 +66,24 @@ class FederatedPhysicalPlanner:
                 "Cursor execution is unavailable until signed cursor verification is implemented.",
                 "page.after",
             )
-        scans = self._build_scans(resolved)
+        scans, fully_pushed = self._build_scans(resolved)
         if resolved.shape is QuerySourceShape.SINGLE_SOURCE:
             current: PhysicalPlan = scans[0]
         else:
             current = self._assembly(scans, resolved)
 
-        # Retain complete filtering at the coordinator in V0.1, including
-        # predicates already accepted remotely. This protects logical results
-        # while source adapter behavior is being verified in production tests.
-        current = CoordinatorFilter(
-            input=current,
-            expression=query.where,
-            properties=_properties_from(
-                current.properties,
-                location=coordinator_location(),
-            ),
-        )
+        # The coordinator re-evaluates the filter unless every term was
+        # accepted by its owning source (then the sources already enforced it
+        # exactly; see ``_build_scans``).
+        if not fully_pushed:
+            current = CoordinatorFilter(
+                input=current,
+                expression=query.where,
+                properties=_properties_from(
+                    current.properties,
+                    location=coordinator_location(),
+                ),
+            )
         current = CoordinatorSortPage(
             input=current,
             order_by=query.order_by,
@@ -121,9 +127,21 @@ class FederatedPhysicalPlanner:
             explain=explanation,
         )
 
-    def _build_scans(self, resolved: SourceResolvedQuery) -> tuple[RemoteScan, ...]:
+    def _build_scans(self, resolved: SourceResolvedQuery) -> tuple[tuple[RemoteScan, ...], bool]:
+        """Return the scans and whether sources alone enforce the whole filter.
+
+        That holds when the single source accepted the entire filter, or when
+        the filter is a pure conjunction whose every leaf was accepted by its
+        owning source (a contributor leaf also makes it a required match, so
+        the assembly drops anchor rows that fail it).  Otherwise the
+        coordinator must evaluate the original expression.
+        """
+
         source_filters = _source_local_filters(resolved)
         complete = resolved.shape is QuerySourceShape.SINGLE_SOURCE
+        total_leaves = _conjunctive_predicates(resolved.query.where)
+        pushed_leaves = 0
+        every_source_accepted = True
         scans = []
         for source in resolved.sources:
             projection = _source_projection(source)
@@ -141,6 +159,11 @@ class FederatedPhysicalPlanner:
                     "The source planning adapter cannot provide the mandatory logical ID and projection.",
                     source.source_name,
                 )
+            if requested.filter is not None:
+                if decision.accepted_filter is not requested.filter:
+                    every_source_accepted = False
+                else:
+                    pushed_leaves += len(_conjunctive_predicates(requested.filter) or ())
             needs_guard = not complete or decision.accepted_limit != requested.limit
             scans.append(
                 RemoteScan(
@@ -162,11 +185,22 @@ class FederatedPhysicalPlanner:
                     ),
                 )
             )
-        return tuple(scans)
+        if complete:
+            fully_pushed = every_source_accepted
+        else:
+            fully_pushed = (
+                total_leaves is not None
+                and every_source_accepted
+                and pushed_leaves == len(total_leaves)
+            )
+        return tuple(scans), fully_pushed
 
     def _assembly(self, scans: tuple[RemoteScan, ...], resolved: SourceResolvedQuery) -> RecordAssembly:
         anchor, *contributors = scans
         fields = _deduplicate_fields(field for scan in scans for field in scan.projection)
+        transfer_allowed = self._policy.maximum_transfer_keys > 0 and all(
+            self._adapters.adapter_for(scan.source.source_kind).supports_key_lookup for scan in scans
+        )
         return RecordAssembly(
             anchor=anchor,
             contributors=tuple(contributors),
@@ -188,6 +222,7 @@ class FederatedPhysicalPlanner:
                 result_shape=ResultShape.RECORDS,
                 catalog_fingerprint=resolved.query.catalog_fingerprint,
             ),
+            maximum_transfer_keys=self._policy.maximum_transfer_keys if transfer_allowed else None,
         )
 
 
@@ -313,7 +348,7 @@ def _plan_shape(plan: PhysicalPlan) -> dict[str, object]:
             "maximum_rows": plan.maximum_rows,
         }
     if isinstance(plan, RecordAssembly):
-        return {"kind": "record_assembly", "anchor": _plan_shape(plan.anchor), "contributors": [_plan_shape(item) for item in plan.contributors], "required_contributor_matches": list(plan.required_contributor_matches)}
+        return {"kind": "record_assembly", "anchor": _plan_shape(plan.anchor), "contributors": [_plan_shape(item) for item in plan.contributors], "required_contributor_matches": list(plan.required_contributor_matches), "maximum_transfer_keys": plan.maximum_transfer_keys}
     if isinstance(plan, CoordinatorFilter):
         return {"kind": "coordinator_filter", "input": _plan_shape(plan.input), "filter": _filter_shape(plan.expression)}
     if isinstance(plan, CoordinatorSortPage):
@@ -349,7 +384,7 @@ def _explain_nodes(plan: PhysicalPlan) -> list[PlanExplanationNode]:
             )
         ]
     if isinstance(plan, RecordAssembly):
-        return [*_explain_nodes(plan.anchor), *[node for child in plan.contributors for node in _explain_nodes(child)], PlanExplanationNode("record_assembly", "coordinator", tuple(field.field.name for field in plan.properties.output_fields))]
+        return [*_explain_nodes(plan.anchor), *[node for child in plan.contributors for node in _explain_nodes(child)], PlanExplanationNode("record_assembly", "coordinator", tuple(field.field.name for field in plan.properties.output_fields), key_transfer_max_keys=plan.maximum_transfer_keys)]
     if isinstance(plan, CoordinatorFilter):
         return [*_explain_nodes(plan.input), PlanExplanationNode("coordinator_filter", "coordinator", tuple(field.field.name for field in plan.properties.output_fields), residual_filter=plan.expression is not None)]
     if isinstance(plan, CoordinatorSortPage):

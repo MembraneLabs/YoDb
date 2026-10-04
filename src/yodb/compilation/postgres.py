@@ -130,6 +130,16 @@ class PostgresQueryCompiler:
         )
         parameters: list[object] = []
         where = _compile_expression(scan.pushed_filter, context, parameters)
+        if scan.key_filter is not None:
+            if not scan.key_filter:
+                _fail(
+                    ErrorCode.QUERY_COMPILATION_UNSUPPORTED,
+                    "A key-restricted PostgreSQL scan requires at least one logical ID.",
+                )
+            parameters.extend(scan.key_filter)
+            placeholders = ", ".join("%s" for _ in scan.key_filter)
+            key_where = f"{_column(scan.source.logical_id)} IN ({placeholders})"
+            where = key_where if where is None else f"({where}) AND {key_where}"
         statements = [f"SELECT {projections}", f"FROM {_resource(scan.source.resource)}"]
         if where is not None:
             statements.append(f"WHERE {where}")

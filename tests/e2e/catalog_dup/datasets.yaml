@@ -1,0 +1,9 @@
+api_version: yodb/v0.1
+catalog: {name: e2e_dup, version: 1}
+datasets:
+  dup_customer:
+    description: Customer whose billing contributor has duplicate identity values.
+    fields:
+      id:   {type: id,     description: Identity.}
+      name: {type: string, description: Name.}
+      plan: {type: string, description: Plan.}

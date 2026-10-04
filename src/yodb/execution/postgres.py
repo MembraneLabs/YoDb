@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from datetime import UTC, datetime
 from typing import Any
 
 from ..catalog import SourceKind
@@ -81,4 +82,17 @@ def _logical_row(
                 source_name=source_name,
             )
         )
-    return dict(zip(fields, row, strict=True))
+    return {name: _normalize(value) for name, value in zip(fields, row, strict=True)}
+
+
+def _normalize(value: Any) -> Any:
+    """Return timestamps as UTC-aware, matching how query values are bound.
+
+    A ``timestamp`` (without time zone) column arrives naive; comparing it with
+    an aware query value would raise and the coordinator would drop every row.
+    Naive source timestamps are interpreted as UTC.
+    """
+
+    if isinstance(value, datetime):
+        return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+    return value

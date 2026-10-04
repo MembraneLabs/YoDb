@@ -1,0 +1,25 @@
+api_version: yodb/v0.1
+catalog:
+  name: e2e
+  version: 1
+datasets:
+  customer:
+    description: A customer assembled from CRM, billing and support.
+    fields:
+      id:           {type: id,        description: Stable customer identity.}
+      name:         {type: string,    description: Company name.}
+      status:       {type: string,    description: CRM lifecycle status.}
+      seats:        {type: int,       description: Licensed seats.}
+      signup_at:    {type: timestamp, description: Signup time.}
+      is_vip:       {type: bool,      description: VIP flag.}
+      country:      {type: string,    description: Country code.}
+      plan:         {type: string,    description: Billing plan.}
+      mrr:          {type: float,     description: Monthly recurring revenue.}
+      auto_renew:   {type: bool,      description: Auto renew flag.}
+      tier:         {type: string,    description: Support tier.}
+      open_tickets: {type: int,       description: Open support tickets.}
+  event:
+    description: A 10,500-row single-source table (row-guard case).
+    fields:
+      id:    {type: id,     description: Identity.}
+      label: {type: string, description: Label.}

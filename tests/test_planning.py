@@ -21,6 +21,7 @@ from yodb.planning import (
     FederatedPhysicalPlanner,
     PostgresPlanningAdapter,
     RecordAssembly,
+    RemoteScan,
     ResultProject,
     SourcePlanningRegistry,
 )
@@ -37,7 +38,7 @@ class FederatedPhysicalPlannerTests(unittest.TestCase):
         self.active = _active_catalog()
         self.planner = FederatedPhysicalPlanner(SourcePlanningRegistry([PostgresPlanningAdapter()]))
 
-    def test_multi_source_and_pushes_independent_conjuncts_and_keeps_full_residual(self) -> None:
+    def test_multi_source_and_pushes_independent_conjuncts_without_residual(self) -> None:
         planned = self._plan(
             {
                 "from": {"dataset": "customer"},
@@ -56,10 +57,11 @@ class FederatedPhysicalPlannerTests(unittest.TestCase):
         self.assertIsInstance(planned.plan, ResultProject)
         sort = planned.plan.input
         self.assertIsInstance(sort, CoordinatorSortPage)
-        residual = sort.input
-        self.assertIsInstance(residual, CoordinatorFilter)
-        assembly = residual.input
+        # Every conjunct was accepted by its owning source, so no residual.
+        assembly = sort.input
         self.assertIsInstance(assembly, RecordAssembly)
+        self.assertEqual(assembly.required_contributor_matches, ("billing",))
+        self.assertEqual(assembly.maximum_transfer_keys, 1_000)
         scans = (assembly.anchor, *assembly.contributors)
         self.assertEqual([scan.source.source_name for scan in scans], ["crm", "billing"])
         self.assertEqual([scan.pushed_filter.field.name for scan in scans], ["status", "plan"])
@@ -92,7 +94,7 @@ class FederatedPhysicalPlannerTests(unittest.TestCase):
         self.assertEqual(planned.explain.nodes[-2].kind, "coordinator_sort_page")
         self.assertEqual(planned.explain.nodes[-2].limit, 2)
 
-    def test_single_source_keeps_complete_filter_order_and_page_remote(self) -> None:
+    def test_single_source_pushes_complete_filter_order_and_page(self) -> None:
         planned = self._plan(
             {
                 "from": {"dataset": "customer"},
@@ -105,7 +107,8 @@ class FederatedPhysicalPlannerTests(unittest.TestCase):
                 "page": {"first": 3},
             }
         )
-        scan = planned.plan.input.input.input
+        scan = planned.plan.input.input  # whole filter pushed: no coordinator filter
+        self.assertIsInstance(scan, RemoteScan)
         self.assertEqual(scan.source.source_name, "crm")
         self.assertIsNotNone(scan.pushed_filter)
         self.assertEqual(scan.limit, 3)

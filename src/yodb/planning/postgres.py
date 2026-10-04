@@ -35,6 +35,7 @@ class PostgresPlanningAdapter(SourcePlanningAdapter):
     """Declare the portable logical operations the V0.1 compiler preserves."""
 
     source_kind = SourceKind.POSTGRES
+    supports_key_lookup = True
 
     def plan_remote_scan(
         self,

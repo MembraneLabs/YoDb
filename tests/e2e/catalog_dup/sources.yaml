@@ -1,0 +1,24 @@
+api_version: yodb/v0.1
+sources:
+  crm:
+    kind: postgres
+    connection_ref: e2e-crm
+    read_only: true
+    datasets:
+      dup_customer:
+        resource: crm.accounts
+        identity: [id]
+        fields: {id: {physical_name: account_id}, name: {physical_name: company_name}}
+  billing_dup:
+    kind: postgres
+    connection_ref: e2e-billing
+    read_only: true
+    datasets:
+      dup_customer:
+        resource: billing.dup_accounts
+        identity: [id]
+        fields: {id: {physical_name: customer_id}, plan: {physical_name: plan}}
+resolution:
+  dup_customer:
+    identity_source: crm
+    field_sources: {id: crm, name: crm, plan: billing_dup}

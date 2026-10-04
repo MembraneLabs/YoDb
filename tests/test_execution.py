@@ -93,13 +93,12 @@ class QueryExecutionEngineTests(unittest.TestCase):
     def test_assembles_two_sources_then_applies_full_filter_global_order_and_page(self) -> None:
         executor = SourceRowsExecutor(
             {
+                # Each source returns what its pushed predicate selects.
                 "crm": (
                     {"id": "c1", "name": "Zulu", "status": "active"},
-                    {"id": "c2", "name": "Alpha", "status": "inactive"},
                     {"id": "c3", "name": "Bravo", "status": "active"},
                 ),
                 "billing": (
-                    {"id": "c1", "plan": "basic"},
                     {"id": "c2", "plan": "enterprise"},
                     {"id": "c3", "plan": "enterprise"},
                 ),
@@ -125,9 +124,12 @@ class QueryExecutionEngineTests(unittest.TestCase):
         )
 
         self.assertEqual([dict(row) for row in result.rows], [{"id": "c3", "name": "Bravo", "plan": "enterprise"}])
-        self.assertEqual([query.source_name for query in executor.queries], ["crm", "billing"])
-        self.assertIn('WHERE "status" = %s', executor.queries[0].sql)
-        self.assertIn('WHERE "plan" = %s', executor.queries[1].sql)
+        # The billing predicate makes it a required match, so it runs first and
+        # its IDs restrict the CRM scan.
+        self.assertEqual([query.source_name for query in executor.queries], ["billing", "crm"])
+        self.assertIn('WHERE "plan" = %s', executor.queries[0].sql)
+        self.assertIn('WHERE ("status" = %s) AND "account_id" IN (%s, %s)', executor.queries[1].sql)
+        self.assertEqual(executor.queries[1].parameters[:3], ("active", "c2", "c3"))
         self.assertTrue(all('ORDER BY' not in query.sql for query in executor.queries))
         self.assertTrue(all('LIMIT %s' in query.sql for query in executor.queries))
 

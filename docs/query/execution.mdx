@@ -86,15 +86,25 @@ engine do not become database-specific.
 V0.1 executes both single-source PostgreSQL queries and a bounded baseline
 multi-source shape for one logical dataset. The engine has one source-local
 `RemoteScan` per participating representation. It assembles contributor rows
-onto the identity-source records by the declared logical `id`, then evaluates
-the complete filter, global order, and page locally before exposing the
-requested projection.
+onto the identity-source records by the declared logical `id`, then applies
+any filter the sources did not enforce, the global order, and the page locally
+before exposing the requested projection. A coordinator filter is omitted when
+the sources already enforced every term (the whole filter is one source's, or a
+pure conjunction whose every term was pushed).
 
 For multi-source queries, only individual top-level `all`/AND predicates owned
 by one source may be pushed. Cross-source `any`/OR and `not` expressions stay
 at the coordinator. A contributor scan that has a pushed conjunct is also a
 required matching-ID set, preventing a non-returned contributor record from
-being mistaken for a null field value.
+being mistaken for a null field value. `is_null` on a contributor is never
+pushed: a missing contributor row is NULL, so it is evaluated after assembly.
+
+Required contributors run first. Their IDs (intersected) restrict the next
+scan and finally the identity-source scan with `id IN (...)`; optional
+contributors are then restricted to the identity-source IDs. A key set larger
+than the planner's `maximum_transfer_keys` (default 1,000) is not transferred
+and that scan runs unrestricted under its row guard. An empty key set ends the
+query without reading the remaining sources.
 
 `contains` and `starts_with` currently run only at the coordinator. When a
 residual predicate exists, the planner does not push ordering or paging ahead

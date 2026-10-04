@@ -85,6 +85,10 @@ class SourcePlanningAdapter(Protocol):
     @property
     def source_kind(self) -> SourceKind: ...
 
+    @property
+    def supports_key_lookup(self) -> bool:
+        """Whether a scan may be restricted to a bounded set of logical IDs."""
+
     def plan_remote_scan(
         self,
         source: SingleSourceQueryBinding,
@@ -103,6 +107,9 @@ class RemoteScan:
     limit: int | None
     maximum_rows: int | None
     properties: PlanProperties
+    # Filled in by the executor at run time (never by the planner): a bounded
+    # set of logical IDs learned from another scan, ANDed with ``pushed_filter``.
+    key_filter: tuple[object, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -113,6 +120,9 @@ class RecordAssembly:
     contributors: tuple[RemoteScan, ...]
     required_contributor_matches: tuple[str, ...]
     properties: PlanProperties
+    # Largest logical-ID set the executor may transfer between sources to
+    # restrict a later scan; ``None`` disables transfer.
+    maximum_transfer_keys: int | None = None
 
 
 @dataclass(frozen=True)
@@ -156,6 +166,7 @@ class PlanExplanationNode:
     residual_filter: bool = False
     ordering: tuple[str, ...] = ()
     limit: int | None = None
+    key_transfer_max_keys: int | None = None
 
 
 @dataclass(frozen=True)

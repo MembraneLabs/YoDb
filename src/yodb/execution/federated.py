@@ -7,7 +7,7 @@ semantics are enforced over normalized rows at the coordinator.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import cmp_to_key
 from typing import Any
 
@@ -116,31 +116,67 @@ class FederatedPlanExecutor:
         *,
         timeout_seconds: float | None,
     ) -> tuple[LogicalRow, ...]:
-        anchor_rows = self._execute(plan.anchor, timeout_seconds=timeout_seconds)
+        """Run the scans in a key-transfer order, then left-enrich the anchor.
+
+        Contributors with a pushed filter are *required matches*: an anchor row
+        survives only if the contributor also returned it.  They run first and
+        each narrows the ID set (intersection) that restricts the next scan and
+        finally the anchor.  Optional contributors run last, restricted to the
+        anchor IDs.  A key set larger than ``plan.maximum_transfer_keys`` is not
+        transferred (that scan runs unrestricted, still under its row guard),
+        and an empty key set ends the query without further source reads.
+        """
+
+        required = [c for c in plan.contributors if c.source.source_name in plan.required_contributor_matches]
+        optional = [c for c in plan.contributors if c.source.source_name not in plan.required_contributor_matches]
+        keys: set[object] | None = None
+        required_rows: list[tuple[RemoteScan, tuple[LogicalRow, ...]]] = []
+        required_ids: list[set[object]] = []
+        for contributor in required:
+            rows = self._scan(contributor, keys, plan.maximum_transfer_keys, timeout_seconds)
+            ids = {row["id"] for row in rows}
+            required_rows.append((contributor, rows))
+            required_ids.append(ids)
+            keys = ids if keys is None else keys & ids
+            if not keys:
+                return ()
+
+        anchor_rows = self._scan(plan.anchor, keys, plan.maximum_transfer_keys, timeout_seconds)
         self._ensure_unique_ids(anchor_rows, plan.anchor.source.source_name)
-        records: dict[object, dict[str, object]] = {
-            row["id"]: dict(row) for row in anchor_rows if row.get("id") is not None
-        }
-        required_matches: dict[str, set[object]] = {}
-        for contributor in plan.contributors:
-            contributor_rows = self._execute(contributor, timeout_seconds=timeout_seconds)
-            self._ensure_unique_ids(contributor_rows, contributor.source.source_name)
-            if contributor.source.source_name in plan.required_contributor_matches:
-                required_matches[contributor.source.source_name] = {
-                    row["id"] for row in contributor_rows if row.get("id") is not None
-                }
-            for row in contributor_rows:
-                logical_id = row.get("id")
-                target = records.get(logical_id)
-                if target is None:
-                    continue
-                # The identity is a join key, never a competing field value.
-                target.update((name, value) for name, value in row.items() if name != "id")
+        records: dict[object, dict[str, object]] = {row["id"]: dict(row) for row in anchor_rows}
+        if not records:
+            return ()
+
+        optional_rows = [
+            (contributor, self._scan(contributor, set(records), plan.maximum_transfer_keys, timeout_seconds))
+            for contributor in optional
+        ]
+        for contributor, rows in (*required_rows, *optional_rows):
+            for row in rows:
+                target = records.get(row["id"])
+                if target is not None:
+                    # The identity is a join key, never a competing field value.
+                    target.update((name, value) for name, value in row.items() if name != "id")
         return tuple(
             record
             for logical_id, record in records.items()
-            if all(logical_id in ids for ids in required_matches.values())
+            if all(logical_id in ids for ids in required_ids)
         )
+
+    def _scan(
+        self,
+        scan: RemoteScan,
+        keys: set[object] | None,
+        maximum_keys: int | None,
+        timeout_seconds: float | None,
+    ) -> tuple[LogicalRow, ...]:
+        """Execute one scan, restricted to ``keys`` when that set is small enough."""
+
+        if keys is not None and maximum_keys is not None and len(keys) <= maximum_keys:
+            scan = replace(scan, key_filter=tuple(sorted(keys, key=str)))
+        rows = self._execute(scan, timeout_seconds=timeout_seconds)
+        self._ensure_unique_ids(rows, scan.source.source_name)
+        return rows
 
     @staticmethod
     def _ensure_unique_ids(rows: tuple[LogicalRow, ...], source_name: str) -> None:

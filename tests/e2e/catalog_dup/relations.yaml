@@ -1,0 +1,11 @@
+api_version: yodb/v0.1
+relationships:
+  customer_reference:
+    from: dup_customer
+    to: dup_customer
+    description: Placeholder; the loader requires one relationship. Not used by V0.1 queries.
+    cardinality: one_to_one
+    direction: uni
+    implementations:
+      - from: {source: crm, field: id}
+        to: {source: crm, field: id}
