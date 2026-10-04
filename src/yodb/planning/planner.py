@@ -12,6 +12,7 @@ from ..query.models import (
     BoundFilterExpression,
     BoundPredicate,
     BoundQuery,
+    ComparisonOperator,
 )
 from ..query.resolution import QuerySourceShape, ResolvedField, SingleSourceQueryBinding, SourceResolvedQuery
 from .contracts import (
@@ -214,8 +215,15 @@ def _source_local_filters(resolved: SourceResolvedQuery) -> dict[str, BoundFilte
     grouped: dict[str, list[BoundPredicate]] = {source.source_name: [] for source in resolved.sources}
     for predicate in predicates:
         source_name = fields_to_source.get(predicate.field.name)
-        if source_name is not None:
-            grouped[source_name].append(predicate)
+        if source_name is None:
+            continue
+        # A contributor row that is absent enriches as all-NULL, so an IS NULL
+        # test is TRUE for it.  Pushing that test would hide contributor rows
+        # whose value is non-null and make them look NULL after assembly, so
+        # it must stay in the coordinator residual only.
+        if source_name != resolved.identity_source.source_name and predicate.operator is ComparisonOperator.IS_NULL:
+            continue
+        grouped[source_name].append(predicate)
     return {
         source_name: None
         if not source_predicates
