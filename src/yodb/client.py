@@ -46,6 +46,7 @@ from .inspection import (
 from .planning import (
     FederatedPhysicalPlanner,
     ObservationStore,
+    JoinPolicy,
     PlannerPolicy,
     PlanExplanation,
     PostgresPlanningAdapter,
@@ -80,6 +81,7 @@ class YoDb:
         statement_timeout_seconds: float | None = 60.0,
         planner_policy: PlannerPolicy = PlannerPolicy(),
         execution_policy: FederatedExecutionPolicy = FederatedExecutionPolicy(),
+        join_policy: JoinPolicy = JoinPolicy(),
         pool_factory=None,
     ) -> "YoDb":
         """Load ``catalog`` (a directory of the three YAML files), inspect every source, and open it.
@@ -131,6 +133,7 @@ class YoDb:
                 statistics=stats,
                 extensions=extensions,
                 execution_policy=execution_policy,
+                join_policy=join_policy,
             )
         except BaseException:
             adapter.close()

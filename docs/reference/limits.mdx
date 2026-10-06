@@ -51,8 +51,9 @@ orders text in the database.
 
 ## Planning
 
-- Costs assume that filters are independent. Range estimates use a default
-  (histograms are not read). Run `ANALYZE` on your tables.
+- Costs assume that filters are independent. Estimates come from `pg_stats` (distinct
+  counts, most common values, histograms for ranges); a column without statistics falls
+  back to fixed defaults. Run `ANALYZE` on your tables.
 - The cost-based search covers up to 10 sources that bound the result and one
   extension operator (the semantic filter) per query; otherwise the fixed rules
   plan the query.

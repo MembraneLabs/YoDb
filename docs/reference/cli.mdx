@@ -51,5 +51,8 @@ Keep the file out of version control and readable only by you.
 
 Error messages never contain connection strings, passwords, SQL or values.
 
+A query with a `traverse` step ([joins](/query/joins)) runs and explains the same way; its output rows carry
+the traversed fields prefixed with the `as` name (`ticket.subject`).
+
 The command does not configure the [semantic filter](/query/semantic-filter),
 which needs providers: use the Python API for that.

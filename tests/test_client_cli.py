@@ -95,6 +95,25 @@ class ClientTests(unittest.TestCase):
         self.assertEqual(closed, [1])
 
 
+class ConnectOptionsTests(unittest.TestCase):
+    def test_every_policy_the_docs_name_can_be_given_to_connect(self) -> None:
+        import inspect
+
+        parameters = inspect.signature(YoDb.connect).parameters
+        for name in ("planner_policy", "execution_policy", "join_policy", "statement_timeout_seconds", "semantic", "statistics", "pool_size"):
+            self.assertIn(name, parameters)
+
+    def test_the_join_policy_reaches_the_engine(self) -> None:
+        from yodb.planning import JoinPolicy
+
+        policy = JoinPolicy(maximum_driver_rows=7)
+        engine = QueryExecutionEngine(
+            StaticRuntime(ACTIVE), QueryCompilerRegistry([PostgresQueryCompiler()]),
+            QueryExecutionAdapterRegistry([SourceRowsExecutor({})]), join_policy=policy,
+        )
+        self.assertIs(engine._joins._policy, policy)
+
+
 class ActivationFailureTests(unittest.TestCase):
     @staticmethod
     def result(**sources):

@@ -28,11 +28,13 @@ their names; fields of the traversed dataset are prefixed with the `as` name.
 id  name  country  ticket.id  ticket.subject  ticket.status
 --  ----  -------  ---------  --------------  -------------
 c1  Ann   US       t3         Crash           open
-c1  Ann   US       t1         Login           open
 c3  Cai   US       t6         Refund          open
+c1  Ann   US       t1         Login           open
+(3 rows)
 ```
 
-`id` is the customer's and `ticket.id` the ticket's; a customer with three open tickets appears three times.
+`id` is the customer's and `ticket.id` the ticket's. Rows are ordered by ticket priority, then by name, so Ann
+(who has two open tickets) appears twice, once per ticket.
 
 ## The `traverse` step
 
@@ -85,7 +87,7 @@ optimizer: strategy=cost_based driver=right estimated_root_rows=1000000 estimate
 | time | one budget for the whole join (`timeout_seconds`) | `query_timeout` |
 
 A join of two large, unfiltered datasets is refused, not attempted: filter one side so that it has at most
-10,000 rows, or both so that the result fits. `JoinPolicy` changes the bounds.
+10,000 rows, or both so that the result fits. Pass a `JoinPolicy` (`yodb.connect(..., join_policy=JoinPolicy(maximum_driver_rows=...))`) to change them.
 
 A batch of keys whose matches overflow a read guard (a few very popular keys) is split in two and each half
 is read separately, so a skewed side does not stop a join that fits overall. Each side is also subject to the

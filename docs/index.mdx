@@ -32,11 +32,13 @@ datasets, sources, and relationships.
 - Typed queries over one logical dataset whose fields live in one or several
   PostgreSQL databases: filters, ordering, paging, assembled by logical ID, with
   a plan you can inspect.
+- [Joins](/query/joins) between two datasets over a relationship you declare, even when they
+  live in different databases or on different servers.
 - A cost-based planner that uses database statistics, falling back to fixed rules.
 - A semantic filter (a natural-language condition judged by a verifier you
   supply), optionally shortlisted by vector search, with the vectors in the same
   database or a separate one.
 - A `yodb` command and a Python front door, `yodb.connect`.
 
-Graph traversal, cursor paging, joins and aggregation, and the Neo4j adapter
-are not implemented; see [Limits](/reference/limits).
+Graph traversal, cursor paging, aggregation, and the Neo4j adapter are not
+implemented; see [Limits](/reference/limits).
