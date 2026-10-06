@@ -1,0 +1,67 @@
+---
+title: Running YoDb
+description: Connections, timeouts, pools, safety, and how it is tested.
+---
+
+## Connections and secrets
+
+Connection strings stay out of the catalog. Use `YODB_CONN_<REF>` environment
+variables, a connections file, or your own resolver object (any object with
+`resolve(ref) -> PostgresConnectionSettings`, for example one backed by a secret
+manager). Give YoDb a **read-only role** with `SELECT` on the tables in the
+catalog and on `pg_stats` (visible by default for those tables).
+
+On first use of a connection reference YoDb opens one connection to check it.
+Wrong credentials or an unreachable host fail at once with
+`source_authentication_failed` or `source_unavailable`, not after a pool's
+retries, and a reference that just failed is not retried for a few seconds.
+
+## Safety
+
+- Every session is opened `default_transaction_read_only=on` and in UTC,
+  whatever the role may do.
+- Values are always sent as bound parameters. Every name in a query (dataset,
+  field, operator, direction) is checked against the catalog or a fixed list
+  before anything reaches a database.
+- A query is refused if its filter nests deeper than 32 levels or has more than
+  1,000 terms, or a list has more than 1,000 values, so untrusted input cannot
+  make YoDb walk an unbounded structure.
+- Errors never include connection strings, SQL or values.
+
+## Time
+
+`timeout_seconds` is **one budget for the whole query**: every read and every
+provider call gets what is left, and the database cancels a statement that
+outlives it (`query_timeout`, retryable). Without it a statement is cancelled
+after 60 seconds (`statement_timeout_seconds` in `yodb.connect`). Waiting for a
+pooled connection is bounded by the query's budget, or by
+`acquire_timeout_seconds` (30 s) when there is none.
+
+## Pools
+
+Each connection reference has its own pool of up to `pool_size` connections
+(default 10). `yodb.connect` is safe to share between threads; a pool that is
+exhausted makes callers wait and then fail with `connection_pool_timeout`, and it
+recovers when the load stops. Close the client (`with` block or `db.close()`) to
+close every connection.
+
+## Keeping up with change
+
+`db.refresh()` re-reads the catalog files and re-inspects the sources. The old
+catalog stays active unless the new one validates completely. Planner statistics
+come from `pg_stats` (cached for five minutes) and from the scans YoDb runs.
+
+## How it is tested
+
+```bash
+PYTHONPATH=src python -m unittest discover -s tests            # unit tests, no database
+python tests/e2e/run_e2e.py                                    # 77 hand-written cases against a real PostgreSQL
+python tests/e2e/run_matrix.py                                 # ~8,800 generated queries compared with a native SQL oracle
+python tests/e2e/run_robustness.py                             # hostile input, timeouts, concurrency, a million rows
+python tests/e2e/run_joins.py                                  # joins of 50,000 x 300,000 rows across four sources, against SQL joins
+python tests/e2e/real/run_realdata.py                          # semantic filter on real data, vectors on a second server
+python tests/e2e/real/run_realjoins.py                         # joins between datasets on two different servers
+```
+
+The end-to-end runners need a throwaway PostgreSQL with pgvector; the setup
+commands are in `tests/e2e/README.md`.

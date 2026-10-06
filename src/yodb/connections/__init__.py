@@ -2,6 +2,7 @@
 
 from .contracts import ConnectionReferenceResolver, SourceConnectionAdapter
 from .postgres import (
+    EnvPostgresConnectionResolver,
     MappingPostgresConnectionResolver,
     PostgresConnectionAdapter,
     PostgresConnectionReferenceResolver,
@@ -10,6 +11,7 @@ from .postgres import (
 from .registry import ConnectionAdapterRegistry
 
 __all__ = [
+    "EnvPostgresConnectionResolver",
     "ConnectionReferenceResolver",
     "ConnectionAdapterRegistry",
     "MappingPostgresConnectionResolver",

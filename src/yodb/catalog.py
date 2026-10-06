@@ -96,10 +96,39 @@ class SourceFieldSpec(StrictModel):
     physical_name: str
 
 
+class VectorMetric(str, Enum):
+    COSINE = "cosine"
+    L2 = "l2"
+    INNER_PRODUCT = "inner_product"
+
+
+class EmbeddingBinding(StrictModel):
+    """A vector column holding precomputed embeddings of one logical text field.
+
+    The column sits either in the source that owns the text, or in a separate
+    *vector store* source that represents the same dataset (identity only).
+
+    The embedding is a physical retrieval aid for ``SemanticFilter``; callers
+    never name it.  ``model``, ``dimensions``, ``metric`` and ``version`` must
+    describe how the stored vectors were produced so a query embedding is only
+    ever compared with vectors of the same space.
+    """
+
+    column: str
+    model: str
+    dimensions: int = Field(gt=0)
+    metric: VectorMetric = VectorMetric.COSINE
+    version: str = "1"
+
+
 class SourceDatasetSpec(StrictModel):
     resource: str
     identity: tuple[str, ...] = Field(min_length=1)
     fields: dict[str, SourceFieldSpec]
+    # Logical text field name -> the vector column embedding it in this source.
+    # A binding may sit in a *vector store* representation that maps only the identity: the
+    # logical text field is then owned by another source, and this source holds only its vectors.
+    embeddings: dict[str, EmbeddingBinding] = Field(default_factory=dict)
 
 
 class SourceSpec(StrictModel):
@@ -238,9 +267,46 @@ def _validate_catalog(catalog: Catalog) -> None:
                         f"sources.{source_name}.datasets.{dataset_name}.identity field "
                         f"'{identity_field}' is not mapped"
                     )
+            for field_name, embedding in representation.embeddings.items():
+                location = f"sources.{source_name}.datasets.{dataset_name}.embeddings.{field_name}"
+                logical_field = catalog.datasets[dataset_name].fields.get(field_name)
+                if logical_field is None:
+                    raise CatalogValidationError(f"{location} must name a logical field of the dataset")
+                if field_name in representation.fields:
+                    pass                      # the vectors sit next to the text
+                elif "id" not in representation.identity:
+                    raise CatalogValidationError(
+                        f"{location}: a vector store representation must map the dataset identity 'id'"
+                    )
+                if not logical_field.semantic_eligible or logical_field.type not in {
+                    LogicalType.STRING,
+                    LogicalType.TEXT,
+                }:
+                    raise CatalogValidationError(
+                        f"{location} requires a string/text field with semantic_eligible: true"
+                    )
+                if not embedding.column.strip() or not embedding.model.strip() or not embedding.version.strip():
+                    raise CatalogValidationError(f"{location} column, model and version must not be blank")
+    _validate_embedding_owners(catalog)
 
     _validate_resolutions(catalog)
     _validate_relationships(catalog)
+
+
+def _validate_embedding_owners(catalog: Catalog) -> None:
+    """One logical text field has at most one embedding declaration across all sources."""
+
+    seen: dict[tuple[str, str], str] = {}
+    for source_name, source in catalog.sources.items():
+        for dataset_name, representation in source.datasets.items():
+            for field_name in representation.embeddings:
+                key = (dataset_name, field_name)
+                if key in seen:
+                    raise CatalogValidationError(
+                        f"embeddings for '{dataset_name}.{field_name}' are declared by both "
+                        f"'{seen[key]}' and '{source_name}'; declare them once"
+                    )
+                seen[key] = source_name
 
 
 def _validate_resolutions(catalog: Catalog) -> None:
@@ -318,6 +384,16 @@ def _validate_relationships(catalog: Catalog) -> None:
 
             if implementation.edge_type is not None:
                 _validate_graph_implementation(catalog, relationship_name, relationship, implementation)
+            else:
+                from_type = catalog.datasets[relationship.from_dataset].fields[implementation.from_endpoint.field].type
+                to_type = catalog.datasets[relationship.to_dataset].fields[implementation.to_endpoint.field].type
+                if from_type is not to_type:
+                    raise CatalogValidationError(
+                        f"relationships.{relationship_name}.implementations compares "
+                        f"'{relationship.from_dataset}.{implementation.from_endpoint.field}' ({from_type.value}) with "
+                        f"'{relationship.to_dataset}.{implementation.to_endpoint.field}' ({to_type.value}); "
+                        "the two fields must have the same type"
+                    )
 
 
 def _validate_source_field(

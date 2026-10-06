@@ -102,8 +102,9 @@ pushed: a missing contributor row is NULL, so it is evaluated after assembly.
 Required contributors run first. Their IDs (intersected) restrict the next
 scan and finally the identity-source scan with `id IN (...)`; optional
 contributors are then restricted to the identity-source IDs. A key set larger
-than the planner's `maximum_transfer_keys` (default 1,000) is not transferred
-and that scan runs unrestricted under its row guard. An empty key set ends the
+than the planner's `maximum_transfer_keys` (default 1,000) is sent in batches of
+that size, up to `maximum_key_batches` (default 20) reads; beyond that the scan
+runs unrestricted under its row guard. An empty key set ends the
 query without reading the remaining sources.
 
 `contains` and `starts_with` currently run only at the coordinator. When a
@@ -111,8 +112,10 @@ residual predicate exists, the planner does not push ordering or paging ahead
 of it; it uses a bounded remote scan instead. This is slower than native text
 pushdown but preserves logical results.
 
-Relationship traversal, semantic search, cursor pagination, key transfer,
-parallel scan scheduling, and non-PostgreSQL adapters remain future plan nodes.
+Cost-based read ordering and the semantic filter are described in
+[How queries are planned](/query/planning) and [Semantic filter](/query/semantic-filter).
+Relationship traversal, cursor pagination, parallel scan scheduling, and
+non-PostgreSQL adapters remain future work; see [Limits](/reference/limits).
 
 ## Bounds and explain
 

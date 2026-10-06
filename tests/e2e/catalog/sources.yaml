@@ -47,7 +47,208 @@ sources:
           id:           {physical_name: customer_id}
           tier:         {physical_name: tier}
           open_tickets: {physical_name: open_tickets}
+  desk:
+    kind: postgres
+    connection_ref: e2e-support
+    read_only: true
+    datasets:
+      ticket:
+        resource: helpdesk.tickets
+        identity: [id]
+        fields:
+          id:       {physical_name: ticket_id}
+          subject:  {physical_name: subject}
+          body:     {physical_name: body}
+          priority: {physical_name: priority}
+        embeddings:
+          body: {column: body_embedding, model: toy-v1, dimensions: 5, metric: cosine}
+  owners:
+    kind: postgres
+    connection_ref: e2e-support
+    read_only: true
+    datasets:
+      ticket:
+        resource: helpdesk.owners
+        identity: [id]
+        fields:
+          id:    {physical_name: ticket_id}
+          owner: {physical_name: owner}
+  items:
+    kind: postgres
+    connection_ref: e2e-support
+    read_only: true
+    datasets:
+      item:
+        resource: bulk.items
+        identity: [id]
+        fields:
+          id:   {physical_name: item_id}
+          kind: {physical_name: kind}
+  tags:
+    kind: postgres
+    connection_ref: e2e-support
+    read_only: true
+    datasets:
+      item:
+        resource: bulk.tags
+        identity: [id]
+        fields:
+          id:  {physical_name: item_id}
+          tag: {physical_name: tag}
+  sales:
+    kind: postgres
+    connection_ref: e2e-sales
+    read_only: true
+    datasets:
+      order:
+        resource: sales.orders
+        identity: [id]
+        fields:
+          id:           {physical_name: order_id}
+          customer_ref: {physical_name: customer_ref}
+          status:       {physical_name: status}
+          amount:       {physical_name: amount}
+          items:        {physical_name: items}
+          placed_at:    {physical_name: placed_at}
+          rush:         {physical_name: rush}
+          channel:      {physical_name: channel}
+  payments:
+    kind: postgres
+    connection_ref: e2e-payments
+    read_only: true
+    datasets:
+      order:
+        resource: payments.payments
+        identity: [id]
+        fields:
+          id:          {physical_name: order_id}
+          method:      {physical_name: method}
+          paid_amount: {physical_name: paid_amount}
+          settled:     {physical_name: settled}
+  logistics:
+    kind: postgres
+    connection_ref: e2e-logistics
+    read_only: true
+    datasets:
+      order:
+        resource: logistics.shipments
+        identity: [id]
+        fields:
+          id:      {physical_name: order_id}
+          carrier: {physical_name: carrier}
+          days:    {physical_name: days}
+          express: {physical_name: express}
+  bigmain:
+    kind: postgres
+    connection_ref: e2e-support
+    read_only: true
+    datasets:
+      big:
+        resource: scale.items
+        identity: [id]
+        fields:
+          id:         {physical_name: item_id}
+          kind:       {physical_name: kind}
+          amount:     {physical_name: amount}
+          created_at: {physical_name: created_at}
+          flag:       {physical_name: flag}
+          note:       {physical_name: note}
+  bigattrs:
+    kind: postgres
+    connection_ref: e2e-support
+    read_only: true
+    datasets:
+      big:
+        resource: scale.attrs
+        identity: [id]
+        fields:
+          id:      {physical_name: item_id}
+          segment: {physical_name: segment}
+          score:   {physical_name: score}
+          code:    {physical_name: code}
+  buyers_db:
+    kind: postgres
+    connection_ref: e2e-crm
+    read_only: true
+    datasets:
+      buyer:
+        resource: scale.buyers
+        identity: [id]
+        fields:
+          id:        {physical_name: buyer_id}
+          name:      {physical_name: name}
+          region:    {physical_name: region}
+          tier:      {physical_name: tier}
+          joined_at: {physical_name: joined_at}
+  buyer_scores_db:
+    kind: postgres
+    connection_ref: e2e-billing
+    read_only: true
+    datasets:
+      buyer:
+        resource: scale.buyer_scores
+        identity: [id]
+        fields:
+          id:    {physical_name: buyer_id}
+          score: {physical_name: score}
+  purchases_db:
+    kind: postgres
+    connection_ref: e2e-support
+    read_only: true
+    datasets:
+      purchase:
+        resource: scale.purchases
+        identity: [id]
+        fields:
+          id:           {physical_name: purchase_id}
+          buyer_id:     {physical_name: buyer_id}
+          amount:       {physical_name: amount}
+          status:       {physical_name: status}
+          purchased_at: {physical_name: purchased_at}
+  shipping_db:
+    kind: postgres
+    connection_ref: e2e-sales
+    read_only: true
+    datasets:
+      purchase:
+        resource: scale.purchase_shipping
+        identity: [id]
+        fields:
+          id:      {physical_name: purchase_id}
+          carrier: {physical_name: carrier}
 resolution:
+  buyer:
+    identity_source: buyers_db
+    field_sources: {id: buyers_db, name: buyers_db, region: buyers_db, tier: buyers_db, joined_at: buyers_db, score: buyer_scores_db}
+  purchase:
+    identity_source: purchases_db
+    field_sources: {id: purchases_db, buyer_id: purchases_db, amount: purchases_db, status: purchases_db, purchased_at: purchases_db, carrier: shipping_db}
+  big:
+    identity_source: bigmain
+    field_sources: {id: bigmain, kind: bigmain, amount: bigmain, created_at: bigmain, flag: bigmain, note: bigmain, segment: bigattrs, score: bigattrs, code: bigattrs}
+  order:
+    identity_source: sales
+    field_sources:
+      id: sales
+      customer_ref: sales
+      status: sales
+      amount: sales
+      items: sales
+      placed_at: sales
+      rush: sales
+      channel: sales
+      method: payments
+      paid_amount: payments
+      settled: payments
+      carrier: logistics
+      days: logistics
+      express: logistics
+  item:
+    identity_source: items
+    field_sources: {id: items, kind: items, tag: tags}
+  ticket:
+    identity_source: desk
+    field_sources: {id: desk, subject: desk, body: desk, priority: desk, owner: owners}
   customer:
     identity_source: crm
     field_sources:

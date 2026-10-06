@@ -15,7 +15,7 @@ source resolution
     ↓
 single-source binding OR multi-source binding
     ↓
-future planner and source-specific compiler
+planner and source-specific compiler
 ```
 
 ## One source
@@ -79,9 +79,9 @@ billing_postgres
 link: crm_postgres.logical_id = billing_postgres.logical_id
 ```
 
-This is not a cross-database SQL join. The future record-assembly planner can
-use the link to run bounded source-local work, transfer logical IDs, and merge
-approved fields into one logical customer record.
+This is not a cross-database SQL join. The record-assembly planner uses the link
+to run bounded source-local work, transfer logical IDs, and merge approved fields
+into one logical customer record.
 
 ## The logical-ID requirement
 
@@ -125,8 +125,8 @@ customer → support_ticket
 ```
 
 The first is implicit only after both sources explicitly map the same logical
-`id`. The second must always be explicitly declared and is used for future
-graph traversal. Neither is inferred by YoDb.
+`id`. The second must always be explicitly declared; a query follows it with
+`traverse` (see [Joins](/query/joins)), and graph-edge traversal is not implemented yet. Neither is inferred by YoDb.
 
 ## Current status
 

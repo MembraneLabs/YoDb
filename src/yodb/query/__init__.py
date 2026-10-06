@@ -10,9 +10,11 @@ from .models import (
     BoundNotExpression,
     BoundOrderTerm,
     BoundPredicate,
+    BoundExtensionTerm,
     BoundQuery,
     ComparisonOperator,
     DatasetReference,
+    ExtensionTerm,
     NotExpression,
     OrderTerm,
     PageRequest,
@@ -21,7 +23,9 @@ from .models import (
     QueryRequest,
     SortDirection,
 )
+from .extensions import TermExtension, TermRegistry, extension_terms
 from .parser import parse_query
+from .registry import DEFAULT_TERMS
 from .resolution import (
     FieldUse,
     LogicalIdLink,
@@ -31,9 +35,16 @@ from .resolution import (
     SourceResolvedQuery,
     resolve_query_sources,
 )
+from .semantic import BoundSemanticPredicate, SemanticPredicate, semantic_predicates, without_semantic_terms
 from .validation import QueryValidationPolicy, bind_query, validate_query
 
 __all__ = [
+    "BoundExtensionTerm",
+    "DEFAULT_TERMS",
+    "ExtensionTerm",
+    "TermExtension",
+    "TermRegistry",
+    "extension_terms",
     "AllExpression",
     "AnyExpression",
     "BoundAllExpression",
@@ -44,6 +55,7 @@ __all__ = [
     "BoundOrderTerm",
     "BoundPredicate",
     "BoundQuery",
+    "BoundSemanticPredicate",
     "ComparisonOperator",
     "DatasetReference",
     "FieldUse",
@@ -56,6 +68,7 @@ __all__ = [
     "QueryRequest",
     "QuerySourceShape",
     "QueryValidationPolicy",
+    "SemanticPredicate",
     "SortDirection",
     "ResolvedField",
     "SingleSourceQueryBinding",
@@ -63,5 +76,7 @@ __all__ = [
     "bind_query",
     "parse_query",
     "resolve_query_sources",
+    "semantic_predicates",
     "validate_query",
+    "without_semantic_terms",
 ]

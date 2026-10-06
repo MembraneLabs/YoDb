@@ -41,7 +41,7 @@ relationships:
 | `direction` | Yes | `uni` or `bi` | Traversal direction policy. |
 | `implementations` | Yes | Non-empty list | Approved physical ways to resolve it. |
 
-`direction: uni` permits traversal from `from` to `to`. `direction: bi`
+`direction: uni` permits traversal from `from` to `to` (see [Joins](/query/joins) for how a query uses a relationship). `direction: bi`
 permits traversal in both directions. `cardinality` is always required even
 though V0.1 is read-only; it records business semantics.
 

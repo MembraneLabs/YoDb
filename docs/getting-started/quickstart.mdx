@@ -1,0 +1,148 @@
+---
+title: Quickstart
+description: Install YoDb, point it at a catalog, and run a first query.
+---
+
+## Install
+
+From a checkout of the repository:
+
+```bash
+pip install .                 # the library and the `yodb` command
+pip install ".[semantic]"     # optional: a local embedding model for the semantic filter
+```
+
+YoDb needs Python 3.11+ and read access to your PostgreSQL databases. It never
+writes to a source: every session it opens is read-only.
+
+## 1. Write a catalog
+
+A catalog is a directory of three files, `datasets.yaml`, `sources.yaml` and
+`relations.yaml` (see [Catalog overview](/catalog/overview)). Check it without
+touching a database:
+
+```bash
+yodb catalog catalog/
+```
+
+```text
+catalog shop v1: 1 dataset(s), 3 source(s)
+
+order  - A shop order assembled from sales, payments and logistics.
+  id        id        from sales
+  status    string    from sales
+  amount    float     from sales
+  method    string    from payments
+  carrier   string    from logistics
+```
+
+The listing shows where every field comes from. That is how you know which
+fields you can use in a query.
+
+## 2. Tell YoDb how to connect
+
+The catalog holds only an opaque `connection_ref`; the connection string lives
+outside it. By default each reference is read from an environment variable:
+`YODB_CONN_<REF>`, upper-cased, with every non-alphanumeric character as `_`.
+
+```bash
+export YODB_CONN_SALES="host=db1 dbname=shop user=yodb_ro password=..."
+export YODB_CONN_PAYMENTS="host=db2 dbname=billing user=yodb_ro password=..."
+```
+
+Or give a file (YAML or JSON) mapping each reference to a connection string:
+`yodb ... --connections connections.yaml`. Use a read-only database role.
+
+## 3. Validate
+
+```bash
+yodb validate catalog/
+```
+
+YoDb inspects the real databases and refuses to open a catalog that does not
+match them (a missing table, a missing column, an identity that is not a
+primary or unique key). Nothing is queried until the whole catalog validates.
+
+## 4. Query
+
+A query is a JSON object. Fields are logical names; you never name a source.
+
+```bash
+yodb query catalog/ '{
+  "from": {"dataset": "order"},
+  "select": ["status", "amount", "method", "carrier"],
+  "where": {"all": [
+    {"field": "status", "op": "in", "value": ["paid", "shipped"]},
+    {"field": "method", "op": "eq", "value": "wire"}
+  ]},
+  "order_by": [{"field": "amount", "direction": "desc"}],
+  "page": {"first": 5}
+}'
+```
+
+```text
+id      status   amount  method  carrier
+------  -------  ------  ------  -------
+o05207  shipped  386.83  wire    NULL
+o03616  paid     386.37  wire    ups
+...
+(5 rows)
+```
+
+`status` lives in one database and `method` in another; YoDb assembled the
+records. See the plan with `yodb explain` (same arguments), and read more in
+[How queries are planned](/query/planning).
+
+Pass the query as `@query.json` to read a file, or `-` for standard input.
+`--format json` and `--format jsonl` print machine-readable output.
+
+## Join two datasets
+
+If `relations.yaml` declares a relationship between two datasets, a query can follow it. The datasets
+may live in different databases:
+
+```bash
+yodb query catalog/ '{
+  "from": {"dataset": "customer"}, "select": ["name"], "where": {"field": "country", "op": "eq", "value": "US"},
+  "traverse": [{"relationship": "customer_has_ticket", "as": "ticket", "select": ["subject"],
+                "where": {"field": "status", "op": "eq", "value": "open"}}],
+  "page": {"first": 10}
+}'
+```
+
+You get one row per customer and ticket pair, with the ticket's fields prefixed `ticket.`; see [Joins](/query/joins).
+
+## From Python
+
+```python
+import yodb
+
+with yodb.connect("catalog/") as db:            # connections from YODB_CONN_<REF>
+    result = db.query(query, timeout_seconds=5)  # the time limit covers the whole query
+    for row in result.rows:                      # read-only mappings of logical field -> value
+        print(row["id"], row["status"])
+    print(db.explain(query).nodes)               # the plan, without running it
+    print(db.describe())                         # datasets, fields and types
+```
+
+`yodb.connect` accepts `connections={"sales": "host=..."}` (or a resolver
+object), and `semantic=` for the [semantic filter](/query/semantic-filter).
+Errors are `yodb.YoDbError` subclasses with a stable `code`; see
+[Errors](/reference/errors).
+
+## Filters
+
+| Operator | Types | Meaning |
+| --- | --- | --- |
+| `eq`, `ne` | all | equal, not equal (NULL never matches either) |
+| `in`, `not_in` | all | member of a list of at most 1,000 values |
+| `gt`, `gte`, `lt`, `lte` | int, float, timestamp | comparison (timestamps are ISO 8601 with a zone, e.g. `2024-05-01T00:00:00Z`) |
+| `contains`, `starts_with` | string, text | case-sensitive text match |
+| `is_null`, `is_not_null` | all | NULL tests (no value) |
+
+Combine them with `all` (AND), `any` (OR) and `not`, nested up to 32 levels.
+`{"semantic": {"field": ..., "proposition": ...}}` adds a natural-language
+condition. A page is at most 500 rows (`page.first`); the default is 100.
+Results are ordered by `order_by`, then by `id`.
+
+Read [Limits](/reference/limits) before relying on a query shape in production.

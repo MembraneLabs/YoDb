@@ -8,13 +8,15 @@ those sources can be linked by the dataset's stable logical identity.
 from __future__ import annotations
 
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 
-from ..catalog import SourceKind
+from ..catalog import EmbeddingBinding, SourceKind
 from ..errors import ErrorCode, ErrorDetail, QueryError
 from ..runtime.contracts import CatalogEvaluation
 from .fingerprint import catalog_fingerprint
+from .extensions import TermRegistry, extension_terms
+from .registry import DEFAULT_TERMS
 from .models import (
     BoundAllExpression,
     BoundAnyExpression,
@@ -22,7 +24,9 @@ from .models import (
     BoundFilterExpression,
     BoundNotExpression,
     BoundPredicate,
+    BoundExtensionTerm,
     BoundQuery,
+    FieldUse,
 )
 
 
@@ -31,15 +35,6 @@ class QuerySourceShape(str, Enum):
 
     SINGLE_SOURCE = "single_source"
     MULTI_SOURCE = "multi_source"
-
-
-class FieldUse(str, Enum):
-    """The logical role a field plays in a source-local query fragment."""
-
-    IDENTITY = "identity"
-    PROJECTION = "projection"
-    FILTER = "filter"
-    ORDER = "order"
 
 
 @dataclass(frozen=True)
@@ -71,6 +66,8 @@ class SingleSourceQueryBinding:
     resource: str
     logical_id: ResolvedField
     fields: tuple[ResolvedField, ...]
+    # Logical text field -> vector column describing it in this source.
+    embeddings: dict[str, EmbeddingBinding] = field(default_factory=dict)
 
     @property
     def projection_fields(self) -> tuple[ResolvedField, ...]:
@@ -110,9 +107,14 @@ class SourceResolvedQuery:
     identity_source: SingleSourceQueryBinding
     sources: tuple[SingleSourceQueryBinding, ...]
     logical_id_links: tuple[LogicalIdLink, ...]
+    # Sources an extension term needs beyond the field owners (e.g. a vector store), bound by
+    # identity only.  They are never read as contributors; the extension plans their use.
+    extension_sources: tuple[SingleSourceQueryBinding, ...] = ()
 
 
-def resolve_query_sources(query: BoundQuery, active: CatalogEvaluation) -> SourceResolvedQuery:
+def resolve_query_sources(
+    query: BoundQuery, active: CatalogEvaluation, terms: TermRegistry = DEFAULT_TERMS
+) -> SourceResolvedQuery:
     """Resolve fields against the exact active catalog that bound the query.
 
     Every participating source must declare a unique mapping for the root
@@ -142,7 +144,7 @@ def resolve_query_sources(query: BoundQuery, active: CatalogEvaluation) -> Sourc
             f"resolution.{query.root.name}.field_sources.id",
         )
 
-    field_uses = _collect_field_uses(query)
+    field_uses = _collect_field_uses(query, terms)
     source_fields: dict[str, dict[str, frozenset[FieldUse]]] = defaultdict(dict)
     for field_name, uses in field_uses.items():
         source_name = resolution.field_sources.get(field_name)
@@ -181,13 +183,29 @@ def resolve_query_sources(query: BoundQuery, active: CatalogEvaluation) -> Sourc
         for source in ordered_sources[1:]
     )
     shape = QuerySourceShape.SINGLE_SOURCE if len(ordered_sources) == 1 else QuerySourceShape.MULTI_SOURCE
+    extra_names: dict[str, set[str]] = defaultdict(set)
+    for term in extension_terms(query.where):
+        for name in terms.for_bound(term).extra_sources(term, catalog, query.root.name):
+            if name not in bindings:
+                extra_names[name].update(_embedding_fields(catalog, name, query.root.name))
+    extension_sources = tuple(
+        _resolve_source_binding(name, query, active, {}, embedding_fields=frozenset(fields))
+        for name, fields in sorted(extra_names.items())
+    )
     return SourceResolvedQuery(
         query=query,
         shape=shape,
         identity_source=identity,
         sources=ordered_sources,
         logical_id_links=links,
+        extension_sources=extension_sources,
     )
+
+
+def _embedding_fields(catalog, source_name: str, dataset_name: str) -> set[str]:
+    source = catalog.sources.get(source_name)
+    representation = None if source is None else source.datasets.get(dataset_name)
+    return set() if representation is None else set(representation.embeddings)
 
 
 def _resolve_source_binding(
@@ -195,6 +213,7 @@ def _resolve_source_binding(
     query: BoundQuery,
     active: CatalogEvaluation,
     fields: dict[str, frozenset[FieldUse]],
+    embedding_fields: frozenset[str] = frozenset(),
 ) -> SingleSourceQueryBinding:
     catalog = active.catalog
     source = catalog.sources.get(source_name)
@@ -219,6 +238,11 @@ def _resolve_source_binding(
         resource=representation.resource,
         logical_id=logical_id,
         fields=resolved_fields,
+        embeddings={
+            name: representation.embeddings[name]
+            for name in {*fields, *embedding_fields}
+            if name in representation.embeddings
+        },
     )
 
 
@@ -271,13 +295,16 @@ def _resolve_field(
     )
 
 
-def _collect_field_uses(query: BoundQuery) -> dict[str, set[FieldUse]]:
+def _collect_field_uses(query: BoundQuery, terms: TermRegistry) -> dict[str, set[FieldUse]]:
     uses: dict[str, set[FieldUse]] = defaultdict(set)
     uses["id"].add(FieldUse.IDENTITY)
     for field in query.select:
         uses[field.name].add(FieldUse.PROJECTION)
     for field in _filter_fields(query.where):
         uses[field.name].add(FieldUse.FILTER)
+    for term in extension_terms(query.where):
+        for field, use in terms.for_bound(term).uses(term):
+            uses[field.name].add(use)
     for term in query.order_by:
         uses[term.field.name].add(FieldUse.ORDER)
     return uses
@@ -288,6 +315,8 @@ def _filter_fields(expression: BoundFilterExpression | None) -> tuple[BoundField
         return ()
     if isinstance(expression, BoundPredicate):
         return (expression.field,)
+    if isinstance(expression, BoundExtensionTerm):
+        return ()  # an extension records its own field uses, never a comparison field
     if isinstance(expression, (BoundAllExpression, BoundAnyExpression)):
         return tuple(field for child in expression.expressions for field in _filter_fields(child))
     if isinstance(expression, BoundNotExpression):

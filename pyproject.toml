@@ -5,14 +5,32 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "yodb"
 version = "0.1.0"
-description = "YoDb V0.1 planning and contract definitions"
+description = "A read-only, typed, explainable query layer over several databases, with a cost-based planner and semantic filtering."
+readme = "README.md"
 requires-python = ">=3.11"
+keywords = ["federated", "query", "postgresql", "pgvector", "semantic-search", "planner"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Topic :: Database",
+]
 dependencies = [
     "pydantic>=2.12,<3",
     "psycopg>=3.2,<4",
     "psycopg-pool>=3.2,<4",
     "PyYAML>=6,<7",
 ]
+
+[project.optional-dependencies]
+# a local open embedding model for the semantic filter's vector shortlist (see docs: semantic filter)
+semantic = ["fastembed>=0.4"]
+
+[project.scripts]
+yodb = "yodb.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

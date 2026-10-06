@@ -1,7 +1,11 @@
-"""YoDb V0.1 catalog loading, inspection contracts, and static validation."""
+"""YoDb: a read-only, typed, explainable query layer over several databases.
+
+``yodb.connect(catalog_dir)`` is the short path; see ``yodb.client``.
+"""
 
 from .catalog import Catalog, CatalogValidationError, load_catalog
 from .connections import (
+    EnvPostgresConnectionResolver,
     ConnectionReferenceResolver,
     ConnectionAdapterRegistry,
     MappingPostgresConnectionResolver,
@@ -83,6 +87,8 @@ from .runtime import (
 )
 
 __all__ = [
+    "YoDb",
+    "connect",
     "Catalog",
     "CatalogEvaluation",
     "CatalogRefreshResult",
@@ -93,6 +99,7 @@ __all__ = [
     "CompiledPostgresQuery",
     "CompiledQuery",
     "ConnectionAdapterRegistry",
+    "EnvPostgresConnectionResolver",
     "ErrorCode",
     "ErrorDetail",
     "QueryError",
@@ -153,3 +160,14 @@ __all__ = [
     "resolve_query_sources",
     "validate_query",
 ]
+
+
+def __getattr__(name: str):
+    """``yodb.connect`` / ``yodb.YoDb`` load the front door on first use, so importing a core
+    subpackage (``yodb.query``, ``yodb.planning``, ``yodb.execution``) never pulls in the semantic filter."""
+
+    if name in ("YoDb", "connect"):
+        from . import client
+
+        return getattr(client, name)
+    raise AttributeError(f"module 'yodb' has no attribute {name!r}")

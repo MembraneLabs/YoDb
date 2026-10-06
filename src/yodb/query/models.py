@@ -47,6 +47,24 @@ class Predicate:
     value_supplied: bool
 
 
+class ExtensionTerm:
+    """Base of a parsed filter term contributed by an extension operator (see ``extensions``)."""
+
+
+class BoundExtensionTerm:
+    """Base of a bound filter term contributed by an extension operator."""
+
+
+class FieldUse(str, Enum):
+    """The logical role a field plays in a source-local query fragment."""
+
+    IDENTITY = "identity"
+    PROJECTION = "projection"
+    FILTER = "filter"
+    ORDER = "order"
+    EXTENSION = "extension"      # read by an extension term (e.g. a semantic condition)
+
+
 @dataclass(frozen=True)
 class AllExpression:
     expressions: tuple["FilterExpression", ...]
@@ -62,7 +80,7 @@ class NotExpression:
     expression: "FilterExpression"
 
 
-FilterExpression: TypeAlias = Predicate | AllExpression | AnyExpression | NotExpression
+FilterExpression: TypeAlias = Predicate | ExtensionTerm | AllExpression | AnyExpression | NotExpression
 
 
 @dataclass(frozen=True)
@@ -141,7 +159,11 @@ class BoundNotExpression:
 
 
 BoundFilterExpression: TypeAlias = (
-    BoundPredicate | BoundAllExpression | BoundAnyExpression | BoundNotExpression
+    BoundPredicate
+    | BoundExtensionTerm
+    | BoundAllExpression
+    | BoundAnyExpression
+    | BoundNotExpression
 )
 
 

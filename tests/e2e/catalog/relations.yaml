@@ -9,3 +9,12 @@ relationships:
     implementations:
       - from: {source: crm, field: id}
         to: {source: crm, field: id}
+  buyer_purchases:
+    from: buyer
+    to: purchase
+    description: A purchase was made by a buyer.
+    cardinality: one_to_many
+    direction: bi
+    implementations:
+      - from: {source: buyers_db, field: id}
+        to: {source: purchases_db, field: buyer_id}

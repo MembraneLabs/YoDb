@@ -165,3 +165,42 @@ class QueryModelTests(unittest.TestCase):
         with self.assertRaises(QueryError) as caught:
             bind_query(request, self.active, policy=QueryValidationPolicy(maximum_in_values=1))
         self.assertEqual(caught.exception.code, ErrorCode.QUERY_LIMIT_INVALID)
+
+
+class FilterSizeLimitTests(unittest.TestCase):
+    """Untrusted input must not make walking a filter unbounded (a deep tree used to overflow the stack)."""
+
+    @staticmethod
+    def nested(depth):
+        node = {"field": "name", "op": "eq", "value": "x"}
+        for _ in range(depth - 1):
+            node = {"not": node}
+        return node
+
+    def parse(self, where, **limits):
+        return parse_query({"from": {"dataset": "customer"}, "where": where}, **limits)
+
+    def test_a_filter_at_the_depth_limit_parses_and_one_level_deeper_is_refused(self) -> None:
+        self.parse(self.nested(32))
+        with self.assertRaises(QueryError) as caught:
+            self.parse(self.nested(33))
+        self.assertEqual(caught.exception.code, ErrorCode.QUERY_LIMIT_INVALID)
+        self.assertIn("at most 32 levels", caught.exception.detail.message)
+
+    def test_absurd_depth_is_a_clean_error_not_a_stack_overflow(self) -> None:
+        for depth in (1_000, 100_000):
+            with self.assertRaises(QueryError):
+                self.parse(self.nested(depth))
+
+    def test_the_number_of_terms_is_bounded_too(self) -> None:
+        leaf = {"field": "name", "op": "eq", "value": "x"}
+        self.parse({"all": [leaf] * 999})
+        with self.assertRaises(QueryError) as caught:
+            self.parse({"all": [leaf] * 1_000})
+        self.assertIn("at most 1000 terms", caught.exception.detail.message)
+
+    def test_the_limits_can_be_changed_by_the_caller(self) -> None:
+        self.parse(self.nested(40), maximum_depth=40)
+        with self.assertRaises(QueryError):
+            self.parse(self.nested(5), maximum_depth=4)
+

@@ -55,6 +55,10 @@ Use a reference such as `secret://yodb/crm-readonly` or a local-development
 reference. A connection resolver turns it into private driver settings at
 runtime. Do not place a URL, password, token, or driver option in this file.
 
+The `yodb` command and `yodb.connect` read each reference from the environment
+variable `YODB_CONN_<REF>` (see [Quickstart](/getting-started/quickstart)); a
+reference such as `crm-readonly` is simplest to name.
+
 The PostgreSQL connection adapter maintains a bounded pool per
 `connection_ref`. When all leases are in use, a caller waits until a connection
 returns or the configured timeout produces `connection_pool_timeout`.
@@ -83,3 +87,31 @@ identity must be a primary key or unique constraint.
 If `public.accounts` also has `billing_contact_email` but it is not in this
 file, YoDb cannot expose or use it. Add a declared dataset field and explicit
 mapping before it becomes accessible.
+
+## `embeddings`: vectors for the semantic filter
+
+A representation may declare where the vectors of a text field are stored:
+
+```yaml
+datasets:
+  message:
+    resource: support.messages
+    identity: [id]
+    fields: {id: {physical_name: message_id}, body: {physical_name: body}}
+    embeddings:
+      body: {column: body_embedding, model: embed-v1, dimensions: 256, metric: cosine}
+```
+
+| Path | Required | Meaning |
+| --- | --- | --- |
+| `column` | Yes | The pgvector column holding the embedding |
+| `model` | Yes | The model that produced the stored vectors; must equal the embedding provider's model |
+| `dimensions` | Yes | Vector length |
+| `metric` | No (`cosine`) | `cosine`, `l2` or `inner_product` |
+| `version` | No (`1`) | A label for the embedding run |
+
+The field must be a `string` or `text` field marked `semantic_eligible: true`.
+The vectors may sit in the source that owns the text, or in a *vector store*:
+a separate source whose representation maps only the dataset identity and
+declares the `embeddings`. A field's embeddings are declared once across all
+sources. See [Semantic filter](/query/semantic-filter).

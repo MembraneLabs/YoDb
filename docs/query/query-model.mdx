@@ -84,8 +84,8 @@ Parsing checks the request's structure. Validation then checks the dataset,
 field visibility, field types, operators, ordering, and limits against the
 runtime's currently active catalog. `bound_query` contains trusted logical
 catalog references and two fingerprints: one for the normalized query meaning,
-and one for the active catalog snapshot. It is the only input the future query
-planner will accept.
+and one for the active catalog snapshot. It is the only input the query
+planner accepts.
 
 ## What a query may name
 
@@ -128,8 +128,7 @@ select:
 
 If it is omitted, YoDb returns all public fields of the root dataset. The
 logical `id` is always included in the result, even if it is not listed. It is
-the stable identity used for pagination, provenance, and future relationship
-results.
+the stable identity used for provenance and for [joins](/query/joins) between datasets.
 
 You cannot select an unknown field, a field from a different dataset, or an
 internal field. These are validation errors rather than requests that silently
@@ -279,15 +278,16 @@ constraints:
 ```
 
 The server remains the authority on limits. It may reject impossible or unsafe
-requests rather than running unbounded work. `allow_partial_results` only has
-meaning for a future multi-source plan; YoDb will never silently omit a failed
-source from an otherwise complete-looking response.
+requests rather than running unbounded work. `allow_partial_results` is accepted but not
+used yet: V0.1 never returns a partial result, and a failed source fails the query
+rather than being silently omitted from a complete-looking response.
 
 ## Relationships and graph traversal
 
 Relationships come from [`relations.yaml`](../catalog/relations). A caller
 does not write join conditions or mention foreign-key columns. Instead, a
-future traversal names a reviewed relationship:
+`traverse` step names a reviewed relationship (see [Joins](/query/joins) for the
+syntax that is implemented):
 
 ```yaml
 traverse:
@@ -307,9 +307,9 @@ bidirectional. YoDb will enforce a bounded number of hops and a work budget.
 The same traversal can later use PostgreSQL joins, a PostgreSQL edge table, or
 Neo4j. The caller does not change the query to choose one.
 
-Relationship traversal is part of the shared model but is not yet executable
-in the initial single-dataset PostgreSQL query path. Its exact nested-result
-shape will be documented before it ships.
+Traversal between two PostgreSQL datasets is implemented as a join with flat
+result rows (see [Joins](/query/joins)). Nested results and graph traversal are
+not implemented.
 
 ## Semantic search
 
@@ -328,9 +328,7 @@ YoDb may use pgvector initially and a different semantic adapter later. Index
 selection, embedding generation, exact-scan fallback policy, ranking, and
 freshness are service behavior—not caller configuration.
 
-Semantic execution is planned for a later Milestone 2 increment. The initial
-implemented query path is relational filtering, projection, ordering, and
-pagination.
+The semantic condition is implemented: see [Semantic filter](/query/semantic-filter).
 
 ## Validation and errors
 

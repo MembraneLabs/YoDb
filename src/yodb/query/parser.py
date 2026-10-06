@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from ..errors import ErrorCode, ErrorDetail, QueryError
+from ..errors import ErrorCode
 from .models import (
     AllExpression,
     AnyExpression,
@@ -20,7 +20,18 @@ from .models import (
     QueryRequest,
     SortDirection,
 )
+from .registry import DEFAULT_TERMS
+from .extensions import TermRegistry
+from .shape import fail as _fail
+from .shape import list_of as _list
+from .shape import mapping as _mapping
+from .shape import non_empty_string as _non_empty_string
+from .shape import reject_unknown as _reject_unknown
 
+
+# A filter is a tree; untrusted input must not be able to make walking it unbounded.
+MAXIMUM_EXPRESSION_DEPTH = 32
+MAXIMUM_EXPRESSION_TERMS = 1_000
 
 _QUERY_KEYS = frozenset({"from", "select", "where", "order_by", "page", "constraints"})
 _FROM_KEYS = frozenset({"dataset", "as"})
@@ -32,15 +43,32 @@ _CONSTRAINT_KEYS = frozenset(
 )
 
 
-def parse_query(raw: Mapping[str, Any]) -> QueryRequest:
-    """Parse one logical query without accessing the catalog or a source."""
+def parse_query(
+    raw: Mapping[str, Any],
+    terms: TermRegistry = DEFAULT_TERMS,
+    *,
+    maximum_depth: int = MAXIMUM_EXPRESSION_DEPTH,
+    maximum_terms: int = MAXIMUM_EXPRESSION_TERMS,
+) -> QueryRequest:
+    """Parse one logical query without accessing the catalog or a source.
+
+    A filter may nest ``maximum_depth`` levels and contain ``maximum_terms`` nodes; deeper or
+    larger input is refused before anything recurses over it.
+    """
 
     root = _mapping(raw, "query")
-    if "traverse" in root or "semantic" in root:
+    if "traverse" in root:
         _fail(
             ErrorCode.QUERY_FEATURE_NOT_SUPPORTED,
-            "Traversal and semantic search are reserved for a later query-model increment.",
+            "Traversal is reserved for a later query-model increment.",
         )
+    for key in terms.keys():
+        if key in root:
+            _fail(
+                ErrorCode.QUERY_FEATURE_NOT_SUPPORTED,
+                f"'{key}' is a filter term: use {{'{key}': {{...}}}} inside 'where'.",
+                key,
+            )
     _reject_unknown(root, _QUERY_KEYS, "query")
     if "from" not in root:
         _fail(ErrorCode.QUERY_SHAPE_INVALID, "A query requires 'from'.", "from")
@@ -48,7 +76,7 @@ def parse_query(raw: Mapping[str, Any]) -> QueryRequest:
     return QueryRequest(
         root=_parse_from(root["from"]),
         select=_parse_select(root.get("select")),
-        where=_parse_expression(root["where"], "where") if "where" in root else None,
+        where=_parse_expression(root["where"], "where", terms, _Budget(maximum_depth, maximum_terms)) if "where" in root else None,
         order_by=_parse_order_by(root.get("order_by")),
         page=_parse_page(root["page"]) if "page" in root else None,
         constraints=_parse_constraints(root["constraints"]) if "constraints" in root else None,
@@ -73,9 +101,35 @@ def _parse_select(raw: Any) -> tuple[str, ...] | None:
     return fields
 
 
-def _parse_expression(raw: Any, location: str) -> FilterExpression:
+class _Budget:
+    """How much more filter the parser will read."""
+
+    def __init__(self, maximum_depth: int, maximum_terms: int) -> None:
+        self.maximum_depth = maximum_depth
+        self.remaining_terms = maximum_terms
+        self.maximum_terms = maximum_terms
+
+    def enter(self, depth: int, location: str) -> None:
+        if depth > self.maximum_depth:
+            _fail(ErrorCode.QUERY_LIMIT_INVALID, f"A filter may nest at most {self.maximum_depth} levels deep.", location)
+        self.remaining_terms -= 1
+        if self.remaining_terms < 0:
+            _fail(ErrorCode.QUERY_LIMIT_INVALID, f"A filter may contain at most {self.maximum_terms} terms.", location)
+
+
+def _parse_expression(raw: Any, location: str, terms: TermRegistry, budget: _Budget, depth: int = 1) -> FilterExpression:
+    budget.enter(depth, location)
     value = _mapping(raw, location)
     keys = set(value)
+    for extension in terms:
+        if extension.key in keys:
+            if len(keys) != 1:
+                _fail(
+                    ErrorCode.QUERY_EXPRESSION_INVALID,
+                    f"A {extension.noun} term must contain only '{extension.key}'.",
+                    location,
+                )
+            return extension.parse(value[extension.key], f"{location}.{extension.key}")
     boolean_keys = keys & {"all", "any", "not"}
     if boolean_keys:
         if len(keys) != 1 or len(boolean_keys) != 1:
@@ -86,7 +140,7 @@ def _parse_expression(raw: Any, location: str) -> FilterExpression:
             )
         kind = next(iter(boolean_keys))
         if kind == "not":
-            return NotExpression(_parse_expression(value["not"], f"{location}.not"))
+            return NotExpression(_parse_expression(value["not"], f"{location}.not", terms, budget, depth + 1))
         children = _list(value[kind], f"{location}.{kind}")
         if not children:
             _fail(
@@ -95,7 +149,7 @@ def _parse_expression(raw: Any, location: str) -> FilterExpression:
                 f"{location}.{kind}",
             )
         parsed = tuple(
-            _parse_expression(child, f"{location}.{kind}[{index}]")
+            _parse_expression(child, f"{location}.{kind}[{index}]", terms, budget, depth + 1)
             for index, child in enumerate(children)
         )
         return AllExpression(parsed) if kind == "all" else AnyExpression(parsed)
@@ -177,37 +231,3 @@ def _parse_constraints(raw: Any) -> QueryConstraints:
         minimum_quality=value.get("minimum_quality"),
         allow_partial_results=partial,
     )
-
-
-def _mapping(raw: Any, location: str) -> Mapping[str, Any]:
-    if not isinstance(raw, Mapping):
-        _fail(ErrorCode.QUERY_SHAPE_INVALID, "Expected an object.", location)
-    if not all(isinstance(key, str) for key in raw):
-        _fail(ErrorCode.QUERY_SHAPE_INVALID, "Object keys must be strings.", location)
-    return raw
-
-
-def _list(raw: Any, location: str) -> list[Any]:
-    if not isinstance(raw, list):
-        _fail(ErrorCode.QUERY_SHAPE_INVALID, "Expected an array.", location)
-    return raw
-
-
-def _non_empty_string(raw: Any, location: str) -> str:
-    if not isinstance(raw, str) or not raw.strip():
-        _fail(ErrorCode.QUERY_SHAPE_INVALID, "Expected a non-empty string.", location)
-    return raw
-
-
-def _reject_unknown(value: Mapping[str, Any], allowed: frozenset[str], location: str) -> None:
-    unknown = sorted(set(value) - allowed)
-    if unknown:
-        _fail(
-            ErrorCode.QUERY_SHAPE_INVALID,
-            f"Unknown field(s): {', '.join(unknown)}.",
-            location,
-        )
-
-
-def _fail(code: ErrorCode, message: str, location: str | None = None) -> None:
-    raise QueryError(ErrorDetail(code=code, message=message, retryable=False, location=location))

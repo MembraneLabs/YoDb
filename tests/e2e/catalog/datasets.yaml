@@ -23,3 +23,64 @@ datasets:
     fields:
       id:    {type: id,     description: Identity.}
       label: {type: string, description: Label.}
+  ticket:
+    description: A support ticket (semantic search over its text).
+    fields:
+      id:       {type: id,     description: Identity.}
+      subject:  {type: string, description: Subject.}
+      body:     {type: text,   description: Ticket text., semantic_eligible: true}
+      priority: {type: int,    description: Priority.}
+      owner:    {type: string, description: Ticket owner.}
+  item:
+    description: An item described by two large sources (optimizer cases).
+    fields:
+      id:   {type: id,     description: Identity.}
+      kind: {type: string, description: Item kind.}
+      tag:  {type: string, description: Item tag.}
+  order:
+    description: A shop order assembled from sales, payments and logistics.
+    fields:
+      id:           {type: id,        description: Order identity.}
+      customer_ref: {type: string,    description: Customer reference.}
+      status:       {type: string,    description: Order status.}
+      amount:       {type: float,     description: Order amount.}
+      items:        {type: int,       description: Item count.}
+      placed_at:    {type: timestamp, description: When the order was placed.}
+      rush:         {type: bool,      description: Rush order flag.}
+      channel:      {type: string,    description: Sales channel.}
+      method:       {type: string,    description: Payment method.}
+      paid_amount:  {type: float,     description: Amount paid.}
+      settled:      {type: bool,      description: Payment settled.}
+      carrier:      {type: string,    description: Shipping carrier.}
+      days:         {type: int,       description: Days in transit.}
+      express:      {type: bool,      description: Express shipping.}
+  big:
+    description: A million-row table with a half-million-row contributor for scale checks.
+    fields:
+      id:         {type: id,        description: Identity.}
+      kind:       {type: string,    description: Kind with 2000 distinct values.}
+      amount:     {type: float,     description: Amount.}
+      created_at: {type: timestamp, description: Creation time.}
+      flag:       {type: bool,      description: Flag set for one item in seven.}
+      note:       {type: string,    description: Note.}
+      segment:    {type: string,    description: Segment with 50 values; half the items have one.}
+      score:      {type: int,       description: Score 0-99.}
+      code:       {type: string,    description: Code with 1000 distinct values; 500 items each.}
+  buyer:
+    description: A buyer (join checks).
+    fields:
+      id:        {type: id,        description: Identity.}
+      name:      {type: string,    description: Name.}
+      region:    {type: string,    description: Region with 20 values.}
+      tier:      {type: string,    description: Tier with 5 values.}
+      joined_at: {type: timestamp, description: When the buyer joined.}
+      score:     {type: int,       description: Score 0-100; 60 percent of buyers have one.}
+  purchase:
+    description: A purchase (join checks).
+    fields:
+      id:           {type: id,        description: Identity.}
+      buyer_id:     {type: id,        description: The buyer.}
+      amount:       {type: float,     description: Amount.}
+      status:       {type: string,    description: Status.}
+      purchased_at: {type: timestamp, description: When.}
+      carrier:      {type: string,    description: Carrier; half of the purchases have one.}

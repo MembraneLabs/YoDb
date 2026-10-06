@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any, Mapping, Protocol, runtime_checkable
 
@@ -24,6 +24,8 @@ class QueryExecutionResult:
     rows: tuple[LogicalRow, ...]
     query_fingerprint: str
     catalog_fingerprint: str
+    # What each extension operator that ran reports, keyed by its name.
+    reports: Mapping[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_rows(
@@ -32,6 +34,7 @@ class QueryExecutionResult:
         *,
         query_fingerprint: str,
         catalog_fingerprint: str,
+        reports: Mapping[str, Any] | None = None,
     ) -> "QueryExecutionResult":
         """Freeze adapter-returned row mappings before exposing them."""
 
@@ -39,6 +42,7 @@ class QueryExecutionResult:
             rows=tuple(MappingProxyType(dict(row)) for row in rows),
             query_fingerprint=query_fingerprint,
             catalog_fingerprint=catalog_fingerprint,
+            reports=MappingProxyType(dict(reports or {})),
         )
 
 

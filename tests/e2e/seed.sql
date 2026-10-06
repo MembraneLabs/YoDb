@@ -1,7 +1,9 @@
 -- Throwaway end-to-end data for YoDb. Run as the postgres superuser against
 -- database yodb_e2e. Idempotent: drops and recreates everything it owns.
-DROP SCHEMA IF EXISTS crm, billing, support CASCADE;
-CREATE SCHEMA crm; CREATE SCHEMA billing; CREATE SCHEMA support;
+CREATE EXTENSION IF NOT EXISTS vector;
+DROP SCHEMA IF EXISTS crm, billing, support, helpdesk, bulk, sales, payments, logistics CASCADE;
+CREATE SCHEMA crm; CREATE SCHEMA billing; CREATE SCHEMA support; CREATE SCHEMA helpdesk; CREATE SCHEMA bulk;
+CREATE SCHEMA sales; CREATE SCHEMA payments; CREATE SCHEMA logistics;
 
 -- CRM: identity source for `customer`. 12 customers with NULLs, a duplicate
 -- name (c01/c12 -> tie-break by id), and mixed case ("Acme" vs "acme").
@@ -66,12 +68,110 @@ INSERT INTO billing.dup_accounts VALUES ('c01','a'), ('c01','b'), ('c02','basic'
 CREATE TABLE crm.events (event_id text PRIMARY KEY, label text);
 INSERT INTO crm.events SELECT 'e' || g, 'event-' || g FROM generate_series(1, 10500) g;
 
+-- Semantic search: tickets with a toy 5-dim embedding (keyword counts + bias).
+-- The Python ToyEmbedder in run_e2e.py computes exactly the same vector.
+CREATE FUNCTION helpdesk.kw(t text, k text) RETURNS int LANGUAGE sql IMMUTABLE AS
+  $$ SELECT (length(lower(t)) - length(replace(lower(t), k, ''))) / length(k) $$;
+CREATE FUNCTION helpdesk.toy_embed(t text) RETURNS vector(5) LANGUAGE sql IMMUTABLE AS
+  $$ SELECT ('[' || helpdesk.kw(t,'price') || ',' || helpdesk.kw(t,'cancel') || ',' ||
+             helpdesk.kw(t,'refund') || ',' || helpdesk.kw(t,'bug') || ',1]')::vector(5) $$;
+CREATE TABLE helpdesk.tickets (
+  ticket_id text PRIMARY KEY, subject text, body text, priority integer, body_embedding vector(5)
+);
+INSERT INTO helpdesk.tickets (ticket_id, subject, body, priority) VALUES
+ ('t01','A01','The price is far too high, we may cancel',                5),
+ ('t02','A02','Love the product',                                         2),
+ ('t03','A03','Price increase again, thinking to cancel the plan',         4),
+ ('t04','A04','App crashed, found a bug',                                  3),
+ ('t05','A05','Please refund the price difference',                        5),
+ ('t06','A06',NULL,                                                        5),
+ ('t07','A07','   ',                                                       5),
+ ('t08','A08','We will cancel unless price drops',                         1),
+ ('t09','A09','Great support, no complaints',                              4),
+ ('t10','A10','Cancel my account, price too steep and a bug too',          5),
+ ('t11','A11','Refund requested after bug, no cancel intended',            3),
+ ('t12','A12','PRICE and CANCEL in capitals',                              4),
+ ('t13','A13','Feature request: dark mode',                                2),
+ ('t14','A14','price price price',                                         5),
+ ('t15','A15','Considering to cancel, price comparison with rivals',       3),
+ ('t16','A16','Billing question',                                          4),
+ ('t17','A17','Bug in export',                                             5),
+ ('t18','A18','cancel',                                                    5),
+ ('t19','A19','Price matching, will not cancel',                           2),
+ ('t20','A20','Happy customer',                                            5);
+UPDATE helpdesk.tickets SET body_embedding = helpdesk.toy_embed(body) WHERE body IS NOT NULL;
+-- The owner of each ticket lives in a second source.
+CREATE TABLE helpdesk.owners (ticket_id text PRIMARY KEY, owner text);
+INSERT INTO helpdesk.owners VALUES
+ ('t01','ann'),('t03','ann'),('t04','bob'),('t05','ann'),('t08','bob'),('t10','ann'),
+ ('t12','bob'),('t15','ann'),('t18','ann'),('t19','bob');
+
+-- Optimizer cases: two 200,000-row sources describing the same items.
+-- kind has 1,000 distinct values (kind = 'k8' keeps 200 rows); tag has 2
+-- (tag = 'hot' keeps 100,000 rows, ten times the 10,000-row scan guard).
+CREATE TABLE bulk.items (item_id text PRIMARY KEY, kind text, body text);
+INSERT INTO bulk.items SELECT 'i' || g, 'k' || (g % 1000), 'item ' || g FROM generate_series(1, 200000) g;
+CREATE TABLE bulk.tags (item_id text PRIMARY KEY, tag text);
+INSERT INTO bulk.tags SELECT 'i' || g, CASE WHEN g % 2 = 0 THEN 'hot' ELSE 'cold' END FROM generate_series(1, 200000) g;
+
+-- Orders: a realistic skewed dataset across three sources (matrix runs).
+-- 6,000 orders; ~80% have a payment row, ~60% a shipment row; NULLs in every optional column.
+SELECT setseed(0.37);
+CREATE TABLE sales.orders (
+  order_id     text PRIMARY KEY,
+  customer_ref text,
+  status       text,
+  amount       double precision,
+  items        integer,
+  placed_at    timestamp,
+  rush         boolean,
+  channel      text
+);
+INSERT INTO sales.orders
+SELECT 'o' || lpad(g::text, 5, '0'),
+       'u' || (1 + floor(power(random(), 2) * 800))::int,
+       (ARRAY['placed','paid','shipped','cancelled','returned'])[1 + floor(power(random(), 1.5) * 5)::int],
+       round((exp(random() * 6))::numeric, 2)::double precision,
+       1 + floor(random() * 8)::int,
+       timestamp '2023-01-01' + (random() * 730) * interval '1 day',
+       random() < 0.1,
+       CASE WHEN random() < 0.05 THEN NULL ELSE (ARRAY['web','app','store','phone'])[1 + floor(random() * 4)::int] END
+FROM generate_series(1, 6000) g;
+UPDATE sales.orders SET placed_at = date_trunc('minute', placed_at);
+CREATE TABLE payments.payments (
+  order_id    text PRIMARY KEY,
+  method      text,
+  paid_amount double precision,
+  settled     boolean
+);
+INSERT INTO payments.payments
+SELECT order_id,
+       CASE WHEN random() < 0.04 THEN NULL ELSE (ARRAY['card','paypal','wire','gift'])[1 + floor(power(random(), 1.7) * 4)::int] END,
+       round((amount * (0.9 + random() * 0.1))::numeric, 2)::double precision,
+       random() < 0.9
+FROM sales.orders WHERE random() < 0.8;
+CREATE TABLE logistics.shipments (
+  order_id text PRIMARY KEY,
+  carrier  text,
+  days     integer,
+  express  boolean
+);
+INSERT INTO logistics.shipments
+SELECT order_id,
+       CASE WHEN random() < 0.05 THEN NULL ELSE (ARRAY['dhl','ups','fedex'])[1 + floor(random() * 3)::int] END,
+       CASE WHEN random() < 0.08 THEN NULL ELSE 1 + floor(random() * 14)::int END,
+       random() < 0.25
+FROM sales.orders WHERE random() < 0.6;
+-- A few orphans (rows in a contributor with no order).
+INSERT INTO payments.payments VALUES ('o90001', 'card', 10, true), ('o90002', NULL, 20, false);
+INSERT INTO logistics.shipments VALUES ('o90003', 'dhl', 3, false);
+
 -- Least-privilege, read-only role used by YoDb.
 DO $$ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'yodb_ro') THEN
     CREATE ROLE yodb_ro LOGIN PASSWORD 'yodb_ro';
   END IF;
 END $$;
-GRANT USAGE ON SCHEMA crm, billing, support TO yodb_ro;
-GRANT SELECT ON ALL TABLES IN SCHEMA crm, billing, support TO yodb_ro;
+GRANT USAGE ON SCHEMA crm, billing, support, helpdesk, bulk, sales, payments, logistics TO yodb_ro;
+GRANT SELECT ON ALL TABLES IN SCHEMA crm, billing, support, helpdesk, bulk, sales, payments, logistics TO yodb_ro;
 ANALYZE;

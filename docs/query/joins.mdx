@@ -1,0 +1,116 @@
+---
+title: Joins
+description: Combine two datasets over a declared relationship, even when they live in different databases.
+---
+
+A join combines rows of two datasets that are linked by a relationship you declared in
+[`relations.yaml`](/catalog/relations). The two datasets can live in different sources, different
+databases, even on different servers: each side is read by its own sources and YoDb matches the rows.
+
+```json
+{"from": {"dataset": "customer"},
+ "select": ["name", "country"],
+ "where": {"field": "country", "op": "eq", "value": "US"},
+ "traverse": [{
+   "relationship": "customer_has_ticket",
+   "as": "ticket",
+   "select": ["subject", "status"],
+   "where": {"field": "status", "op": "eq", "value": "open"}
+ }],
+ "order_by": [{"field": "ticket.priority", "direction": "desc"}, {"field": "name", "direction": "asc"}],
+ "page": {"first": 20}}
+```
+
+The result is flat, like a SQL join: one row per matching pair. Fields of the starting dataset keep
+their names; fields of the traversed dataset are prefixed with the `as` name.
+
+```text
+id  name  country  ticket.id  ticket.subject  ticket.status
+--  ----  -------  ---------  --------------  -------------
+c1  Ann   US       t3         Crash           open
+c3  Cai   US       t6         Refund          open
+c1  Ann   US       t1         Login           open
+(3 rows)
+```
+
+`id` is the customer's and `ticket.id` the ticket's. Rows are ordered by ticket priority, then by name, so Ann
+(who has two open tickets) appears twice, once per ticket.
+
+## The `traverse` step
+
+| Key | Meaning |
+| --- | --- |
+| `relationship` | A relationship name (or one of its `aliases`) from `relations.yaml`. Required. |
+| `as` | The prefix for the traversed fields. Defaults to the relationship name. Letters, digits and `_`. |
+| `select` | Fields of the traversed dataset to return (default: every public field). `ticket.id` is always returned. |
+| `where` | A filter on the traversed dataset. It decides which rows can match. |
+| `optional` | `true` makes it a **left join**: a starting row with no match is kept, with NULL traversed fields. Default `false` (inner join). |
+| `direction` | `forward` (default) follows the relationship from its `from` dataset to its `to` dataset. `reverse` goes back, and only works for a relationship declared `direction: bi`. |
+
+The top-level `where` filters the starting dataset. `order_by` may name fields of either side:
+`name` for the starting dataset, `ticket.priority` for the traversed one. Rows are ordered by your terms,
+then by the two ids. `page.first` counts joined rows, and `constraints.maximum_results` caps it.
+One step per query; a dataset can be joined to itself (a relationship from a dataset to itself, with an `as`).
+
+A semantic condition ([semantic filter](/query/semantic-filter)) works on either side. On the traversed
+side it runs once per batch of keys.
+
+## How it runs
+
+Each side is an ordinary query over one dataset, planned and run like any other: filters are pushed to the
+databases, a side that spans several sources is assembled by ID, and every [guard](/query/planning) applies.
+The join adds one step:
+
+1. The **driving** side runs, once. Its distinct join-key values are collected.
+2. The other side runs once per batch of up to 1,000 keys, filtered with `join field in (batch)`.
+3. The rows are matched in memory, then ordered, paged and projected.
+
+YoDb starts from the side expected to return fewer rows. With statistics it compares the two sides'
+estimates; without them, the side with more filters drives. A left join always starts from the starting
+dataset, because every one of its rows must appear. `yodb explain` shows the join, both sides, the key
+and which side drives:
+
+```text
+hash_join  @coordinator  fields=id,name,... on customer.id = ticket.customer_id
+  ... the driving side's plan, then the probing side's plan for one batch
+optimizer: strategy=cost_based driver=right estimated_root_rows=1000000 estimated_traversed_rows=100
+```
+
+## Bounds
+
+| Bound | Default | When exceeded |
+| --- | --- | --- |
+| rows the driving side may produce | 10,000 | `query_row_limit_exceeded`: add a filter to either side |
+| rows all probing batches may produce | 50,000 | `query_coordinator_limit_exceeded` |
+| rows the join may hold before ordering and paging | 50,000 | `query_coordinator_limit_exceeded` |
+| keys per probing batch | 1,000 | more batches |
+| time | one budget for the whole join (`timeout_seconds`) | `query_timeout` |
+
+A join of two large, unfiltered datasets is refused, not attempted: filter one side so that it has at most
+10,000 rows, or both so that the result fits. Pass a `JoinPolicy` (`yodb.connect(..., join_policy=JoinPolicy(maximum_driver_rows=...))`) to change them.
+
+A batch of keys whose matches overflow a read guard (a few very popular keys) is split in two and each half
+is read separately, so a skewed side does not stop a join that fits overall. Each side is also subject to the
+planner's limits, listed in [Limits](/reference/limits): a side that ORs conditions across sources, or whose
+every read exceeds the row guard, is refused even when a database could answer it.
+
+## What a relationship must be
+
+- A **field-equality** implementation: the two fields are compared for equality. (A graph-edge
+  implementation cannot be traversed yet.)
+- Both fields **public**: a relationship that joins on an internal field is refused, because YoDb must read
+  the key.
+- Both fields of the **same type**; the catalog refuses to load a relationship that compares different types.
+
+The join field can be any field, not only the `id`. NULL join keys never match. No foreign key is needed:
+the relationship in the catalog is what authorizes the match.
+
+## Errors
+
+| Code | When |
+| --- | --- |
+| `relationship_not_found` | No relationship by that name or alias |
+| `relationship_not_applicable` | The relationship does not start at this dataset, or `reverse` on a one-way relationship |
+| `field_not_accessible` | The relationship joins on an internal field |
+| `query_feature_not_supported` | More than one step, or a graph-edge relationship |
+| `field_not_found`, `query_operator_not_supported`, ... | A problem inside the traversed side; its `location` starts with `traverse[0]` |
