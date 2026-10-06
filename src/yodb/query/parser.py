@@ -29,6 +29,10 @@ from .shape import non_empty_string as _non_empty_string
 from .shape import reject_unknown as _reject_unknown
 
 
+# A filter is a tree; untrusted input must not be able to make walking it unbounded.
+MAXIMUM_EXPRESSION_DEPTH = 32
+MAXIMUM_EXPRESSION_TERMS = 1_000
+
 _QUERY_KEYS = frozenset({"from", "select", "where", "order_by", "page", "constraints"})
 _FROM_KEYS = frozenset({"dataset", "as"})
 _PREDICATE_KEYS = frozenset({"field", "op", "value"})
@@ -39,8 +43,18 @@ _CONSTRAINT_KEYS = frozenset(
 )
 
 
-def parse_query(raw: Mapping[str, Any], terms: TermRegistry = DEFAULT_TERMS) -> QueryRequest:
-    """Parse one logical query without accessing the catalog or a source."""
+def parse_query(
+    raw: Mapping[str, Any],
+    terms: TermRegistry = DEFAULT_TERMS,
+    *,
+    maximum_depth: int = MAXIMUM_EXPRESSION_DEPTH,
+    maximum_terms: int = MAXIMUM_EXPRESSION_TERMS,
+) -> QueryRequest:
+    """Parse one logical query without accessing the catalog or a source.
+
+    A filter may nest ``maximum_depth`` levels and contain ``maximum_terms`` nodes; deeper or
+    larger input is refused before anything recurses over it.
+    """
 
     root = _mapping(raw, "query")
     if "traverse" in root:
@@ -62,7 +76,7 @@ def parse_query(raw: Mapping[str, Any], terms: TermRegistry = DEFAULT_TERMS) -> 
     return QueryRequest(
         root=_parse_from(root["from"]),
         select=_parse_select(root.get("select")),
-        where=_parse_expression(root["where"], "where", terms) if "where" in root else None,
+        where=_parse_expression(root["where"], "where", terms, _Budget(maximum_depth, maximum_terms)) if "where" in root else None,
         order_by=_parse_order_by(root.get("order_by")),
         page=_parse_page(root["page"]) if "page" in root else None,
         constraints=_parse_constraints(root["constraints"]) if "constraints" in root else None,
@@ -87,7 +101,24 @@ def _parse_select(raw: Any) -> tuple[str, ...] | None:
     return fields
 
 
-def _parse_expression(raw: Any, location: str, terms: TermRegistry) -> FilterExpression:
+class _Budget:
+    """How much more filter the parser will read."""
+
+    def __init__(self, maximum_depth: int, maximum_terms: int) -> None:
+        self.maximum_depth = maximum_depth
+        self.remaining_terms = maximum_terms
+        self.maximum_terms = maximum_terms
+
+    def enter(self, depth: int, location: str) -> None:
+        if depth > self.maximum_depth:
+            _fail(ErrorCode.QUERY_LIMIT_INVALID, f"A filter may nest at most {self.maximum_depth} levels deep.", location)
+        self.remaining_terms -= 1
+        if self.remaining_terms < 0:
+            _fail(ErrorCode.QUERY_LIMIT_INVALID, f"A filter may contain at most {self.maximum_terms} terms.", location)
+
+
+def _parse_expression(raw: Any, location: str, terms: TermRegistry, budget: _Budget, depth: int = 1) -> FilterExpression:
+    budget.enter(depth, location)
     value = _mapping(raw, location)
     keys = set(value)
     for extension in terms:
@@ -109,7 +140,7 @@ def _parse_expression(raw: Any, location: str, terms: TermRegistry) -> FilterExp
             )
         kind = next(iter(boolean_keys))
         if kind == "not":
-            return NotExpression(_parse_expression(value["not"], f"{location}.not", terms))
+            return NotExpression(_parse_expression(value["not"], f"{location}.not", terms, budget, depth + 1))
         children = _list(value[kind], f"{location}.{kind}")
         if not children:
             _fail(
@@ -118,7 +149,7 @@ def _parse_expression(raw: Any, location: str, terms: TermRegistry) -> FilterExp
                 f"{location}.{kind}",
             )
         parsed = tuple(
-            _parse_expression(child, f"{location}.{kind}[{index}]", terms)
+            _parse_expression(child, f"{location}.{kind}[{index}]", terms, budget, depth + 1)
             for index, child in enumerate(children)
         )
         return AllExpression(parsed) if kind == "all" else AnyExpression(parsed)

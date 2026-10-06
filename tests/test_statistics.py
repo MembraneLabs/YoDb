@@ -113,6 +113,40 @@ class SelectivityTests(unittest.TestCase):
             self.assertTrue(0.0 <= sel(raw, cols) <= 1.0)
 
 
+class CommonValueTests(unittest.TestCase):
+    """A skewed column: 85% 'placed', 10% 'paid', and 5 other values sharing the remaining 5%."""
+
+    COLUMN = {"subject": ColumnStatistics(distinct_count=7.0, null_fraction=0.0, common_values=(("placed", 0.85), ("paid", 0.10)))}
+
+    def test_a_common_value_has_its_measured_frequency(self) -> None:
+        self.assertAlmostEqual(sel(p("subject", "eq", "placed"), self.COLUMN), 0.85)
+        self.assertAlmostEqual(sel(p("subject", "ne", "placed"), self.COLUMN), 0.15)
+
+    def test_any_other_value_shares_what_the_common_values_leave(self) -> None:
+        self.assertAlmostEqual(sel(p("subject", "eq", "returned"), self.COLUMN), 0.05 / 5)
+
+    def test_in_adds_the_frequencies_and_not_in_is_the_rest(self) -> None:
+        self.assertAlmostEqual(sel(p("subject", "in", ["placed", "paid"]), self.COLUMN), 0.95)
+        self.assertAlmostEqual(sel(p("subject", "not_in", ["placed", "paid"]), self.COLUMN), 0.05)
+
+    def test_without_common_values_the_uniform_estimate_is_unchanged(self) -> None:
+        plain = {"subject": ColumnStatistics(distinct_count=2.0, null_fraction=0.0)}
+        self.assertAlmostEqual(sel(p("subject", "eq", "x"), plain), 0.5)
+
+    def test_when_every_distinct_value_is_common_an_unlisted_value_is_nearly_impossible(self) -> None:
+        full = {"subject": ColumnStatistics(distinct_count=2.0, null_fraction=0.0, common_values=(("a", 0.75), ("b", 0.25)))}
+        self.assertLess(sel(p("subject", "eq", "zzz"), full, rows=1000), 0.01)
+
+    def test_numbers_compare_by_value(self) -> None:
+        numeric = {"priority": ColumnStatistics(distinct_count=5.0, null_fraction=0.0, common_values=((5, 0.6),))}
+        self.assertAlmostEqual(sel(p("priority", "eq", 5), numeric), 0.6)
+        self.assertAlmostEqual(sel(p("priority", "eq", 4), numeric), 0.4 / 4)      # not common: the rest, over the other values
+
+    def test_frequencies_cannot_sum_above_one(self) -> None:
+        with self.assertRaises(ValueError):
+            ColumnStatistics(common_values=(("a", 0.7), ("b", 0.7)))
+
+
 class ValueValidationTests(unittest.TestCase):
     def test_nonsense_statistics_are_rejected(self) -> None:
         for build in (
@@ -287,7 +321,7 @@ class PostgresProviderTests(unittest.TestCase):
         return PostgresStatisticsProvider(connections, clock=lambda: self.now, **kwargs)
 
     def test_reads_row_count_and_maps_physical_columns_to_logical_fields(self) -> None:
-        connections = FakeConnections(1000.0, [("priority", 5.0, 0.1), ("not_queried", 3.0, 0.0)])
+        connections = FakeConnections(1000.0, [("priority", 5.0, 0.1, None, None), ("not_queried", 3.0, 0.0, None, None)])
         stats = self.provider(connections).statistics(source())
         self.assertEqual(stats.row_count, 1000.0)
         self.assertEqual(stats.columns["priority"], ColumnStatistics(distinct_count=5.0, null_fraction=0.1))
@@ -295,8 +329,37 @@ class PostgresProviderTests(unittest.TestCase):
         rows_sql, rows_params = connections.executed[0]
         self.assertEqual(rows_params, ('"public"."tickets"',))   # quoted, schema-qualified, parameterized
 
+    def test_the_whole_tables_statistics_are_cached_not_just_the_columns_of_the_first_query(self) -> None:
+        # Regression: the first query to touch a table used to decide which columns every later query got,
+        # so a later filter on another column silently fell back to a default selectivity.
+        connections = FakeConnections(1000.0, [("priority", 5.0, 0.0, None, None), ("subject", 40.0, 0.0, None, None)])
+        provider = self.provider(connections)
+        first = resolve_query_sources(
+            bind_query(parse_query({"from": {"dataset": "ticket"}, "select": ["priority"], "where": p("priority", "gte", 1)}), ACTIVE), ACTIVE
+        ).sources[0]
+        second = resolve_query_sources(
+            bind_query(parse_query({"from": {"dataset": "ticket"}, "select": ["subject"], "where": p("subject", "eq", "x")}), ACTIVE), ACTIVE
+        ).sources[0]
+        self.assertNotIn("subject", provider.statistics(first).columns)          # this query does not use it
+        self.assertEqual(provider.statistics(second).columns["subject"].distinct_count, 40.0)
+        self.assertEqual(len([e for e in connections.executed if "stats_rows" in e[0]]), 1)   # one read served both
+
+    def test_most_common_values_are_read_and_typed_by_the_logical_field(self) -> None:
+        connections = FakeConnections(1000.0, [
+            ("subject", 40.0, 0.0, ["S1", "S2"], [0.5, 0.25]),
+            ("priority", 5.0, 0.0, ["5", "3"], [0.6, 0.2]),
+        ])
+        stats = self.provider(connections).statistics(source())
+        self.assertEqual(stats.columns["subject"].common_values, (("S1", 0.5), ("S2", 0.25)))
+        self.assertEqual(stats.columns["priority"].common_values, ((5, 0.6), (3, 0.2)))
+
+    def test_a_common_value_that_cannot_be_typed_is_left_out_rather_than_compared_wrongly(self) -> None:
+        connections = FakeConnections(1000.0, [("priority", 5.0, 0.0, ["five", "3"], [0.6, 0.2])])
+        stats = self.provider(connections).statistics(source())
+        self.assertEqual(stats.columns["priority"].common_values, ((3, 0.2),))
+
     def test_negative_n_distinct_is_a_fraction_of_the_rows_and_zero_is_unknown(self) -> None:
-        connections = FakeConnections(2000.0, [("priority", -0.5, 0.0), ("subject", 0.0, 0.0)])
+        connections = FakeConnections(2000.0, [("priority", -0.5, 0.0, None, None), ("subject", 0.0, 0.0, None, None)])
         stats = self.provider(connections).statistics(source())
         self.assertEqual(stats.columns["priority"].distinct_count, 1000.0)
         self.assertIsNone(stats.columns["subject"].distinct_count)

@@ -75,6 +75,102 @@ class ConnectionsTests(unittest.TestCase):
         self.assertIs(registry.adapter_for(SourceKind.POSTGRES), adapter)
 
 
+class FailFastTests(unittest.TestCase):
+    """A bad credential or an unreachable host must fail at once, clearly, and without the driver's message."""
+
+    def adapter(self, probe, created):
+        return PostgresConnectionAdapter(
+            MappingPostgresConnectionResolver({"crm": PostgresConnectionSettings("postgresql://u:secret@h/db")}),
+            probe=probe,
+            pool_factory=lambda settings, lo, hi, timeout: created.append(1) or FakePool(),
+        )
+
+    def refusing(self, calls):
+        def probe(settings, connection_ref, timeout):
+            calls.append(connection_ref)
+            from yodb import ErrorDetail
+
+            raise SourceConnectionError(
+                ErrorDetail(code=ErrorCode.SOURCE_AUTHENTICATION_FAILED, message="rejected", retryable=False)
+            )
+
+        return probe
+
+    def test_a_failed_probe_raises_before_any_pool_exists(self) -> None:
+        created, calls = [], []
+        adapter = self.adapter(self.refusing(calls), created)
+        with self.assertRaises(SourceConnectionError) as raised:
+            with adapter.acquire("crm"):
+                pass
+        self.assertEqual(raised.exception.code, ErrorCode.SOURCE_AUTHENTICATION_FAILED)
+        self.assertEqual(created, [])
+
+    def test_a_failure_is_remembered_briefly_so_one_bad_reference_costs_one_attempt(self) -> None:
+        created, calls = [], []
+        adapter = self.adapter(self.refusing(calls), created)
+        for _ in range(5):
+            with self.assertRaises(SourceConnectionError):
+                with adapter.acquire("crm"):
+                    pass
+        self.assertEqual(calls, ["crm"])
+
+    def test_after_the_memory_expires_it_tries_again_and_a_success_creates_one_pool(self) -> None:
+        import yodb.connections.postgres as module
+
+        created, calls = [], []
+        state = {"fail": True}
+
+        def probe(settings, connection_ref, timeout):
+            calls.append(1)
+            if state["fail"]:
+                self.refusing([])(settings, connection_ref, timeout)
+
+        adapter = self.adapter(probe, created)
+        with self.assertRaises(SourceConnectionError):
+            with adapter.acquire("crm"):
+                pass
+        state["fail"] = False
+        real = module.time.monotonic
+        module.time.monotonic = lambda: real() + 60              # the failure memory has expired
+        try:
+            with adapter.acquire("crm") as connection:
+                self.assertEqual(connection, "connection")
+            with adapter.acquire("crm"):
+                pass
+        finally:
+            module.time.monotonic = real
+        self.assertEqual((len(calls), len(created)), (2, 1))     # probed once more, then the pool is reused
+
+    def test_a_missing_reference_is_the_resolvers_error_and_is_not_probed(self) -> None:
+        calls = []
+        adapter = self.adapter(self.refusing(calls), [])
+        with self.assertRaises(SourceConnectionError) as raised:
+            with adapter.acquire("unknown"):
+                pass
+        self.assertEqual(raised.exception.code, ErrorCode.CONNECTION_REFERENCE_NOT_FOUND)
+        self.assertEqual(calls, [])
+
+    def test_an_injected_pool_factory_skips_the_default_probe(self) -> None:
+        # tests (and callers) that supply their own pool never open a real connection
+        adapter = PostgresConnectionAdapter(
+            MappingPostgresConnectionResolver({"crm": PostgresConnectionSettings("postgresql://nowhere.invalid/db")}),
+            pool_factory=lambda *args: FakePool(),
+        )
+        with adapter.acquire("crm") as connection:
+            self.assertEqual(connection, "connection")
+
+    def test_the_default_probe_never_echoes_the_drivers_message(self) -> None:
+        from yodb.connections.postgres import _probe_with_psycopg
+
+        for conninfo in ("host=127.0.0.1 port=1 user=u password=hunter2 connect_timeout=1", "not a conninfo hunter2"):
+            with self.assertRaises(SourceConnectionError) as raised:
+                _probe_with_psycopg(PostgresConnectionSettings(conninfo), "crm", 1.0)
+            self.assertNotIn("hunter2", raised.exception.detail.message)
+            self.assertNotIn("127.0.0.1", raised.exception.detail.message)
+            self.assertEqual(raised.exception.code, ErrorCode.SOURCE_UNAVAILABLE)
+            self.assertTrue(raised.exception.retryable)
+
+
 class FakePool:
     def __init__(self) -> None:
         self.timeouts: list[float | None] = []

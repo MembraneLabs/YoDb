@@ -80,6 +80,18 @@ def _bind(term: SemanticPredicate, root: BoundDataset, location: str, policy: An
     return BoundSemanticPredicate(field=field, proposition=proposition)
 
 
+def _vector_stores(term: BoundSemanticPredicate, catalog, dataset: str) -> tuple[str, ...]:
+    """Sources that hold only the vectors of the term's field (the text lives elsewhere)."""
+
+    return tuple(
+        name
+        for name, source in catalog.sources.items()
+        if (representation := source.datasets.get(dataset)) is not None
+        and term.field.name in representation.embeddings
+        and term.field.name not in representation.fields
+    )
+
+
 SEMANTIC_TERM = TermExtension(
     key="semantic",
     parsed_type=SemanticPredicate,
@@ -89,6 +101,7 @@ SEMANTIC_TERM = TermExtension(
     describe=lambda term: {"semantic": {"field": term.field.name, "proposition": term.proposition}},
     uses=lambda term: ((term.field, FieldUse.EXTENSION),),
     noun="semantic condition",
+    extra_sources=_vector_stores,
     uses_minimum_quality=True,
 )
 

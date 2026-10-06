@@ -58,10 +58,17 @@ class ColumnStatistics:
     null_fraction: float | None = None
     minimum: float | None = None   # numeric (timestamps as epoch seconds) for range estimates
     maximum: float | None = None
+    # The most common values and the fraction of *all* rows each one has (skewed columns:
+    # a status that is 85% "placed" is not "1 of 5 values").
+    common_values: tuple[tuple[object, float], ...] = ()
 
     def __post_init__(self) -> None:
         _check_non_negative("distinct_count", self.distinct_count)
         _check_fraction("null_fraction", self.null_fraction)
+        for _, frequency in self.common_values:
+            _check_fraction("common value frequency", frequency)
+        if sum(frequency for _, frequency in self.common_values) > 1.0 + 1e-6:
+            raise ValueError("common value frequencies must not sum above 1")
         if self.minimum is not None and self.maximum is not None and self.minimum > self.maximum:
             raise ValueError("minimum must not exceed maximum")
 
@@ -205,13 +212,14 @@ def _predicate_selectivity(
         return non_null if null_fraction is not None else 1.0 - defaults.is_null
     ndv = column.distinct_count if column and column.distinct_count else None
     equal = non_null / ndv if ndv else defaults.equality * non_null
+    common = column.common_values if column else ()
     if op is ComparisonOperator.EQ:
-        return equal
+        return _equality(predicate.value, common, ndv, non_null, equal)
     if op is ComparisonOperator.NE:
-        return max(0.0, non_null - equal)
+        return max(0.0, non_null - _equality(predicate.value, common, ndv, non_null, equal))
     if op in (ComparisonOperator.IN, ComparisonOperator.NOT_IN):
-        count = len(predicate.value) if isinstance(predicate.value, (tuple, list)) else 1
-        member = min(non_null, equal * count)
+        values = predicate.value if isinstance(predicate.value, (tuple, list)) else (predicate.value,)
+        member = min(non_null, sum(_equality(v, common, ndv, non_null, equal) for v in values))
         return member if op is ComparisonOperator.IN else max(0.0, non_null - member)
     if op in (ComparisonOperator.CONTAINS, ComparisonOperator.STARTS_WITH):
         return defaults.text_match * non_null
@@ -223,6 +231,36 @@ def _predicate_selectivity(
         below = min(1.0, max(0.0, (number - low) / (high - low)))
         fraction = below if op in (ComparisonOperator.LT, ComparisonOperator.LTE) else 1.0 - below
     return fraction * non_null
+
+
+def _equality(
+    value: object,
+    common: tuple[tuple[object, float], ...],
+    ndv: float | None,
+    non_null: float,
+    uniform: float,
+) -> float:
+    """Fraction of rows equal to ``value``: its measured frequency if it is a common value,
+    else what the common values leave, spread over the remaining distinct values."""
+
+    if not common:
+        return uniform
+    for candidate, frequency in common:
+        if _same(candidate, value):
+            return frequency
+    remaining = max(0.0, non_null - sum(frequency for _, frequency in common))
+    others = (ndv - len(common)) if ndv else None
+    if others is not None and others >= 1:
+        return remaining / others
+    return min(uniform, remaining)       # every distinct value is common and this one is not among them
+
+
+def _same(left: object, right: object) -> bool:
+    if isinstance(left, bool) or isinstance(right, bool):
+        return left is right
+    if isinstance(left, (int, float)) and isinstance(right, (int, float)):
+        return float(left) == float(right)
+    return left == right
 
 
 def _as_number(value: object) -> float | None:

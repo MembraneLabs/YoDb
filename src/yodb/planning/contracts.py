@@ -218,6 +218,7 @@ class StepRole(str, Enum):
     ANCHOR = "anchor"        # identity source: its rows are the result records
     REQUIRED = "required"    # contributor with a pushed filter: an inner-join restriction
     OPTIONAL = "optional"    # contributor that only enriches
+    SHORTLIST = "shortlist"  # vector store: ranks IDs, returns the nearest K; carries no fields
 
 
 @dataclass(frozen=True)
@@ -237,15 +238,18 @@ class AssemblyStep:
 def default_schedule(
     anchor: "RemoteScan", contributors: tuple["RemoteScan", ...], required: tuple[str, ...]
 ) -> tuple[AssemblyStep, ...]:
-    """The fixed rule: required contributors, then the anchor, then enrichers."""
+    """The fixed rule: required contributors, the vector shortlist (if any), the anchor, then enrichers."""
 
+    ranked = tuple(c for c in contributors if c.vector_search is not None)
+    plain = tuple(c for c in contributors if c.vector_search is None)
     required_steps = tuple(
-        AssemblyStep(c.source.source_name, StepRole.REQUIRED) for c in contributors if c.source.source_name in required
+        AssemblyStep(c.source.source_name, StepRole.REQUIRED) for c in plain if c.source.source_name in required
     )
+    shortlist_steps = tuple(AssemblyStep(c.source.source_name, StepRole.SHORTLIST) for c in ranked)
     optional_steps = tuple(
-        AssemblyStep(c.source.source_name, StepRole.OPTIONAL) for c in contributors if c.source.source_name not in required
+        AssemblyStep(c.source.source_name, StepRole.OPTIONAL) for c in plain if c.source.source_name not in required
     )
-    return (*required_steps, AssemblyStep(anchor.source.source_name, StepRole.ANCHOR), *optional_steps)
+    return (*required_steps, *shortlist_steps, AssemblyStep(anchor.source.source_name, StepRole.ANCHOR), *optional_steps)
 
 
 @dataclass(frozen=True)

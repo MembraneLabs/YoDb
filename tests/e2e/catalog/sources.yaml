@@ -95,7 +95,98 @@ sources:
         fields:
           id:  {physical_name: item_id}
           tag: {physical_name: tag}
+  sales:
+    kind: postgres
+    connection_ref: e2e-sales
+    read_only: true
+    datasets:
+      order:
+        resource: sales.orders
+        identity: [id]
+        fields:
+          id:           {physical_name: order_id}
+          customer_ref: {physical_name: customer_ref}
+          status:       {physical_name: status}
+          amount:       {physical_name: amount}
+          items:        {physical_name: items}
+          placed_at:    {physical_name: placed_at}
+          rush:         {physical_name: rush}
+          channel:      {physical_name: channel}
+  payments:
+    kind: postgres
+    connection_ref: e2e-payments
+    read_only: true
+    datasets:
+      order:
+        resource: payments.payments
+        identity: [id]
+        fields:
+          id:          {physical_name: order_id}
+          method:      {physical_name: method}
+          paid_amount: {physical_name: paid_amount}
+          settled:     {physical_name: settled}
+  logistics:
+    kind: postgres
+    connection_ref: e2e-logistics
+    read_only: true
+    datasets:
+      order:
+        resource: logistics.shipments
+        identity: [id]
+        fields:
+          id:      {physical_name: order_id}
+          carrier: {physical_name: carrier}
+          days:    {physical_name: days}
+          express: {physical_name: express}
+  bigmain:
+    kind: postgres
+    connection_ref: e2e-support
+    read_only: true
+    datasets:
+      big:
+        resource: scale.items
+        identity: [id]
+        fields:
+          id:         {physical_name: item_id}
+          kind:       {physical_name: kind}
+          amount:     {physical_name: amount}
+          created_at: {physical_name: created_at}
+          flag:       {physical_name: flag}
+          note:       {physical_name: note}
+  bigattrs:
+    kind: postgres
+    connection_ref: e2e-support
+    read_only: true
+    datasets:
+      big:
+        resource: scale.attrs
+        identity: [id]
+        fields:
+          id:      {physical_name: item_id}
+          segment: {physical_name: segment}
+          score:   {physical_name: score}
+          code:    {physical_name: code}
 resolution:
+  big:
+    identity_source: bigmain
+    field_sources: {id: bigmain, kind: bigmain, amount: bigmain, created_at: bigmain, flag: bigmain, note: bigmain, segment: bigattrs, score: bigattrs, code: bigattrs}
+  order:
+    identity_source: sales
+    field_sources:
+      id: sales
+      customer_ref: sales
+      status: sales
+      amount: sales
+      items: sales
+      placed_at: sales
+      rush: sales
+      channel: sales
+      method: payments
+      paid_amount: payments
+      settled: payments
+      carrier: logistics
+      days: logistics
+      express: logistics
   item:
     identity_source: items
     field_sources: {id: items, kind: items, tag: tags}

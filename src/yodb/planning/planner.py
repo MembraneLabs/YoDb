@@ -107,7 +107,7 @@ class FederatedPhysicalPlanner:
         scans = scan_plan.scans
         for strategy, _ in chosen:
             scans = strategy.prepare(scans)
-        node: PhysicalNode = scans[0] if resolved.shape is QuerySourceShape.SINGLE_SOURCE else self._combine.build(scans, core, decision.schedule)
+        node: PhysicalNode = scans[0] if len(scans) == 1 else self._combine.build(scans, core, decision.schedule)
         node = self._filter.build(node, core.query.where, fully_pushed=scan_plan.fully_pushed)
         for strategy, notes in chosen:
             node = strategy.build(node, notes)
@@ -116,7 +116,7 @@ class FederatedPhysicalPlanner:
 
         fingerprint = plan_fingerprint(node)
         explanation = PlanExplanation(
-            plan_kind="single_source" if resolved.shape is QuerySourceShape.SINGLE_SOURCE else "in_memory_record_assembly",
+            plan_kind="single_source" if len(scans) == 1 else "in_memory_record_assembly",
             catalog_fingerprint=query.catalog_fingerprint,
             plan_fingerprint=fingerprint,
             nodes=explain_plan(node),

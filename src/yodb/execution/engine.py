@@ -16,7 +16,7 @@ from ..planning import (
 from ..query import QueryValidationPolicy, bind_query, parse_query, resolve_query_sources
 from .contracts import ActiveCatalogProvider, QueryExecutionResult
 from .federated import ExecutionTrace, FederatedPlanExecutor
-from .operators import ExecutionExtension
+from .operators import ExecutionExtension, FederatedExecutionPolicy
 from .registry import QueryExecutionAdapterRegistry
 
 
@@ -39,6 +39,7 @@ class QueryExecutionEngine:
         extensions: Sequence[ExecutionExtension] = (),
         statistics: StatisticsService | None = None,
         cost_parameters: CostParameters | None = None,
+        execution_policy: FederatedExecutionPolicy = FederatedExecutionPolicy(),
     ) -> None:
         self._catalog_runtime = catalog_runtime
         self._compilers = compilers
@@ -51,7 +52,7 @@ class QueryExecutionEngine:
             statistics=statistics,
             costs=cost_parameters or CostParameters(),
         )
-        self._plan_executor = FederatedPlanExecutor(compilers, executors, extensions=extensions)
+        self._plan_executor = FederatedPlanExecutor(compilers, executors, policy=execution_policy, extensions=extensions)
 
     def execute(
         self,

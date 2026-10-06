@@ -108,18 +108,33 @@ class Estimate:
 
 @dataclass(frozen=True)
 class RankedRead:
-    """A demand on the combine step: read the anchor *last*, restricted by every
-    required source, returning only its top ``shortlist`` rows.  ``ranking_per_row_ms``
-    is the extra cost of ranking each row the read chooses from."""
+    """A demand on the combine step: rank rows and keep only the top ``shortlist``.
+
+    By default the anchor is read *last*, restricted by every required source, and
+    does the ranking itself.  With ``via_store`` a separate ranking source (a vector
+    store, role SHORTLIST) is read after the required sources and before the anchor,
+    which is then read only for the K IDs it returned.  ``ranking_per_row_ms`` is the
+    extra cost of ranking each row the read chooses from."""
 
     shortlist: int
     ranking_per_row_ms: float = 0.0
+    via_store: bool = False
 
     def __post_init__(self) -> None:
         if self.shortlist < 1:
             raise ValueError("shortlist must be positive")
         if not (math.isfinite(self.ranking_per_row_ms) and self.ranking_per_row_ms >= 0):
             raise ValueError("ranking_per_row_ms must be a finite non-negative number")
+
+
+@dataclass(frozen=True)
+class StoreRead:
+    """A shortlist read from a separate store, then the anchor read for the IDs it returned."""
+
+    latency: float
+    candidates: "Candidates"
+    store_restricted: bool
+    anchor_restricted: bool
 
 
 @dataclass(frozen=True)
@@ -198,6 +213,10 @@ class Problem:
         self.anchor = anchors[0]
         self.required = [s for s in sources if s.role is StepRole.REQUIRED]
         self.optional = [s for s in sources if s.role is StepRole.OPTIONAL]
+        stores = [s for s in sources if s.role is StepRole.SHORTLIST]
+        if len(stores) > 1:
+            raise ValueError("at most one shortlist source is supported")
+        self.store = stores[0] if stores else None
         self.narrowing = [self.anchor, *self.required]          # anchor is index 0
         self.universe = max(self.anchor.total_rows, 0.0)
 
@@ -276,6 +295,35 @@ class Problem:
         )
         return _Read(latency, rows), Candidates(rows, pool)
 
+    def store_read(self, keys_in: float | None, demand: RankedRead) -> StoreRead | None:
+        """Cost of ranking in the store (after the required sources), then reading the anchor
+        for the IDs it returned.  None when this problem has no store or the anchor cannot be read."""
+
+        store = self.store
+        if store is None:
+            return None
+        bound = self.bound(store)
+        restricted = keys_in is not None and bound is not None and keys_in <= bound
+        coverage = min(1.0, store.total_rows / self.universe) if self.universe > 0 else 0.0
+        pool = keys_in * coverage if restricted else store.total_rows
+        rows = min(float(demand.shortlist), pool)
+        profile = store.profile
+        latency = (
+            profile.call_latency_ms
+            + (profile.per_key_latency_ms * keys_in if restricted and keys_in else 0.0)
+            + profile.per_row_latency_ms * rows
+            + demand.ranking_per_row_ms * pool
+        )
+        if not restricted:
+            # the K nearest of the whole store still have to pass every required source
+            for source in self.required:
+                rows *= self.pass_fraction(source)
+        outcome = self.best_read(self.anchor, rows)
+        if outcome is None:
+            return None
+        read, anchor_restricted = outcome
+        return StoreRead(latency + read.latency, Candidates(read.rows, pool), restricted, anchor_restricted)
+
     def optional_cost(self, keys_in: float) -> float | None:
         total = 0.0
         for source in self.optional:
@@ -309,6 +357,27 @@ class Problem:
             money += own.money
         return Estimate(latency, money)
 
+    def _evaluate_via_store(self, order: Sequence[tuple[str, bool]], variant: Variant) -> Estimate | None:
+        """The oracle for a store-ranked variant: required sources, then the store, then the anchor."""
+
+        if order[-1][0] != self.anchor.name:
+            return None                       # the anchor is read last, for the shortlisted IDs
+        by_name = {s.name: s for s in self.narrowing}
+        latency = 0.0
+        read: frozenset[str] = frozenset()
+        for name, restrict in order[:-1]:
+            keys_in = None if not read else self.keys_after(read)
+            outcome = self.plain_read(by_name[name], keys_in, restrict)
+            if outcome is None:
+                return None
+            latency += outcome.latency
+            read = read | {name}
+        keys_in = self.keys_after(read) if read else None
+        result = self.store_read(keys_in, variant.demand)
+        if result is None:
+            return None
+        return self.finish(latency + result.latency, result.candidates, variant)
+
     # --- evaluating one explicit plan (used by the tests as the oracle) ----------
 
     def evaluate(self, order: Sequence[tuple[str, bool]], variant: Variant | None = None) -> Estimate | None:
@@ -317,6 +386,8 @@ class Problem:
 
         if sorted(name for name, _ in order) != sorted(s.name for s in self.narrowing):
             raise ValueError("order must name every narrowing source exactly once")
+        if variant is not None and variant.demand is not None and variant.demand.via_store:
+            return self._evaluate_via_store(order, variant)
         by_name = {s.name: s for s in self.narrowing}
         latency = 0.0
         read: frozenset[str] = frozenset()
@@ -409,6 +480,19 @@ def optimize(
     anchor_last = full ^ 1  # every narrowing source except the anchor (index 0)
     for variant in problem.variants or (None,):
         demand = None if variant is None else variant.demand
+        if demand is not None and demand.via_store:
+            if problem.store is not None and anchor_last in best:
+                cost_before, order_before = best[anchor_last]
+                keys_in = problem.keys_after(frozenset(names[1:])) if len(names) > 1 else None
+                outcome = problem.store_read(keys_in, demand)
+                if outcome is not None:
+                    consider(
+                        cost_before + outcome.latency,
+                        (*order_before, (problem.store.name, outcome.store_restricted), (problem.anchor.name, outcome.anchor_restricted)),
+                        outcome.candidates,
+                        variant,
+                    )
+            continue
         if demand is None:
             if full in best:
                 final = problem.keys_after(frozenset(names))
@@ -438,10 +522,12 @@ def optimize(
         return (objective, 0 if matches_rules else 1)
 
     objective, estimate, order, variant, candidates = min(options, key=rank)
-    steps = [
-        AssemblyStep(name, StepRole.ANCHOR if name == problem.anchor.name else StepRole.REQUIRED, restrict)
-        for name, restrict in order
-    ]
+    def role_of(name: str) -> StepRole:
+        if name == problem.anchor.name:
+            return StepRole.ANCHOR
+        return StepRole.SHORTLIST if problem.store is not None and name == problem.store.name else StepRole.REQUIRED
+
+    steps = [AssemblyStep(name, role_of(name), restrict) for name, restrict in order]
     for source in problem.optional:
         outcome = problem.best_read(source, candidates.count)
         steps.append(AssemblyStep(source.name, StepRole.OPTIONAL, bool(outcome and outcome[1])))

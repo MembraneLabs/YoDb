@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+import math
 from typing import Any
 
 from ..catalog import SourceKind
@@ -22,10 +23,18 @@ class PostgresQueryExecutionAdapter:
 
     source_kind = SourceKind.POSTGRES
 
-    def __init__(self, connections: SourceConnectionAdapter[Any]) -> None:
+    def __init__(
+        self,
+        connections: SourceConnectionAdapter[Any],
+        *,
+        default_statement_timeout_seconds: float | None = 60.0,
+    ) -> None:
         if connections.source_kind is not SourceKind.POSTGRES:
             raise ValueError("PostgresQueryExecutionAdapter requires a PostgreSQL connection adapter")
+        if default_statement_timeout_seconds is not None and default_statement_timeout_seconds <= 0:
+            raise ValueError("default_statement_timeout_seconds must be positive")
         self._connections = connections
+        self._default_statement_timeout = default_statement_timeout_seconds
 
     def execute(
         self,
@@ -43,17 +52,32 @@ class PostgresQueryExecutionAdapter:
                     retryable=False,
                 )
             )
+        limit = timeout_seconds if timeout_seconds is not None else self._default_statement_timeout
         try:
             with self._connections.acquire(
                 query.connection_ref,
                 timeout_seconds=timeout_seconds,
             ) as connection:
                 with connection.cursor() as cursor:
+                    if limit is not None:
+                        # The database stops the statement itself; the pool timeout only bounds waiting.
+                        cursor.execute(
+                            "SELECT set_config('statement_timeout', %s, true)", (str(max(1, math.ceil(limit * 1000))),)
+                        )
                     cursor.execute(query.sql, query.parameters)
                     rows = cursor.fetchall()
         except YoDbError:
             raise
         except Exception as error:
+            if type(error).__name__ == "QueryCanceled":
+                raise QueryExecutionError(
+                    ErrorDetail(
+                        code=ErrorCode.QUERY_TIMEOUT,
+                        message="The PostgreSQL source did not answer within the time limit.",
+                        retryable=True,
+                        source_name=query.source_name,
+                    )
+                ) from error
             raise QueryExecutionError(
                 ErrorDetail(
                     code=ErrorCode.QUERY_EXECUTION_FAILED,

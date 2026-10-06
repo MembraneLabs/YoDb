@@ -76,7 +76,7 @@ def execute(runtime: SemanticRuntime | None, ctx: ExecutionContext, node: Semant
             break
         if node.maximum_latency_ms is not None and (time.perf_counter() - started) * 1000 >= node.maximum_latency_ms:
             fail(ErrorCode.QUERY_SEMANTIC_BUDGET_EXCEEDED, "The semantic latency budget was exhausted.")
-        request = VerificationRequest(node.proposition, batch, run.timeout_seconds)
+        request = VerificationRequest(node.proposition, batch, run.remaining())
         try:
             result = runtime.verifier.verify(request)
             result.require_complete_for(request)
@@ -121,7 +121,7 @@ def execute(runtime: SemanticRuntime | None, ctx: ExecutionContext, node: Semant
 
 def _embed(embedder, node: SemanticVerify, run: Run) -> tuple[float, ...]:
     try:
-        result = embedder.embed(EmbeddingRequest((node.proposition,), run.timeout_seconds))
+        result = embedder.embed(EmbeddingRequest((node.proposition,), run.remaining()))
     except YoDbError:
         raise
     except Exception as error:

@@ -1,0 +1,43 @@
+api_version: yodb/v0.1
+sources:
+  inbox:
+    kind: postgres
+    connection_ref: e2e-records
+    read_only: true
+    datasets:
+      message:
+        resource: support.messages
+        identity: [id]
+        fields:
+          id:         {physical_name: message_id}
+          body:       {physical_name: body}
+          split:      {physical_name: split}
+          word_count: {physical_name: word_count}
+  triage:
+    kind: postgres
+    connection_ref: e2e-records
+    read_only: true
+    datasets:
+      message:
+        resource: triage.assignments
+        identity: [id]
+        fields:
+          id:       {physical_name: message_id}
+          owner:    {physical_name: owner}
+          priority: {physical_name: priority}
+  vectors:
+    kind: postgres
+    connection_ref: e2e-vectors
+    read_only: true
+    datasets:
+      message:
+        resource: vec.message_vectors
+        identity: [id]
+        fields:
+          id: {physical_name: message_id}
+        embeddings:
+          body: {column: embedding, model: "@MODEL@", dimensions: @DIMS@, metric: cosine}
+resolution:
+  message:
+    identity_source: inbox
+    field_sources: {id: inbox, body: inbox, split: inbox, word_count: inbox, owner: triage, priority: triage}

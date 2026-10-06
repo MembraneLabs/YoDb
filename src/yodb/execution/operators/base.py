@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+import time
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -49,6 +50,21 @@ class Run:
     trace: ExecutionTrace | None
     # Set when a planned shortlist could not be used safely and a plain scan ran.
     fell_back: bool = False
+    started: float = field(default_factory=time.monotonic)
+
+    def remaining(self) -> float | None:
+        """Seconds left of the whole query's budget (None: unlimited).
+
+        ``timeout_seconds`` bounds the *query*, not each read: every source call and
+        provider request gets what is left, and a spent budget ends the query.
+        """
+
+        if self.timeout_seconds is None:
+            return None
+        left = self.timeout_seconds - (time.monotonic() - self.started)
+        if left <= 0:
+            fail(ErrorCode.QUERY_TIMEOUT, f"The query exceeded its {self.timeout_seconds:g}s time limit.")
+        return left
 
 
 Handler = Callable[["ExecutionContext", Any, Run], tuple[LogicalRow, ...]]

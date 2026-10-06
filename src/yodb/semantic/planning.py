@@ -17,7 +17,7 @@ from typing import ClassVar, Protocol
 from ..errors import ErrorCode, ErrorDetail, QueryError
 from ..operators import OperatorKind
 from ..query.models import BoundFilterExpression, BoundQuery
-from ..query.resolution import QuerySourceShape, SourceResolvedQuery
+from ..query.resolution import QuerySourceShape, SingleSourceQueryBinding, SourceResolvedQuery
 from ..query.semantic import BoundSemanticPredicate, semantic_predicates, without_semantic_terms
 from ..query.models import BoundOrderTerm
 from ..query.resolution import ResolvedField
@@ -29,10 +29,13 @@ from ..planning.contracts import (
     PlanExplanationNode,
     PlanProperties,
     RemoteScan,
+    ResultCompleteness,
+    ResultShape,
     UnaryNode,
     VectorSearch,
     coordinator_location,
     properties_from,
+    remote_location,
 )
 from ..planning.optimizer import Candidates, Estimate, RankedRead, Variant
 from ..planning.operators.base import Claim, ExtensionPlan, PlanningServices, Strategy, effective_limit
@@ -180,6 +183,7 @@ class SemanticOptions:
     required_recall: float
     unpushed_selectivity: float = 1.0   # < 1 when part of the filter still runs in YoDb
     verify_all_allowed: bool = True     # False when the caller insisted on a shortlist
+    ranked_by_store: bool = False       # the vectors live in a separate store, read before the anchor
 
     def __post_init__(self) -> None:
         if min(self.shortlist_start, self.shortlist_cap, self.maximum_candidates, self.page_size) < 1:
@@ -224,7 +228,7 @@ def semantic_variants(options: SemanticOptions, costs: SemanticCosts) -> list[Va
                 Variant(
                     f"shortlist:{size}",
                     cost=lambda candidates, size=size: _estimate(options, costs, candidates, size),
-                    demand=RankedRead(size, costs.vector_ranking_per_row_ms),
+                    demand=RankedRead(size, costs.vector_ranking_per_row_ms, via_store=options.ranked_by_store),
                     approximate=True,
                     payload=SemanticDecision(SemanticPlanKind.VECTOR_SHORTLIST, size),
                 )
@@ -260,6 +264,7 @@ class _Rule:
     kind: SemanticPlanKind
     vector_search: VectorSearch | None
     reasons: tuple[str, ...]
+    store: SingleSourceQueryBinding | None = None     # the separate vector store, when the vectors are not in the anchor
 
 
 class SemanticOperator:
@@ -294,10 +299,11 @@ class SemanticOperator:
         options = self._options(core, rule, scans.fully_pushed, query)
         field = next(f for source in core.sources for f in source.fields if f.field.name == term.field.name)
         template = rule.vector_search
+        store_scan = self._store_scan(rule, query)
         strategies = tuple(
             Strategy(
                 variant=variant,
-                prepare=self._preparer(variant.payload, template),
+                prepare=self._preparer(variant.payload, template, store_scan),
                 build=self._builder(term, field, query, variant.payload, template),
             )
             for variant in semantic_variants(options, self._costs)
@@ -321,20 +327,33 @@ class SemanticOperator:
 
     # --- the fixed rule ------------------------------------------------------------
 
+    def _binding(self, core: SourceResolvedQuery, term: BoundSemanticPredicate):
+        """Where the field's vectors live: next to the text, or in a separate vector store."""
+
+        binding = core.identity_source.embeddings.get(term.field.name)
+        if binding is not None:
+            return binding, None
+        for store in core.extension_sources:
+            binding = store.embeddings.get(term.field.name)
+            if binding is not None:
+                return binding, store
+        return None, None
+
     def _rule(self, core: SourceResolvedQuery, term: BoundSemanticPredicate, fully_pushed: bool) -> _Rule:
         """Pick verify-all or a shortlist by a fixed eligibility rule and say why."""
 
         services, policy = self._services, self._policy
         reasons: list[str] = []
         anchor = core.identity_source
-        binding = anchor.embeddings.get(term.field.name)
-        vector_caps = services.capabilities(anchor.source_kind).vector_search
+        binding, store = self._binding(core, term)
+        ranking_source = anchor if store is None else store
+        vector_caps = services.capabilities(ranking_source.source_kind).vector_search
         if policy.preference is SemanticPlanPreference.VERIFY_ALL:
             reasons.append("preference is verify_all")
         else:
             if binding is None:
                 reasons.append(
-                    "the identity source has no embedding for the field"
+                    "no source holds embeddings for the field"
                     if any(f.field.name == term.field.name for f in anchor.fields)
                     else "the text field is not owned by the identity source"
                 )
@@ -347,10 +366,17 @@ class SemanticOperator:
             else:
                 if binding is not None and binding.metric not in vector_caps.metrics:
                     reasons.append(f"the source cannot rank by '{binding.metric.value}' distance")
-                if not vector_caps.combines_with_filters and (
-                    core.query.where is not None or core.shape is QuerySourceShape.MULTI_SOURCE
-                ):
+                needs_combining = core.query.where is not None or core.shape is QuerySourceShape.MULTI_SOURCE
+                if store is None and not vector_caps.combines_with_filters and needs_combining:
                     reasons.append("the source cannot combine vector ranking with other filters or key restrictions")
+                if store is not None and not vector_caps.combines_with_filters and core.shape is QuerySourceShape.MULTI_SOURCE:
+                    reasons.append("the vector store cannot combine ranking with key restrictions")
+            if store is not None:
+                anchor_caps = services.capabilities(anchor.source_kind)
+                if anchor_caps.key_lookup is None:
+                    reasons.append("the identity source cannot be restricted by IDs, so shortlisted IDs could not narrow its read")
+                if not services.policy.maximum_transfer_keys:
+                    reasons.append("key transfer is disabled, so shortlisted IDs could not narrow the identity source's read")
             if not fully_pushed:
                 reasons.append("a filter term is not enforced by its source, so a shortlist would precede it")
         if not reasons:
@@ -358,6 +384,8 @@ class SemanticOperator:
             size = min(policy.maximum_candidates, max(policy.minimum_shortlist, first * policy.shortlist_oversample))
             if vector_caps.maximum_shortlist is not None:
                 size = min(size, vector_caps.maximum_shortlist)
+            if store is not None:
+                size = min(size, self._store_cap(core))
             return _Rule(
                 SemanticPlanKind.VECTOR_SHORTLIST,
                 VectorSearch(
@@ -366,9 +394,10 @@ class SemanticOperator:
                     model=binding.model,
                     dimensions=binding.dimensions,
                     shortlist_size=size,
-                    fallback_maximum_rows=services.row_cap(anchor.source_kind),
+                    fallback_maximum_rows=None if store is not None else services.row_cap(anchor.source_kind),
                 ),
-                (f"shortlist of {size}",),
+                (f"shortlist of {size}" if store is None else f"shortlist of {size} from vector store '{store.source_name}'",),
+                store,
             )
         if policy.preference is SemanticPlanPreference.VECTOR_SHORTLIST:
             raise QueryError(
@@ -381,14 +410,56 @@ class SemanticOperator:
             )
         return _Rule(SemanticPlanKind.VERIFY_ALL, None, tuple(reasons))
 
+    def _store_cap(self, core: SourceResolvedQuery) -> int:
+        """Most IDs a shortlist may return: the anchor must be restrictable by all of them."""
+
+        services = self._services
+        anchor_caps = services.capabilities(core.identity_source.source_kind)
+        limits = [services.policy.maximum_transfer_keys, self._policy.maximum_candidates]
+        if anchor_caps.key_lookup is not None:
+            limits.append(anchor_caps.key_lookup.maximum_keys)
+        return min(limit for limit in limits if limit)
+
+    def _store_scan(self, rule: _Rule, query: BoundQuery) -> RemoteScan | None:
+        """The read of the vector store: only IDs come back, ranked, at most K of them."""
+
+        store = rule.store
+        if store is None or rule.vector_search is None:
+            return None
+        caps = self._services.capabilities(store.source_kind)
+        projection = (store.logical_id,)
+        return RemoteScan(
+            source=store,
+            projection=projection,
+            pushed_filter=None,
+            order_by=(),
+            limit=rule.vector_search.shortlist_size,
+            maximum_rows=None,
+            key_lookup_limit=None if caps.key_lookup is None else caps.key_lookup.maximum_keys,
+            vector_search=rule.vector_search,
+            properties=PlanProperties(
+                output_fields=projection,
+                logical_id=store.logical_id,
+                ids_are_unique=True,
+                ordering=None,
+                location=remote_location(store.source_name),
+                completeness=ResultCompleteness.EXACT,
+                result_shape=ResultShape.RECORDS,
+                catalog_fingerprint=query.catalog_fingerprint,
+            ),
+        )
+
     # --- what the cost model needs -------------------------------------------------
 
     def _options(self, core: SourceResolvedQuery, rule: _Rule, fully_pushed: bool, query: BoundQuery) -> SemanticOptions:
         services, policy = self._services, self._policy
-        anchor_caps = services.capabilities(core.identity_source.source_kind)
+        ranking_source = rule.store or core.identity_source
+        ranking_caps = services.capabilities(ranking_source.source_kind)
         cap = policy.maximum_candidates
-        if anchor_caps.vector_search is not None and anchor_caps.vector_search.maximum_shortlist is not None:
-            cap = min(cap, anchor_caps.vector_search.maximum_shortlist)
+        if ranking_caps.vector_search is not None and ranking_caps.vector_search.maximum_shortlist is not None:
+            cap = min(cap, ranking_caps.vector_search.maximum_shortlist)
+        if rule.store is not None:
+            cap = min(cap, self._store_cap(core))
         allowed = rule.vector_search is not None
         return SemanticOptions(
             shortlist_allowed=allowed,
@@ -403,15 +474,23 @@ class SemanticOperator:
             ),
             unpushed_selectivity=1.0 if fully_pushed else services.costs.unpushed_filter_selectivity,
             verify_all_allowed=policy.preference is not SemanticPlanPreference.VECTOR_SHORTLIST,
+            ranked_by_store=rule.store is not None,
         )
 
     # --- what a strategy does to the plan ------------------------------------------
 
     @staticmethod
-    def _preparer(decision: SemanticDecision, template: VectorSearch | None):
+    def _preparer(decision: SemanticDecision, template: VectorSearch | None, store_scan: RemoteScan | None = None):
         if decision.kind is not SemanticPlanKind.VECTOR_SHORTLIST:
             return lambda scans: scans
         search = replace(template, shortlist_size=decision.shortlist_size)
+        if store_scan is not None:
+            ranked = replace(store_scan, vector_search=search, limit=search.shortlist_size)
+
+            def add_store(scans: tuple[RemoteScan, ...]) -> tuple[RemoteScan, ...]:
+                return (*scans, ranked)
+
+            return add_store
 
         def prepare(scans: tuple[RemoteScan, ...]) -> tuple[RemoteScan, ...]:
             anchor, *rest = scans

@@ -18,6 +18,10 @@ def execute(ctx: ExecutionContext, node: RecordAssembly, run: Run) -> tuple[Logi
     ID set (an intersection) that a later restricted read may use.  Optional
     contributors never narrow it; they only enrich.
 
+    A *shortlist* step reads a vector store: the K IDs nearest the query, ranked
+    among the IDs learned so far when they fit the store's lookup limit (else among
+    all of its vectors).  The later reads are then restricted to those K IDs.
+
     A restricted read falls back to a plain guarded scan when the learned set
     exceeds the source's lookup limit, and an empty set ends the query without
     further source reads.  A ranked (shortlist) anchor read is only valid once
@@ -47,11 +51,15 @@ def execute(ctx: ExecutionContext, node: RecordAssembly, run: Run) -> tuple[Logi
         rows = _read(ctx, scan, keys if step.restrict else None, node.maximum_transfer_keys, run)
         if step.role is StepRole.ANCHOR:
             anchor_rows = rows
+        elif step.role is StepRole.SHORTLIST:
+            pass                      # a ranking of IDs: it narrows, it never contributes fields
         else:
             enrichment.append((scan, rows))
         if step.role is StepRole.REQUIRED:
             required_done += 1
             required_ids.append({row["id"] for row in rows})
+        elif step.role is StepRole.SHORTLIST:
+            required_ids.append({row["id"] for row in rows})      # only shortlisted records may survive
         if narrowing:
             ids = {row["id"] for row in rows}
             keys = ids if keys is None else keys & ids

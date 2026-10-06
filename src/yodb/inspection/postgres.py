@@ -15,7 +15,7 @@ from typing import Any, Protocol
 
 from ..catalog import Catalog, LogicalType, SourceKind
 from ..connections.contracts import SourceConnectionAdapter
-from ..errors import ErrorCode, ErrorDetail, SourceInspectionError
+from ..errors import ErrorCode, ErrorDetail, SourceInspectionError, YoDbError
 from .contracts import (
     FindingSeverity,
     InspectionCapability,
@@ -206,8 +206,8 @@ class PostgresSourceInspector:
                 foreign_key_rows,
                 index_rows,
             )
-        except SourceInspectionError:
-            raise
+        except YoDbError:
+            raise      # already safe and specific (a connection that was refused, a missing reference, ...)
         except Exception as error:
             raise _source_error_from_exception(request.source_name, error) from error
 

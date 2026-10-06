@@ -1,0 +1,14 @@
+api_version: yodb/v0.1
+catalog:
+  name: support_messages
+  version: 1
+datasets:
+  message:
+    description: A customer support message (BANKING77), with its owner and priority from triage.
+    fields:
+      id:         {type: id,     description: Message identity.}
+      body:       {type: text,   description: The customer's message., semantic_eligible: true}
+      split:      {type: string, description: Dataset split the message came from.}
+      word_count: {type: int,    description: Number of words in the message.}
+      owner:      {type: string, description: Agent the message is assigned to.}
+      priority:   {type: int,    description: Triage priority 1-5.}

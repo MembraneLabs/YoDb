@@ -67,6 +67,38 @@ class PostgresAdapterTests(unittest.TestCase):
         self.assertEqual(report.findings[0].code, "resource_not_found")
 
 
+class InspectionFailureTests(unittest.TestCase):
+    def inspect(self, connections):
+        return PostgresSourceInspector(connections).inspect(InspectionRequest(source_name="crm", source=_source()))
+
+    def test_a_specific_connection_error_is_not_replaced_by_a_generic_inspection_failure(self) -> None:
+        from yodb import ErrorCode, ErrorDetail, SourceConnectionError
+
+        class Refusing:
+            def acquire(self, connection_ref, *, timeout_seconds=None):
+                raise SourceConnectionError(
+                    ErrorDetail(code=ErrorCode.SOURCE_AUTHENTICATION_FAILED, message="rejected the credentials", retryable=False)
+                )
+
+        with self.assertRaises(SourceConnectionError) as raised:
+            self.inspect(Refusing())
+        self.assertEqual(raised.exception.code, ErrorCode.SOURCE_AUTHENTICATION_FAILED)
+        self.assertIn("rejected the credentials", raised.exception.detail.message)
+
+    def test_an_unexpected_driver_exception_is_still_reduced_to_a_safe_message(self) -> None:
+        from yodb import ErrorCode, SourceInspectionError
+
+        class Exploding:
+            def acquire(self, connection_ref, *, timeout_seconds=None):
+                raise RuntimeError("password=hunter2 host=10.0.0.5")
+
+        with self.assertRaises(SourceInspectionError) as raised:
+            self.inspect(Exploding())
+        self.assertEqual(raised.exception.code, ErrorCode.SOURCE_INSPECTION_FAILED)
+        self.assertNotIn("hunter2", raised.exception.detail.message)
+        self.assertNotIn("10.0.0.5", str(raised.exception.detail.model_dump()))
+
+
 class FakeConnection:
     def __init__(self) -> None:
         self.executed: list[str] = []

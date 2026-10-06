@@ -53,6 +53,7 @@ class QueryExecutionEngineTests(unittest.TestCase):
         self.assertEqual(
             connection.executed,
             [
+                ("SELECT set_config('statement_timeout', %s, true)", ("2000",)),   # the database enforces the limit too
                 (
                     "\n".join(
                         (
@@ -68,7 +69,9 @@ class QueryExecutionEngineTests(unittest.TestCase):
                 )
             ],
         )
-        self.assertEqual(connections.timeouts, [2.0])
+        self.assertEqual(len(connections.timeouts), 1)
+        self.assertLessEqual(connections.timeouts[0], 2.0)
+        self.assertGreater(connections.timeouts[0], 1.5)     # the rest of the whole query's budget
         self.assertEqual(
             [dict(row) for row in result.rows],
             [{"name": "Acme Corporation", "status": "active", "id": "customer-1"}],
@@ -128,6 +131,62 @@ class QueryExecutionEngineTests(unittest.TestCase):
         self.assertTrue(all('LIMIT %s' in query.sql for query in executor.queries))
 
 
+
+
+class TimeoutAndSessionTests(unittest.TestCase):
+    def adapter(self, connection, **kwargs):
+        return PostgresQueryExecutionAdapter(FakePostgresConnections(connection), **kwargs)
+
+    def compiled(self):
+        from yodb.compilation import CompiledPostgresQuery
+
+        return CompiledPostgresQuery(source_name="crm", connection_ref="crm", sql="SELECT 1", parameters=(), output_columns=())
+
+    def test_the_caller_limit_becomes_the_statement_timeout_in_milliseconds(self) -> None:
+        connection = FakeConnection(rows=[])
+        self.adapter(connection).execute(self.compiled(), timeout_seconds=0.25)
+        self.assertEqual(connection.executed[0], ("SELECT set_config('statement_timeout', %s, true)", ("250",)))
+
+    def test_without_a_caller_limit_the_default_applies_and_can_be_disabled(self) -> None:
+        connection = FakeConnection(rows=[])
+        self.adapter(connection).execute(self.compiled())
+        self.assertEqual(connection.executed[0][1], ("60000",))
+        connection = FakeConnection(rows=[])
+        self.adapter(connection, default_statement_timeout_seconds=None).execute(self.compiled())
+        self.assertEqual([sql for sql, _ in connection.executed], ["SELECT 1"])
+
+    def test_a_statement_the_database_cancelled_is_a_retryable_timeout_not_a_generic_failure(self) -> None:
+        class QueryCanceled(Exception):      # psycopg's class name; the adapter must not import a driver type
+            pass
+
+        class Cancelling(FakeConnection):
+            def cursor(self):
+                raise QueryCanceled("canceling statement due to statement timeout")
+
+        with self.assertRaises(QueryExecutionError) as caught:
+            self.adapter(Cancelling(rows=[])).execute(self.compiled(), timeout_seconds=1.0)
+        self.assertEqual(caught.exception.code, ErrorCode.QUERY_TIMEOUT)
+        self.assertTrue(caught.exception.retryable)
+        self.assertNotIn("statement timeout", caught.exception.detail.message)
+
+    def test_an_invalid_default_is_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            self.adapter(FakeConnection(rows=[]), default_statement_timeout_seconds=0)
+
+    def test_every_session_is_read_only_and_utc(self) -> None:
+        from yodb.connections.postgres import SESSION_OPTIONS
+
+        self.assertIn("default_transaction_read_only=on", SESSION_OPTIONS)
+        self.assertIn("TimeZone=UTC", SESSION_OPTIONS)
+
+    def test_the_whole_query_shares_one_deadline(self) -> None:
+        from yodb.execution.operators.base import Run
+
+        run = Run(timeout_seconds=0.05, trace=None, started=0.0)
+        with self.assertRaises(QueryExecutionError) as caught:
+            run.remaining()                    # started long ago on the monotonic clock
+        self.assertEqual(caught.exception.code, ErrorCode.QUERY_TIMEOUT)
+        self.assertIsNone(Run(timeout_seconds=None, trace=None).remaining())
 
 
 class FakePostgresConnections:

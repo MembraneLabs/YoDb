@@ -309,7 +309,7 @@ class ExecutionTests(unittest.TestCase):
 
     # --- engine surface -------------------------------------------------------
 
-    def test_each_scan_gets_the_caller_timeout(self) -> None:
+    def test_the_caller_timeout_is_one_budget_shared_by_every_read(self) -> None:
         timeouts = []
 
         class Recording(SourceRowsExecutor):
@@ -323,7 +323,9 @@ class ExecutionTests(unittest.TestCase):
             QueryExecutionAdapterRegistry([Recording({"crm": self.CRM, "billing": self.BILLING})]),
         )
         engine.execute(_q(["name", "plan"]), timeout_seconds=1.5)
-        self.assertEqual(timeouts, [1.5, 1.5])
+        self.assertEqual(len(timeouts), 2)
+        self.assertTrue(all(0 < value <= 1.5 for value in timeouts))
+        self.assertLessEqual(timeouts[1], timeouts[0])                # each read gets what is left
 
     def test_explain_does_not_execute_anything(self) -> None:
         executor = SourceRowsExecutor({})

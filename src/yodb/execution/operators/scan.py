@@ -10,7 +10,7 @@ from .base import ExecutionContext, Run, ScanActual, fail
 
 def execute(ctx: ExecutionContext, node: RemoteScan, run: Run) -> tuple[LogicalRow, ...]:
     compiled = ctx.compilers.adapter_for(node.source.source_kind).compile_scan(node)
-    rows = ctx.executors.adapter_for(compiled.source_kind).execute(compiled, timeout_seconds=run.timeout_seconds)
+    rows = ctx.executors.adapter_for(compiled.source_kind).execute(compiled, timeout_seconds=run.remaining())
     if node.maximum_rows is not None and len(rows) > node.maximum_rows:
         fail(
             ErrorCode.QUERY_ROW_LIMIT_EXCEEDED,

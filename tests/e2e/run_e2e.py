@@ -54,7 +54,7 @@ CONNINFO = os.environ.get(
     "YODB_E2E_CONNINFO",
     "host=localhost port=55432 dbname=yodb_e2e user=yodb_ro password=yodb_ro",
 )
-REFS = ("e2e-crm", "e2e-billing", "e2e-support")
+REFS = ("e2e-crm", "e2e-billing", "e2e-support", "e2e-sales", "e2e-payments", "e2e-logistics")
 
 # --- native-SQL oracle (test harness only; YoDb never sees this) ---------------
 

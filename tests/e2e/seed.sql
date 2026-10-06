@@ -1,8 +1,9 @@
 -- Throwaway end-to-end data for YoDb. Run as the postgres superuser against
 -- database yodb_e2e. Idempotent: drops and recreates everything it owns.
 CREATE EXTENSION IF NOT EXISTS vector;
-DROP SCHEMA IF EXISTS crm, billing, support, helpdesk, bulk CASCADE;
+DROP SCHEMA IF EXISTS crm, billing, support, helpdesk, bulk, sales, payments, logistics CASCADE;
 CREATE SCHEMA crm; CREATE SCHEMA billing; CREATE SCHEMA support; CREATE SCHEMA helpdesk; CREATE SCHEMA bulk;
+CREATE SCHEMA sales; CREATE SCHEMA payments; CREATE SCHEMA logistics;
 
 -- CRM: identity source for `customer`. 12 customers with NULLs, a duplicate
 -- name (c01/c12 -> tie-break by id), and mixed case ("Acme" vs "acme").
@@ -113,12 +114,64 @@ INSERT INTO bulk.items SELECT 'i' || g, 'k' || (g % 1000), 'item ' || g FROM gen
 CREATE TABLE bulk.tags (item_id text PRIMARY KEY, tag text);
 INSERT INTO bulk.tags SELECT 'i' || g, CASE WHEN g % 2 = 0 THEN 'hot' ELSE 'cold' END FROM generate_series(1, 200000) g;
 
+-- Orders: a realistic skewed dataset across three sources (matrix runs).
+-- 6,000 orders; ~80% have a payment row, ~60% a shipment row; NULLs in every optional column.
+SELECT setseed(0.37);
+CREATE TABLE sales.orders (
+  order_id     text PRIMARY KEY,
+  customer_ref text,
+  status       text,
+  amount       double precision,
+  items        integer,
+  placed_at    timestamp,
+  rush         boolean,
+  channel      text
+);
+INSERT INTO sales.orders
+SELECT 'o' || lpad(g::text, 5, '0'),
+       'u' || (1 + floor(power(random(), 2) * 800))::int,
+       (ARRAY['placed','paid','shipped','cancelled','returned'])[1 + floor(power(random(), 1.5) * 5)::int],
+       round((exp(random() * 6))::numeric, 2)::double precision,
+       1 + floor(random() * 8)::int,
+       timestamp '2023-01-01' + (random() * 730) * interval '1 day',
+       random() < 0.1,
+       CASE WHEN random() < 0.05 THEN NULL ELSE (ARRAY['web','app','store','phone'])[1 + floor(random() * 4)::int] END
+FROM generate_series(1, 6000) g;
+UPDATE sales.orders SET placed_at = date_trunc('minute', placed_at);
+CREATE TABLE payments.payments (
+  order_id    text PRIMARY KEY,
+  method      text,
+  paid_amount double precision,
+  settled     boolean
+);
+INSERT INTO payments.payments
+SELECT order_id,
+       CASE WHEN random() < 0.04 THEN NULL ELSE (ARRAY['card','paypal','wire','gift'])[1 + floor(power(random(), 1.7) * 4)::int] END,
+       round((amount * (0.9 + random() * 0.1))::numeric, 2)::double precision,
+       random() < 0.9
+FROM sales.orders WHERE random() < 0.8;
+CREATE TABLE logistics.shipments (
+  order_id text PRIMARY KEY,
+  carrier  text,
+  days     integer,
+  express  boolean
+);
+INSERT INTO logistics.shipments
+SELECT order_id,
+       CASE WHEN random() < 0.05 THEN NULL ELSE (ARRAY['dhl','ups','fedex'])[1 + floor(random() * 3)::int] END,
+       CASE WHEN random() < 0.08 THEN NULL ELSE 1 + floor(random() * 14)::int END,
+       random() < 0.25
+FROM sales.orders WHERE random() < 0.6;
+-- A few orphans (rows in a contributor with no order).
+INSERT INTO payments.payments VALUES ('o90001', 'card', 10, true), ('o90002', NULL, 20, false);
+INSERT INTO logistics.shipments VALUES ('o90003', 'dhl', 3, false);
+
 -- Least-privilege, read-only role used by YoDb.
 DO $$ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'yodb_ro') THEN
     CREATE ROLE yodb_ro LOGIN PASSWORD 'yodb_ro';
   END IF;
 END $$;
-GRANT USAGE ON SCHEMA crm, billing, support, helpdesk, bulk TO yodb_ro;
-GRANT SELECT ON ALL TABLES IN SCHEMA crm, billing, support, helpdesk, bulk TO yodb_ro;
+GRANT USAGE ON SCHEMA crm, billing, support, helpdesk, bulk, sales, payments, logistics TO yodb_ro;
+GRANT SELECT ON ALL TABLES IN SCHEMA crm, billing, support, helpdesk, bulk, sales, payments, logistics TO yodb_ro;
 ANALYZE;

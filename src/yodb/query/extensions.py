@@ -47,6 +47,10 @@ class TermExtension:
     maximum: int = 1                                # terms allowed per query (policy.limits[key] overrides)
     noun: str = "term"                              # for messages: "semantic condition"
     conjunctive_only: bool = True                   # may only be ANDed, never under any/not
+    # Sources (beyond the ones owning the fields it reads) the term needs, resolved with the
+    # dataset identity only: (term, catalog, dataset name) -> source names.  The planner's
+    # extension operator receives them as ``SourceResolvedQuery.extension_sources``.
+    extra_sources: Callable[[BoundExtensionTerm, Any, str], tuple[str, ...]] = lambda term, catalog, dataset: ()
     uses_minimum_quality: bool = False              # whether ``constraints.minimum_quality`` applies to it
 
 

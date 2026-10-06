@@ -1,0 +1,11 @@
+api_version: yodb/v0.1
+relationships:
+  message_reference:
+    from: message
+    to: message
+    description: Placeholder relationship required by the loader.
+    cardinality: one_to_one
+    direction: uni
+    implementations:
+      - from: {source: inbox, field: id}
+        to: {source: inbox, field: id}

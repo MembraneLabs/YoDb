@@ -107,6 +107,9 @@ class SourceResolvedQuery:
     identity_source: SingleSourceQueryBinding
     sources: tuple[SingleSourceQueryBinding, ...]
     logical_id_links: tuple[LogicalIdLink, ...]
+    # Sources an extension term needs beyond the field owners (e.g. a vector store), bound by
+    # identity only.  They are never read as contributors; the extension plans their use.
+    extension_sources: tuple[SingleSourceQueryBinding, ...] = ()
 
 
 def resolve_query_sources(
@@ -180,13 +183,29 @@ def resolve_query_sources(
         for source in ordered_sources[1:]
     )
     shape = QuerySourceShape.SINGLE_SOURCE if len(ordered_sources) == 1 else QuerySourceShape.MULTI_SOURCE
+    extra_names: dict[str, set[str]] = defaultdict(set)
+    for term in extension_terms(query.where):
+        for name in terms.for_bound(term).extra_sources(term, catalog, query.root.name):
+            if name not in bindings:
+                extra_names[name].update(_embedding_fields(catalog, name, query.root.name))
+    extension_sources = tuple(
+        _resolve_source_binding(name, query, active, {}, embedding_fields=frozenset(fields))
+        for name, fields in sorted(extra_names.items())
+    )
     return SourceResolvedQuery(
         query=query,
         shape=shape,
         identity_source=identity,
         sources=ordered_sources,
         logical_id_links=links,
+        extension_sources=extension_sources,
     )
+
+
+def _embedding_fields(catalog, source_name: str, dataset_name: str) -> set[str]:
+    source = catalog.sources.get(source_name)
+    representation = None if source is None else source.datasets.get(dataset_name)
+    return set() if representation is None else set(representation.embeddings)
 
 
 def _resolve_source_binding(
@@ -194,6 +213,7 @@ def _resolve_source_binding(
     query: BoundQuery,
     active: CatalogEvaluation,
     fields: dict[str, frozenset[FieldUse]],
+    embedding_fields: frozenset[str] = frozenset(),
 ) -> SingleSourceQueryBinding:
     catalog = active.catalog
     source = catalog.sources.get(source_name)
@@ -219,7 +239,9 @@ def _resolve_source_binding(
         logical_id=logical_id,
         fields=resolved_fields,
         embeddings={
-            name: representation.embeddings[name] for name in fields if name in representation.embeddings
+            name: representation.embeddings[name]
+            for name in {*fields, *embedding_fields}
+            if name in representation.embeddings
         },
     )
 

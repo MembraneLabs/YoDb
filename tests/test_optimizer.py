@@ -68,6 +68,21 @@ def ranked(size, per_row_ms=1.0, *, money_per_row=0.0, min_coverage=0.0):
     return Variant(f"ranked:{size}", cost=cost, demand=RankedRead(size, 0.002), approximate=True)
 
 
+def via_store(size, per_row_ms=1.0, *, money_per_row=0.0, min_coverage=0.0):
+    """Approximate, ranked by a separate store: read after the required sources, anchor read for its IDs."""
+
+    def cost(candidates):
+        if candidates.pool > 0 and size / candidates.pool < min_coverage:
+            return None
+        return Estimate(per_row_ms * candidates.count, money_per_row * candidates.count)
+
+    return Variant(f"store:{size}", cost=cost, demand=RankedRead(size, 0.002, via_store=True), approximate=True)
+
+
+def store(total, *, key_limit=5_000, profile=PROFILE):
+    return SourceInput("vectors", StepRole.SHORTLIST, float(total), float(total), profile, key_limit, None)
+
+
 def problem(sources, *, variants=(), keys=1_000, params=CostParameters(), constraints=Constraints()):
     return Problem(sources, params, maximum_transfer_keys=keys, variants=variants, constraints=constraints)
 
@@ -88,6 +103,10 @@ class DpMatchesBruteForceTests(unittest.TestCase):
         for i in range(rng.randint(0, 2)):
             sources.append(optional(f"o{i}", rng.choice([10, 5_000, 500_000]), key_limit=rng.choice([None, 1_000, 5_000]), row_cap=rng.choice([None, 20_000])))
         variants = []
+        if rng.random() < 0.4:
+            sources.append(store(rng.choice([0, 100, 5_000, 1_000_000]), key_limit=rng.choice([None, 200, 5_000])))
+            for size in sorted(rng.sample([5, 20, 100, 1_000], k=rng.randint(1, 3))):
+                variants.append(via_store(size, rng.choice([0.05, 1.0]), money_per_row=rng.choice([0.0, 0.001]), min_coverage=rng.choice([0.0, 0.01, 0.5])))
         if rng.random() < 0.7:
             if rng.random() < 0.8:
                 variants.append(exact(rng.choice([0.05, 1.0]), cap=rng.choice([None, 500, 5_000]), money_per_row=rng.choice([0.0, 0.001])))
@@ -123,7 +142,7 @@ class DpMatchesBruteForceTests(unittest.TestCase):
             result = optimize(p)
             if isinstance(result, Fallback):
                 continue
-            narrowing = [(s.source_name, s.restrict) for s in result.schedule if s.role is not StepRole.OPTIONAL]
+            narrowing = [(s.source_name, s.restrict) for s in result.schedule if s.role not in (StepRole.OPTIONAL, StepRole.SHORTLIST)]
             estimate = p.evaluate(narrowing, result.variant)
             self.assertIsNotNone(estimate)
             self.assertAlmostEqual(estimate.latency_ms, result.estimate.latency_ms, delta=1e-6 * max(1.0, estimate.latency_ms))
@@ -264,6 +283,41 @@ class VariantChoiceTests(unittest.TestCase):
         variant = Variant("tagged", cost=lambda c: Estimate(1.0, 0.0), payload={"why": "toy"})
         self.assertEqual(self.chosen(10, variant).decision, {"why": "toy"})
         self.assertIsNone(optimize(problem([anchor(10, 10)])).decision)
+
+
+class StoreRankedVariantTests(unittest.TestCase):
+    def chosen(self, sources, *variants, **kw):
+        return optimize(problem(sources, variants=variants, **kw))
+
+    def test_the_store_is_read_after_the_required_sources_and_before_the_anchor(self) -> None:
+        sources = [anchor(1_000_000, 1_000_000), required("owners", 100_000, 400), store(1_000_000)]
+        result = self.chosen(sources, exact(cap=1_000), via_store(100))
+        self.assertEqual(result.variant.name, "store:100")
+        self.assertEqual(
+            [(s.source_name, s.role.value) for s in result.schedule], [("owners", "required"), ("vectors", "shortlist"), ("anchor", "anchor")]
+        )
+
+    def test_the_anchor_is_read_only_for_the_shortlisted_ids(self) -> None:
+        sources = [anchor(1_000_000, 1_000_000, row_cap=10_000), store(1_000_000)]
+        result = self.chosen(sources, via_store(100))
+        self.assertEqual(order_of(result), [("vectors", "shortlist", False), ("anchor", "anchor", True)])
+
+    def test_the_store_is_restricted_by_the_required_ids_when_they_fit_and_ranks_everything_when_they_do_not(self) -> None:
+        small = self.chosen([anchor(100_000, 100_000), required("owners", 100_000, 500), store(100_000)], via_store(50), keys=1_000)
+        self.assertEqual(order_of(small)[1], ("vectors", "shortlist", True))
+        large = self.chosen([anchor(100_000, 100_000), required("owners", 100_000, 50_000), store(100_000)], via_store(50), keys=1_000)
+        self.assertEqual(order_of(large)[1], ("vectors", "shortlist", False))
+
+    def test_a_variant_that_needs_a_store_is_not_offered_without_one(self) -> None:
+        self.assertIsInstance(self.chosen([anchor(1_000_000, 1_000_000, row_cap=10_000)], via_store(100)), Fallback)
+
+    def test_a_missing_store_does_not_disturb_other_variants(self) -> None:
+        self.assertEqual(self.chosen([anchor(500, 500)], exact(1.0), via_store(100)).variant.name, "exact")
+
+    def test_two_stores_are_refused(self) -> None:
+        second = SourceInput("more", StepRole.SHORTLIST, 10.0, 10.0, PROFILE, 5_000, None)
+        with self.assertRaises(ValueError):
+            problem([anchor(), store(10), second])
 
 
 class RuleTieBreakTests(unittest.TestCase):

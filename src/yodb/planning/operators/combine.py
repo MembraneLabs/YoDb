@@ -125,6 +125,26 @@ class CombineOperator:
                 )
             )
         extension = extensions[0] if extensions else None
+        # A strategy may add a read (a vector store).  The optimizer sees it as a shortlist source.
+        known = {scan.source.source_name for scan in scans}
+        for strategy in () if extension is None else extension.strategies:
+            for extra in (scan for scan in strategy.prepare(scans) if scan.source.source_name not in known):
+                estimate = services.statistics.estimate_scan(extra.source, extra.pushed_filter)
+                if not estimate.known or estimate.total_rows is None:
+                    return Fallback(f"statistics are unavailable for source '{extra.source.source_name}'")
+                caps = services.capabilities(extra.source.source_kind)
+                inputs.append(
+                    SourceInput(
+                        name=extra.source.source_name,
+                        role=StepRole.SHORTLIST,
+                        total_rows=estimate.total_rows,
+                        filtered_rows=estimate.total_rows,
+                        profile=estimate.profile,
+                        key_limit=None if caps.key_lookup is None else caps.key_lookup.maximum_keys,
+                        row_cap=None,
+                    )
+                )
+                known.add(extra.source.source_name)
         problem = Problem(
             inputs,
             services.costs,
@@ -138,7 +158,8 @@ class CombineOperator:
             ),
         )
         required = tuple(scan.source.source_name for scan in scans[1:] if scan.pushed_filter is not None)
-        rule_order = [s.source_name for s in default_schedule(scans[0], scans[1:], required) if s.role is not StepRole.OPTIONAL]
+        planned = scans if extension is None else extension.default.prepare(scans)
+        rule_order = [s.source_name for s in default_schedule(planned[0], planned[1:], required) if s.role is not StepRole.OPTIONAL]
         return optimize(
             problem, rule_order=rule_order, rule_variant=None if extension is None else extension.default.variant
         )

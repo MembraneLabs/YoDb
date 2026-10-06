@@ -51,6 +51,7 @@ class ErrorCode(str, Enum):
     SEMANTIC_PROVIDER_FAILED = "semantic_provider_failed"
     QUERY_EXECUTION_UNSUPPORTED = "query_execution_unsupported"
     QUERY_EXECUTION_FAILED = "query_execution_failed"
+    QUERY_TIMEOUT = "query_timeout"
 
 
 class ErrorDetail(BaseModel):
