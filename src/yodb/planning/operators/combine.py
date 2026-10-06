@@ -67,6 +67,7 @@ class CombineOperator:
             ),
             # Each scan carries its own source's limit; 0 disables transfer.
             maximum_transfer_keys=self._services.policy.maximum_transfer_keys or None,
+            maximum_key_batches=self._services.policy.maximum_key_batches,
             schedule=schedule or default_schedule(anchor, tuple(contributors), required),
         )
 
@@ -149,6 +150,7 @@ class CombineOperator:
             inputs,
             services.costs,
             maximum_transfer_keys=services.policy.maximum_transfer_keys or None,
+            maximum_key_batches=services.policy.maximum_key_batches,
             variants=() if extension is None else extension.variants,
             constraints=Constraints(
                 maximum_money=query.constraints.maximum_cost,

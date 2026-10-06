@@ -118,6 +118,22 @@ PYTHONPATH=src .venv/bin/python tests/e2e/run_robustness.py [--only hostile,time
 | `concurrent` | 800 queries from 32 threads over a pool of 4: every answer correct, no leaked or lingering connections |
 | `scale` | pushdown, key transfer and the guards over 1,000,000 + 500,000 rows, with a peak-memory check |
 
+## Joins (`run_joins.py`)
+
+`buyer` (50,000 rows, its score in a second table) joined to `purchase` (300,000 rows, its carrier in a second
+table) over the declared `buyer_purchases` relationship: four sources, four connection references. Load
+`seed_scale.sql` first.
+
+```bash
+PYTHONPATH=src .venv/bin/python tests/e2e/run_joins.py [-v] [--seed N]
+```
+
+150 generated joins (random filters on both sides, inner and left, orderings, page sizes), each compared with the
+equivalent native SQL join, with and without statistics: the rows must be identical or YoDb must refuse with a
+guard error (never different rows). The report also counts joins a SQL join could answer that YoDb refused (an OR across sources, or a
+side whose every read exceeds the row guard, are inherent), checks key batching, the reverse direction, the refusal of unfiltered joins
+and the time limit.
+
 ## Real data, with the vectors in a separate database (`real/`)
 
 13,083 real customer-support messages (BANKING77, 77 labelled intents) live on one Postgres
@@ -145,4 +161,13 @@ everything, the reference), `A_cap1000` (default limits), `B_rules` (fixed rules
 IDs to a source), `B_wide` (also a larger shortlist), `B_stats` (cost-based, real `pg_stats`) and `B_fit`
 (cost-based with a recall curve fitted to this model). The report ends with the model's measured recall
 curve against the planner's assumed one.
+
+Joins across **two servers** (`real/run_realjoins.py`, after loading as above): 2,000 customers on the vectors server,
+their 13,083 support messages on the records server, so no SQL join can span them. The oracle reads both tables into
+memory and joins them in Python; YoDb's join must match it exactly (inner, left, the messages side driving, the reverse
+direction, key batches, and a semantic condition on the messages side).
+
+```bash
+PYTHONPATH=src .venv/bin/python tests/e2e/real/run_realjoins.py [-v]
+```
 

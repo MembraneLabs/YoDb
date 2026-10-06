@@ -22,6 +22,17 @@ yodb query catalog/ '{
 `carrier` in a logistics one. YoDb reads each, restricted by the IDs it has
 already found, assembles the records, and `yodb explain` shows exactly how.
 
+Datasets can also be **joined** over a relationship you declare, across databases:
+
+```bash
+yodb query catalog/ '{
+  "from": {"dataset": "customer"}, "select": ["name"], "where": {"field": "country", "op": "eq", "value": "US"},
+  "traverse": [{"relationship": "customer_has_ticket", "as": "ticket", "select": ["subject"],
+                "where": {"field": "status", "op": "eq", "value": "open"}}],
+  "page": {"first": 10}
+}'
+```
+
 ## What V0.1 does
 
 - **A catalog you can trust.** Three YAML files map business datasets and fields
@@ -30,6 +41,10 @@ already found, assembles the records, and `yodb explain` shows exactly how.
 - **Typed queries across sources.** Filters (`eq`, `in`, ranges, text, `is_null`,
   `all`/`any`/`not`), ordering and paging over one dataset whose fields are spread
   over PostgreSQL databases, assembled by a logical ID.
+- **Joins between datasets.** `traverse` follows a declared relationship between two
+  datasets in different sources (inner or left, either direction for a bidirectional
+  relationship): one row per matching pair, filters and ordering on either side, the
+  smaller side driving and the other read in batches of keys.
 - **A planner that explains itself.** Pushdown to each database, key transfer
   between sources, and a cost-based search over read orders using the databases'
   own statistics, with a stated fallback to fixed rules.
@@ -72,9 +87,8 @@ the environment variable `YODB_CONN_<REF>`. Start with the
 
 ## Know the limits
 
-V0.1 is a correct, tested core with deliberate limits: no cursor paging, no joins
-or aggregation, assembly in memory under row guards, at most 1,000 IDs to restrict
-a read, PostgreSQL only. They are listed in [docs/reference/limits.mdx](docs/reference/limits.mdx).
+V0.1 is a correct, tested core with deliberate limits: no cursor paging, no aggregation,
+one join step per query, joins and assembly in memory under row guards, PostgreSQL only. They are listed in [docs/reference/limits.mdx](docs/reference/limits.mdx).
 Read them before you rely on a query shape.
 
 ## Documentation

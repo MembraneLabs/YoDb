@@ -12,6 +12,11 @@ First version.
 - Physical planner built from operators, with source capability negotiation and
   a plan explanation; cost-based read ordering (dynamic programming over
   statistics from `pg_stats` and past scans) with a stated fallback to fixed rules.
+- Joins between two datasets over a declared relationship (`traverse`): flat rows, inner or left,
+  forward or reverse, filters and ordering on either side, the side expected to be smaller drives
+  and the other is read in batches of 1,000 keys; the join is a plan node run by the executor.
+- Key restriction in batches (up to 20 batches of 1,000 IDs), whole `any`/`not` conditions pushed to the one
+  source that owns their fields, and histogram-based range estimates from `pg_stats`.
 - Semantic filter: verify-everything and vector-shortlist plans, budgets, a
   per-record report; vectors in the same source or in a separate vector store.
 - `yodb` command (`catalog`, `validate`, `explain`, `query`) and the
@@ -22,6 +27,6 @@ First version.
   a generated matrix against a SQL oracle, robustness, real-data semantic runs).
 
 ### Known limits
-See `docs/reference/limits.mdx`: no cursor paging, no joins or aggregation,
-in-memory assembly under row guards, at most 1,000 IDs to restrict a read,
-text ordering across sources by code point, PostgreSQL only.
+See `docs/reference/limits.mdx`: no cursor paging, no aggregation, one join step per query,
+in-memory joins and assembly under row guards, text ordering across sources by code point,
+PostgreSQL only.

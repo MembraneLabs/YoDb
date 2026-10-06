@@ -287,7 +287,8 @@ source from an otherwise complete-looking response.
 
 Relationships come from [`relations.yaml`](../catalog/relations). A caller
 does not write join conditions or mention foreign-key columns. Instead, a
-future traversal names a reviewed relationship:
+`traverse` step names a reviewed relationship (see [Joins](/query/joins) for the
+syntax that is implemented):
 
 ```yaml
 traverse:
@@ -307,9 +308,9 @@ bidirectional. YoDb will enforce a bounded number of hops and a work budget.
 The same traversal can later use PostgreSQL joins, a PostgreSQL edge table, or
 Neo4j. The caller does not change the query to choose one.
 
-Relationship traversal is part of the shared model but is not yet executable
-in the initial single-dataset PostgreSQL query path. Its exact nested-result
-shape will be documented before it ships.
+Traversal between two PostgreSQL datasets is implemented as a join with flat
+result rows (see [Joins](/query/joins)). Nested results and graph traversal are
+not implemented.
 
 ## Semantic search
 

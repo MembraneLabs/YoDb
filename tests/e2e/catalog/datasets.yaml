@@ -66,3 +66,21 @@ datasets:
       segment:    {type: string,    description: Segment with 50 values; half the items have one.}
       score:      {type: int,       description: Score 0-99.}
       code:       {type: string,    description: Code with 1000 distinct values; 500 items each.}
+  buyer:
+    description: A buyer (join checks).
+    fields:
+      id:        {type: id,        description: Identity.}
+      name:      {type: string,    description: Name.}
+      region:    {type: string,    description: Region with 20 values.}
+      tier:      {type: string,    description: Tier with 5 values.}
+      joined_at: {type: timestamp, description: When the buyer joined.}
+      score:     {type: int,       description: Score 0-100; 60 percent of buyers have one.}
+  purchase:
+    description: A purchase (join checks).
+    fields:
+      id:           {type: id,        description: Identity.}
+      buyer_id:     {type: id,        description: The buyer.}
+      amount:       {type: float,     description: Amount.}
+      status:       {type: string,    description: Status.}
+      purchased_at: {type: timestamp, description: When.}
+      carrier:      {type: string,    description: Carrier; half of the purchases have one.}

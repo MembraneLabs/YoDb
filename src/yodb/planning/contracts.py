@@ -265,6 +265,8 @@ class RecordAssembly(PhysicalNode):
     # Largest logical-ID set the executor may transfer between sources to
     # restrict a later scan; ``None`` disables transfer.
     maximum_transfer_keys: int | None = None
+    # How many batches of ``maximum_transfer_keys`` an ID set may be sent in (1: never batched).
+    maximum_key_batches: int = 1
     # The order sources are read in and which reads are restricted by learned
     # IDs.  Always complete: one step per source.
     schedule: tuple[AssemblyStep, ...] = ()
@@ -283,6 +285,7 @@ class RecordAssembly(PhysicalNode):
             "contributors": [item.shape() for item in self.contributors],
             "required_contributor_matches": list(self.required_contributor_matches),
             "maximum_transfer_keys": self.maximum_transfer_keys,
+            "maximum_key_batches": self.maximum_key_batches,
             "schedule": [[step.source_name, step.role.value, step.restrict] for step in self.schedule],
         }
 

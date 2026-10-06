@@ -69,6 +69,41 @@ def _assembly(planned):
     return node
 
 
+class NullBehaviourOfConditionsTests(unittest.TestCase):
+    """Whether a condition is TRUE of a record whose every field is NULL (what a missing contributor row looks like)."""
+
+    @staticmethod
+    def expression(raw):
+        from yodb.query import bind_query, parse_query
+
+        active = multi_source_catalog()
+        return bind_query(parse_query({"from": {"dataset": "customer"}, "select": ["name", "plan"], "where": raw}), active).where
+
+    def holds(self, raw):
+        from yodb.planning.expressions import holds_when_every_field_is_null
+
+        return holds_when_every_field_is_null(self.expression(raw))
+
+    def test_comparisons_with_null_are_unknown_so_never_true(self) -> None:
+        for op in ("eq", "ne", "in", "not_in", "contains", "starts_with"):
+            value = ["x"] if op in ("in", "not_in") else "x"
+            self.assertFalse(self.holds({"field": "plan", "op": op, "value": value}), op)
+
+    def test_null_tests(self) -> None:
+        self.assertTrue(self.holds({"field": "plan", "op": "is_null"}))
+        self.assertFalse(self.holds({"field": "plan", "op": "is_not_null"}))
+
+    def test_three_valued_combinations(self) -> None:
+        null, notnull, eq = {"field": "plan", "op": "is_null"}, {"field": "plan", "op": "is_not_null"}, _eq("plan", "x")
+        cases = [
+            ({"all": [null, null]}, True), ({"all": [null, eq]}, False), ({"all": [notnull, eq]}, False),
+            ({"any": [null, eq]}, True), ({"any": [notnull, eq]}, False), ({"any": [eq, eq]}, False),
+            ({"not": null}, False), ({"not": notnull}, True), ({"not": eq}, False), ({"not": {"any": [eq, notnull]}}, False),
+        ]
+        for raw, expected in cases:
+            self.assertEqual(self.holds(raw), expected, raw)
+
+
 class PlanShapeTests(unittest.TestCase):
     def setUp(self) -> None:
         self.active = _planning_catalog()
@@ -121,13 +156,46 @@ class PlanShapeTests(unittest.TestCase):
         (scan,) = _scans(self.plan(_q(["name"], {"field": "name", "op": "is_null"})))
         self.assertIsNotNone(scan.pushed_filter)
 
-    def test_cross_source_not_and_nested_or_are_never_pushed(self) -> None:
+    def test_a_condition_that_mixes_sources_is_never_pushed(self) -> None:
         for where in (
-            {"not": _eq("plan", "basic")},
-            {"all": [_eq("status", "active"), {"any": [_eq("status", "x"), _eq("plan", "y")]}]},
+            {"not": {"any": [_eq("status", "x"), _eq("plan", "basic")]}},
+            {"any": [_eq("status", "x"), _eq("plan", "y")]},
         ):
             with self.subTest(where=where):
                 self.assertTrue(all(s.pushed_filter is None for s in _scans(self.plan(_q(["name", "plan"], where)))))
+
+    def test_only_the_conditions_of_one_source_are_pushed_when_others_mix_sources(self) -> None:
+        planned = self.plan(_q(["name", "plan"], {"all": [_eq("status", "active"), {"any": [_eq("status", "x"), _eq("plan", "y")]}]}))
+        crm, billing = _scans(planned)
+        self.assertEqual(crm.pushed_filter.field.name, "status")        # the single-source condition goes to its source
+        self.assertIsNone(billing.pushed_filter)                        # the mixed one stays at the coordinator
+        self.assertTrue(any(n.residual_filter for n in planned.explain.nodes))
+
+    def test_a_whole_or_over_the_anchors_fields_is_pushed_to_it(self) -> None:
+        where = {"any": [_eq("status", "active"), _eq("status", "pending")]}
+        planned = self.plan(_q(["name", "plan"], where))
+        crm, billing = _scans(planned)
+        self.assertEqual(type(crm.pushed_filter).__name__, "BoundAnyExpression")
+        self.assertIsNone(billing.pushed_filter)
+        self.assertFalse(any(n.residual_filter for n in planned.explain.nodes))      # nothing is left for the coordinator
+
+    def test_a_condition_on_a_contributor_that_cannot_be_true_of_missing_rows_is_pushed_as_a_required_match(self) -> None:
+        for where in ({"not": _eq("plan", "basic")}, {"any": [_eq("plan", "pro"), _eq("plan", "basic")]}):
+            with self.subTest(where=where):
+                crm, billing = _scans(self.plan(_q(["name", "plan"], where)))
+                self.assertIsNotNone(billing.pushed_filter)
+                self.assertIsNone(crm.pushed_filter)
+
+    def test_a_condition_on_a_contributor_that_can_be_true_of_missing_rows_is_not_pushed(self) -> None:
+        # a customer with no billing row has plan NULL, so "plan is null" holds for it: pushing it would drop that customer
+        for where in (
+            {"field": "plan", "op": "is_null"},
+            {"any": [_eq("plan", "pro"), {"field": "plan", "op": "is_null"}]},
+            {"not": {"field": "plan", "op": "is_not_null"}},
+        ):
+            with self.subTest(where=where):
+                crm, billing = _scans(self.plan(_q(["name", "plan"], where)))
+                self.assertIsNone(billing.pushed_filter)
 
     def test_multi_source_never_pushes_order_or_limit(self) -> None:
         planned = self.plan(_q(["name", "plan"], _eq("plan", "x"), [{"field": "name", "direction": "asc"}], 3))
@@ -207,7 +275,7 @@ class ExecutionTests(unittest.TestCase):
 
     def test_not_across_sources_is_three_valued(self) -> None:
         # c2 has no billing row -> plan is NULL -> NOT(plan = 'basic') is NULL -> excluded
-        self.assertEqual(self.ids(_q(["plan"], {"not": _eq("plan", "basic")})), ["c3"])
+        self.assertEqual(self.ids(_q(["plan"], {"not": {"any": [_eq("status", "x"), _eq("plan", "basic")]}})), ["c3"])
 
     def test_contributor_is_null_matches_anchor_rows_missing_from_contributor(self) -> None:
         # c2 has no billing row, so its plan is logically NULL and must match;
@@ -387,7 +455,7 @@ class KeyTransferTests(unittest.TestCase):
 
     def test_key_sets_over_the_bound_are_not_transferred(self) -> None:
         rows, queries = self.run_query(
-            _q(["name", "plan"], _eq("plan", "pro")), billing=self.PRO, policy=PlannerPolicy(maximum_transfer_keys=1)
+            _q(["name", "plan"], _eq("plan", "pro")), billing=self.PRO, policy=PlannerPolicy(maximum_transfer_keys=1, maximum_key_batches=1)
         )
         self.assertNotIn(" IN (", queries[1].sql)
         self.assertEqual([r["id"] for r in rows], ["c1", "c3"])  # same answer, just no restriction

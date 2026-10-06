@@ -83,8 +83,8 @@ def store(total, *, key_limit=5_000, profile=PROFILE):
     return SourceInput("vectors", StepRole.SHORTLIST, float(total), float(total), profile, key_limit, None)
 
 
-def problem(sources, *, variants=(), keys=1_000, params=CostParameters(), constraints=Constraints()):
-    return Problem(sources, params, maximum_transfer_keys=keys, variants=variants, constraints=constraints)
+def problem(sources, *, variants=(), keys=1_000, batches=1, params=CostParameters(), constraints=Constraints()):
+    return Problem(sources, params, maximum_transfer_keys=keys, maximum_key_batches=batches, variants=variants, constraints=constraints)
 
 
 def order_of(result):
@@ -114,7 +114,7 @@ class DpMatchesBruteForceTests(unittest.TestCase):
                 for size in sorted(rng.sample([5, 20, 100, 1_000], k=rng.randint(1, 3))):
                     variants.append(ranked(size, rng.choice([0.05, 1.0]), money_per_row=rng.choice([0.0, 0.001]), min_coverage=rng.choice([0.0, 0.01, 0.5])))
         constraints = Constraints(maximum_money=rng.choice([None, 0.05, 1.0]), maximum_latency_ms=rng.choice([None, 2_000.0, 1e9]))
-        return problem(sources, variants=variants, keys=rng.choice([None, 100, 1_000, 5_000]), constraints=constraints)
+        return problem(sources, variants=variants, keys=rng.choice([None, 100, 1_000, 5_000]), batches=rng.choice([1, 1, 5, 20]), constraints=constraints)
 
     def test_the_dp_finds_the_same_optimum_as_trying_everything(self) -> None:
         rng = random.Random(20261003)
@@ -195,6 +195,33 @@ class OrderingTests(unittest.TestCase):
         self.assertTrue(optimize(p).schedule[-1].restrict)
         big = problem([anchor(1_000_000, 900_000), optional("o", 900_000)], keys=1_000)
         self.assertFalse(optimize(big).schedule[-1].restrict)
+
+
+class KeyBatchTests(unittest.TestCase):
+    def test_an_id_set_over_the_bound_can_restrict_a_read_in_batches_at_a_cost_per_batch(self) -> None:
+        sources = [anchor(1_000_000, 1_000_000, row_cap=10_000), required("r", 100_000, 3_000)]       # 3,000 IDs, bound 1,000
+        self.assertIsInstance(optimize(problem(sources, keys=1_000, batches=1)), Fallback)               # cannot: the anchor would be unrestricted
+        result = optimize(problem(sources, keys=1_000, batches=5))
+        self.assertEqual(order_of(result)[-1], ("anchor", "anchor", True))                                # three batches of 1,000
+        profile = PROFILE
+        read = problem(sources, keys=1_000, batches=5).plain_read(sources[0], 3_000, True)
+        self.assertAlmostEqual(read.latency, 3 * profile.call_latency_ms + profile.per_key_latency_ms * 3_000 + profile.per_row_latency_ms * read.rows)
+
+    def test_more_batches_than_allowed_are_not_offered(self) -> None:
+        sources = [anchor(1_000_000, 1_000_000, row_cap=10_000), required("r", 100_000, 3_000)]
+        self.assertIsNone(problem(sources, keys=1_000, batches=2).plain_read(sources[0], 3_000, True))      # needs 3
+        self.assertIsNotNone(problem(sources, keys=1_000, batches=3).plain_read(sources[0], 3_000, True))
+
+    def test_a_set_that_fits_one_read_costs_what_it_always_did(self) -> None:
+        sources = [anchor(10_000, 10_000), required("r", 100_000, 500)]
+        single = problem(sources, keys=1_000, batches=1).plain_read(sources[0], 500, True)
+        many = problem(sources, keys=1_000, batches=20).plain_read(sources[0], 500, True)
+        self.assertEqual(single, many)
+
+    def test_batching_a_large_restriction_can_cost_more_than_scanning_so_the_plain_read_wins(self) -> None:
+        sources = [anchor(5_000, 5_000, row_cap=10_000, profile=SourceCostProfile(50.0, 0.0001, 0.002)), required("r", 100_000, 4_000)]
+        outcome = problem(sources, keys=100, batches=100).best_read(sources[0], 4_000)
+        self.assertFalse(outcome[1])               # 40 calls of 50 ms beat nothing: a single scan of 5,000 cheap rows is better
 
 
 class FeasibilityTests(unittest.TestCase):

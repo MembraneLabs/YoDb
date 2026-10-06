@@ -58,7 +58,9 @@ PYTHONPATH=src python -m unittest discover -s tests            # unit tests, no 
 python tests/e2e/run_e2e.py                                    # 77 hand-written cases against a real PostgreSQL
 python tests/e2e/run_matrix.py                                 # ~8,800 generated queries compared with a native SQL oracle
 python tests/e2e/run_robustness.py                             # hostile input, timeouts, concurrency, a million rows
+python tests/e2e/run_joins.py                                  # joins of 50,000 x 300,000 rows across four sources, against SQL joins
 python tests/e2e/real/run_realdata.py                          # semantic filter on real data, vectors on a second server
+python tests/e2e/real/run_realjoins.py                         # joins between datasets on two different servers
 ```
 
 The end-to-end runners need a throwaway PostgreSQL with pgvector; the setup

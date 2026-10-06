@@ -147,6 +147,45 @@ class CommonValueTests(unittest.TestCase):
             ColumnStatistics(common_values=(("a", 0.7), ("b", 0.7)))
 
 
+class HistogramTests(unittest.TestCase):
+    """A numeric column from 0 to 1000, evenly spread (a 10-bucket histogram), 10% null."""
+
+    EVEN = {"priority": ColumnStatistics(distinct_count=1001.0, null_fraction=0.1, histogram=tuple(float(x) for x in range(0, 1001, 100)))}
+    SKEWED = {"priority": ColumnStatistics(distinct_count=500.0, null_fraction=0.0, histogram=(0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 1000.0))}
+
+    def test_a_range_is_the_fraction_of_the_histogram_it_covers_of_the_non_null_rows(self) -> None:
+        self.assertAlmostEqual(sel(p("priority", "lt", 500), self.EVEN), 0.5 * 0.9)
+        self.assertAlmostEqual(sel(p("priority", "gte", 950), self.EVEN), 0.05 * 0.9)
+        self.assertAlmostEqual(sel(p("priority", "gt", 100), self.EVEN), 0.9 * 0.9)
+
+    def test_outside_the_histogram_is_none_or_all(self) -> None:
+        self.assertAlmostEqual(sel(p("priority", "lt", -5), self.EVEN), 0.0)
+        self.assertAlmostEqual(sel(p("priority", "lte", 5000), self.EVEN), 0.9)
+        self.assertAlmostEqual(sel(p("priority", "gt", 5000), self.EVEN), 0.0)
+
+    def test_equal_population_buckets_make_a_skewed_column_estimate_by_where_the_rows_are_not_by_the_value_range(self) -> None:
+        # nine buckets hold 90% of the rows below 9; the last bucket spreads the remaining 10% up to 1000
+        self.assertAlmostEqual(sel(p("priority", "lt", 4), self.SKEWED), 4 / 9)
+        self.assertLess(sel(p("priority", "gte", 500), self.SKEWED), 0.06)
+        self.assertGreater(sel(p("priority", "gte", 500), self.SKEWED), 0.04)
+
+    def test_common_values_and_the_histogram_of_the_rest_combine(self) -> None:
+        column = {"priority": ColumnStatistics(distinct_count=100.0, null_fraction=0.0, common_values=((5, 0.4),), histogram=(0.0, 50.0, 100.0))}
+        # 40% are exactly 5; the other 60% spread evenly over 0..100
+        self.assertAlmostEqual(sel(p("priority", "lt", 50), column), 0.4 + 0.6 * 0.5)
+        self.assertAlmostEqual(sel(p("priority", "gt", 50), column), 0.6 * 0.5)
+
+    def test_without_a_histogram_the_older_estimates_are_unchanged(self) -> None:
+        bounded = {"priority": ColumnStatistics(null_fraction=0.0, minimum=0.0, maximum=100.0)}
+        self.assertAlmostEqual(sel(p("priority", "lt", 25), bounded), 0.25)
+        self.assertAlmostEqual(sel(p("priority", "lt", 25), {}), 1 / 3)
+
+    def test_a_histogram_must_be_ascending_and_have_two_bounds(self) -> None:
+        for bounds in ((1.0,), (3.0, 2.0)):
+            with self.assertRaises(ValueError):
+                ColumnStatistics(histogram=bounds)
+
+
 class ValueValidationTests(unittest.TestCase):
     def test_nonsense_statistics_are_rejected(self) -> None:
         for build in (
@@ -321,7 +360,7 @@ class PostgresProviderTests(unittest.TestCase):
         return PostgresStatisticsProvider(connections, clock=lambda: self.now, **kwargs)
 
     def test_reads_row_count_and_maps_physical_columns_to_logical_fields(self) -> None:
-        connections = FakeConnections(1000.0, [("priority", 5.0, 0.1, None, None), ("not_queried", 3.0, 0.0, None, None)])
+        connections = FakeConnections(1000.0, [("priority", 5.0, 0.1, None, None, None), ("not_queried", 3.0, 0.0, None, None, None)])
         stats = self.provider(connections).statistics(source())
         self.assertEqual(stats.row_count, 1000.0)
         self.assertEqual(stats.columns["priority"], ColumnStatistics(distinct_count=5.0, null_fraction=0.1))
@@ -332,7 +371,7 @@ class PostgresProviderTests(unittest.TestCase):
     def test_the_whole_tables_statistics_are_cached_not_just_the_columns_of_the_first_query(self) -> None:
         # Regression: the first query to touch a table used to decide which columns every later query got,
         # so a later filter on another column silently fell back to a default selectivity.
-        connections = FakeConnections(1000.0, [("priority", 5.0, 0.0, None, None), ("subject", 40.0, 0.0, None, None)])
+        connections = FakeConnections(1000.0, [("priority", 5.0, 0.0, None, None, None), ("subject", 40.0, 0.0, None, None, None)])
         provider = self.provider(connections)
         first = resolve_query_sources(
             bind_query(parse_query({"from": {"dataset": "ticket"}, "select": ["priority"], "where": p("priority", "gte", 1)}), ACTIVE), ACTIVE
@@ -346,20 +385,31 @@ class PostgresProviderTests(unittest.TestCase):
 
     def test_most_common_values_are_read_and_typed_by_the_logical_field(self) -> None:
         connections = FakeConnections(1000.0, [
-            ("subject", 40.0, 0.0, ["S1", "S2"], [0.5, 0.25]),
-            ("priority", 5.0, 0.0, ["5", "3"], [0.6, 0.2]),
+            ("subject", 40.0, 0.0, ["S1", "S2"], [0.5, 0.25], None),
+            ("priority", 5.0, 0.0, ["5", "3"], [0.6, 0.2], None),
         ])
         stats = self.provider(connections).statistics(source())
         self.assertEqual(stats.columns["subject"].common_values, (("S1", 0.5), ("S2", 0.25)))
         self.assertEqual(stats.columns["priority"].common_values, ((5, 0.6), (3, 0.2)))
 
+    def test_histogram_bounds_are_read_typed_and_ordered_numbers_with_timestamps_as_epoch_seconds(self) -> None:
+        connections = FakeConnections(1000.0, [("priority", 5.0, 0.0, None, None, ["1", "10", "100"])])
+        stats = self.provider(connections).statistics(source())
+        self.assertEqual(stats.columns["priority"].histogram, (1.0, 10.0, 100.0))
+
+    def test_a_histogram_that_cannot_be_read_as_numbers_is_left_out_not_guessed(self) -> None:
+        connections = FakeConnections(1000.0, [("priority", 5.0, 0.0, None, None, ["a", "b"]), ("subject", 5.0, 0.0, None, None, ["x", "y"])])
+        stats = self.provider(connections).statistics(source())
+        self.assertEqual(stats.columns["priority"].histogram, ())
+        self.assertEqual(stats.columns["subject"].histogram, ())       # text has no numeric order to interpolate
+
     def test_a_common_value_that_cannot_be_typed_is_left_out_rather_than_compared_wrongly(self) -> None:
-        connections = FakeConnections(1000.0, [("priority", 5.0, 0.0, ["five", "3"], [0.6, 0.2])])
+        connections = FakeConnections(1000.0, [("priority", 5.0, 0.0, ["five", "3"], [0.6, 0.2], None)])
         stats = self.provider(connections).statistics(source())
         self.assertEqual(stats.columns["priority"].common_values, ((3, 0.2),))
 
     def test_negative_n_distinct_is_a_fraction_of_the_rows_and_zero_is_unknown(self) -> None:
-        connections = FakeConnections(2000.0, [("priority", -0.5, 0.0, None, None), ("subject", 0.0, 0.0, None, None)])
+        connections = FakeConnections(2000.0, [("priority", -0.5, 0.0, None, None, None), ("subject", 0.0, 0.0, None, None, None)])
         stats = self.provider(connections).statistics(source())
         self.assertEqual(stats.columns["priority"].distinct_count, 1000.0)
         self.assertIsNone(stats.columns["subject"].distinct_count)

@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 from ...errors import ErrorCode, ErrorDetail, QueryError
 from ...operators import OperatorKind
-from ...query.models import BoundAllExpression, BoundFilterExpression, BoundPredicate, ComparisonOperator
+from ...query.models import BoundAllExpression, BoundFilterExpression
 from ...query.resolution import QuerySourceShape, ResolvedField, SingleSourceQueryBinding, SourceResolvedQuery
 from ..contracts import (
     PlanProperties,
@@ -16,7 +16,7 @@ from ..contracts import (
     SourceOperationRequest,
     remote_location,
 )
-from ..expressions import conjunctive_predicates
+from ..expressions import filter_fields, holds_when_every_field_is_null, top_level_conjuncts
 from .base import PlanningServices, effective_limit
 
 
@@ -52,8 +52,8 @@ class ScanOperator:
         services = self._services
         source_filters = source_local_filters(resolved)
         complete = resolved.shape is QuerySourceShape.SINGLE_SOURCE and allow_complete
-        total_leaves = conjunctive_predicates(resolved.query.where)
-        pushed_leaves = 0
+        total_conjuncts = top_level_conjuncts(resolved.query.where)
+        pushed_conjuncts = 0
         every_source_accepted = True
         page_pushed = False
         scans = []
@@ -80,7 +80,7 @@ class ScanOperator:
                 if decision.accepted_filter is not requested.filter:
                     every_source_accepted = False
                 else:
-                    pushed_leaves += len(conjunctive_predicates(requested.filter) or ())
+                    pushed_conjuncts += len(top_level_conjuncts(requested.filter))
             if complete:
                 page_pushed = (
                     decision.accepted_filter is requested.filter
@@ -111,9 +111,7 @@ class ScanOperator:
                 )
             )
         fully_pushed = (
-            every_source_accepted
-            if complete
-            else total_leaves is not None and every_source_accepted and pushed_leaves == len(total_leaves)
+            every_source_accepted if complete else every_source_accepted and pushed_conjuncts == len(total_conjuncts)
         )
         return ScanPlan(tuple(scans), fully_pushed, page_pushed)
 
@@ -125,37 +123,39 @@ def source_projection(source: SingleSourceQueryBinding) -> tuple[ResolvedField, 
 
 
 def source_local_filters(resolved: SourceResolvedQuery) -> dict[str, BoundFilterExpression | None]:
-    """Split only top-level conjunction leaves into source-owned fragments."""
+    """Give each source the conditions only it can decide.
 
-    predicates = conjunctive_predicates(resolved.query.where)
-    if predicates is None:
-        return {source.source_name: None for source in resolved.sources}
-    # ``id`` is owned by the configured identity source.  Every participant
-    # also has a physical representation of it purely so record assembly can
-    # link rows; that must not accidentally change logical field ownership.
+    The filter is split into the conditions it ANDs together.  A condition whose fields all belong
+    to one source is that source's: a plain comparison, or a whole ``any``/``not`` over its fields.
+    A condition that mixes sources stays with the coordinator.
+
+    Two guards keep results unchanged.  A contributor row that is absent enriches as all-NULL, so
+    a condition that could be TRUE of all-NULL fields (``IS NULL``, or an ``any`` containing it) is
+    never pushed to a contributor: pushing it would hide contributor rows whose value is non-null
+    and make them look NULL after assembly.  The identity source always has a row, so anything on
+    its fields may be pushed.
+    """
+
+    # ``id`` is owned by the configured identity source.  Every participant also has a physical
+    # representation of it purely so record assembly can link rows; that must not accidentally
+    # change logical field ownership.
     fields_to_source = {
         field.field.name: source.source_name for source in resolved.sources for field in source.fields
     }
     fields_to_source["id"] = resolved.identity_source.source_name
-    grouped: dict[str, list[BoundPredicate]] = {source.source_name: [] for source in resolved.sources}
-    for predicate in predicates:
-        source_name = fields_to_source.get(predicate.field.name)
-        if source_name is None:
+    identity = resolved.identity_source.source_name
+    grouped: dict[str, list[BoundFilterExpression]] = {source.source_name: [] for source in resolved.sources}
+    for conjunct in top_level_conjuncts(resolved.query.where):
+        owners = {fields_to_source.get(name) for name in filter_fields(conjunct)}
+        if len(owners) != 1 or None in owners:
             continue
-        # A contributor row that is absent enriches as all-NULL, so an IS NULL
-        # test is TRUE for it.  Pushing that test would hide contributor rows
-        # whose value is non-null and make them look NULL after assembly, so
-        # it must stay in the coordinator residual only.
-        if source_name != resolved.identity_source.source_name and predicate.operator is ComparisonOperator.IS_NULL:
+        (owner,) = owners
+        if owner != identity and holds_when_every_field_is_null(conjunct):
             continue
-        grouped[source_name].append(predicate)
+        grouped[owner].append(conjunct)
     return {
-        source_name: None
-        if not source_predicates
-        else source_predicates[0]
-        if len(source_predicates) == 1
-        else BoundAllExpression(tuple(source_predicates))
-        for source_name, source_predicates in grouped.items()
+        source_name: None if not parts else parts[0] if len(parts) == 1 else BoundAllExpression(tuple(parts))
+        for source_name, parts in grouped.items()
     }
 
 

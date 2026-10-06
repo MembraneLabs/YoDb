@@ -384,6 +384,16 @@ def _validate_relationships(catalog: Catalog) -> None:
 
             if implementation.edge_type is not None:
                 _validate_graph_implementation(catalog, relationship_name, relationship, implementation)
+            else:
+                from_type = catalog.datasets[relationship.from_dataset].fields[implementation.from_endpoint.field].type
+                to_type = catalog.datasets[relationship.to_dataset].fields[implementation.to_endpoint.field].type
+                if from_type is not to_type:
+                    raise CatalogValidationError(
+                        f"relationships.{relationship_name}.implementations compares "
+                        f"'{relationship.from_dataset}.{implementation.from_endpoint.field}' ({from_type.value}) with "
+                        f"'{relationship.to_dataset}.{implementation.to_endpoint.field}' ({to_type.value}); "
+                        "the two fields must have the same type"
+                    )
 
 
 def _validate_source_field(

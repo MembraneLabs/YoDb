@@ -61,6 +61,9 @@ class ColumnStatistics:
     # The most common values and the fraction of *all* rows each one has (skewed columns:
     # a status that is 85% "placed" is not "1 of 5 values").
     common_values: tuple[tuple[object, float], ...] = ()
+    # Equal-population bucket bounds of the *other* (non-null, not common) values, ascending, numeric
+    # (timestamps as epoch seconds): n + 1 bounds describe n buckets.  Gives range estimates.
+    histogram: tuple[float, ...] = ()
 
     def __post_init__(self) -> None:
         _check_non_negative("distinct_count", self.distinct_count)
@@ -69,6 +72,8 @@ class ColumnStatistics:
             _check_fraction("common value frequency", frequency)
         if sum(frequency for _, frequency in self.common_values) > 1.0 + 1e-6:
             raise ValueError("common value frequencies must not sum above 1")
+        if self.histogram and (len(self.histogram) < 2 or any(b > a for a, b in zip(self.histogram[1:], self.histogram))):
+            raise ValueError("a histogram needs at least two ascending bounds")
         if self.minimum is not None and self.maximum is not None and self.minimum > self.maximum:
             raise ValueError("minimum must not exceed maximum")
 
@@ -223,14 +228,55 @@ def _predicate_selectivity(
         return member if op is ComparisonOperator.IN else max(0.0, non_null - member)
     if op in (ComparisonOperator.CONTAINS, ComparisonOperator.STARTS_WITH):
         return defaults.text_match * non_null
-    # Range comparisons: interpolate between known bounds, else a flat default.
+    # Range comparisons: the histogram (and the common values) when known, else interpolate between
+    # known bounds, else a flat default.
+    number = _as_number(predicate.value)
+    if column is not None and number is not None and (column.histogram or common):
+        return _range_from_histogram(op, number, column, non_null)
     fraction = defaults.range
     low, high = (column.minimum, column.maximum) if column else (None, None)
-    number = _as_number(predicate.value)
     if low is not None and high is not None and number is not None and high > low:
         below = min(1.0, max(0.0, (number - low) / (high - low)))
         fraction = below if op in (ComparisonOperator.LT, ComparisonOperator.LTE) else 1.0 - below
     return fraction * non_null
+
+
+def _range_from_histogram(op: ComparisonOperator, number: float, column: ColumnStatistics, non_null: float) -> float:
+    """Fraction of rows satisfying ``column <op> number`` from the common values plus the histogram of the rest."""
+
+    less = op in (ComparisonOperator.LT, ComparisonOperator.LTE)
+    inclusive = op in (ComparisonOperator.LTE, ComparisonOperator.GTE)
+
+    def holds(value: float) -> bool:
+        if less:
+            return value <= number if inclusive else value < number
+        return value >= number if inclusive else value > number
+
+    common_total = sum(frequency for _, frequency in column.common_values)
+    common_hit = sum(
+        frequency for value, frequency in column.common_values if (n := _as_number(value)) is not None and holds(n)
+    )
+    remainder = max(0.0, non_null - common_total)
+    if not column.histogram:
+        # only common values are known: what they leave is spread over the range without further information
+        return common_hit + remainder * (1.0 / 3.0 if remainder else 0.0)
+    below = _histogram_below(column.histogram, number)
+    return common_hit + remainder * (below if less else 1.0 - below)
+
+
+def _histogram_below(bounds: tuple[float, ...], number: float) -> float:
+    """Fraction of the histogram's values below ``number`` (equal-population buckets, linear within a bucket)."""
+
+    if number <= bounds[0]:
+        return 0.0
+    if number >= bounds[-1]:
+        return 1.0
+    buckets = len(bounds) - 1
+    for index in range(buckets):
+        low, high = bounds[index], bounds[index + 1]
+        if low <= number < high:
+            return (index + (number - low) / (high - low)) / buckets
+    return 1.0
 
 
 def _equality(

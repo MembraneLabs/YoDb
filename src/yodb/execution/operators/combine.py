@@ -23,7 +23,8 @@ def execute(ctx: ExecutionContext, node: RecordAssembly, run: Run) -> tuple[Logi
     all of its vectors).  The later reads are then restricted to those K IDs.
 
     A restricted read falls back to a plain guarded scan when the learned set
-    exceeds the source's lookup limit, and an empty set ends the query without
+    exceeds what the source accepts even in batches (``maximum_key_batches`` reads of
+    ``maximum_transfer_keys``), and an empty set ends the query without
     further source reads.  A ranked (shortlist) anchor read is only valid once
     every required contributor has narrowed it; otherwise the shortlist would be
     cut before the required matches and could come back short, so it falls back
@@ -48,7 +49,7 @@ def execute(ctx: ExecutionContext, node: RecordAssembly, run: Run) -> tuple[Logi
             if not safe:
                 run.fell_back = True
                 scan = replace(scan, vector_search=None, limit=None, maximum_rows=scan.vector_search.fallback_maximum_rows)
-        rows = _read(ctx, scan, keys if step.restrict else None, node.maximum_transfer_keys, run)
+        rows = _read(ctx, scan, keys if step.restrict else None, node.maximum_transfer_keys, node.maximum_key_batches, run)
         if step.role is StepRole.ANCHOR:
             anchor_rows = rows
         elif step.role is StepRole.SHORTLIST:
@@ -92,14 +93,47 @@ def _can_restrict(scan: RemoteScan, keys: set[object] | None, node: RecordAssemb
 
 
 def _read(
-    ctx: ExecutionContext, scan: RemoteScan, keys: set[object] | None, maximum_keys: int | None, run: Run
+    ctx: ExecutionContext,
+    scan: RemoteScan,
+    keys: set[object] | None,
+    maximum_keys: int | None,
+    maximum_batches: int,
+    run: Run,
 ) -> tuple[LogicalRow, ...]:
-    """Execute one scan, restricted to ``keys`` when that set is small enough."""
+    """Execute one scan, restricted to ``keys`` when the source accepts a set that size.
+
+    A set larger than one restriction may carry is sent in several restricted reads (up to
+    ``maximum_batches``) and the rows are put together; the batches are disjoint, so nothing is
+    counted twice.  Only a read that is neither ranked nor limited can be batched: cutting a
+    ranking or a page into pieces would change its meaning.  Beyond the batches the scan runs
+    unrestricted under its row guard, as before.
+    """
 
     bound = _bound(scan, maximum_keys)
     if keys is not None and bound is not None and len(keys) <= bound:
-        scan = replace(scan, key_filter=tuple(sorted(keys, key=str)))
-    rows = ctx.execute(scan, run)
+        rows = ctx.execute(replace(scan, key_filter=tuple(sorted(keys, key=str))), run)
+    elif (
+        keys is not None
+        and bound is not None
+        and bound > 0
+        and len(keys) <= bound * maximum_batches
+        and scan.limit is None
+        and scan.vector_search is None
+    ):
+        ordered = sorted(keys, key=str)
+        rows_list: list[LogicalRow] = []
+        for start in range(0, len(ordered), bound):
+            run.remaining()
+            rows_list.extend(ctx.execute(replace(scan, key_filter=tuple(ordered[start:start + bound])), run))
+            if scan.maximum_rows is not None and len(rows_list) > scan.maximum_rows:
+                fail(
+                    ErrorCode.QUERY_ROW_LIMIT_EXCEEDED,
+                    f"Source '{scan.source.source_name}' exceeded the V0.1 record-assembly guard of {scan.maximum_rows} rows.",
+                    source_name=scan.source.source_name,
+                )
+        rows = tuple(rows_list)
+    else:
+        rows = ctx.execute(scan, run)
     ids = [row.get("id") for row in rows]
     if any(value is None for value in ids) or len(set(ids)) != len(ids):
         fail(

@@ -51,6 +51,8 @@ class FederatedPhysicalPlanner:
         extensions: Sequence[PlanningExtension] = (),
     ) -> None:
         services = PlanningServices(adapters, policy, statistics, costs)
+        self.statistics = statistics
+        self.policy = policy
         self._scan = ScanOperator(services)
         self._combine = CombineOperator(services)
         self._filter = FilterOperator()

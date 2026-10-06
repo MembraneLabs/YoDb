@@ -13,6 +13,7 @@ sources:
           body:       {physical_name: body}
           split:      {physical_name: split}
           word_count: {physical_name: word_count}
+          customer_id: {physical_name: customer_id}
   triage:
     kind: postgres
     connection_ref: e2e-records
@@ -37,7 +38,23 @@ sources:
           id: {physical_name: message_id}
         embeddings:
           body: {column: embedding, model: "@MODEL@", dimensions: @DIMS@, metric: cosine}
+  customers:
+    kind: postgres
+    connection_ref: e2e-vectors
+    read_only: true
+    datasets:
+      customer:
+        resource: crm.customers
+        identity: [id]
+        fields:
+          id:     {physical_name: customer_id}
+          name:   {physical_name: name}
+          region: {physical_name: region}
+          tier:   {physical_name: tier}
 resolution:
   message:
     identity_source: inbox
-    field_sources: {id: inbox, body: inbox, split: inbox, word_count: inbox, owner: triage, priority: triage}
+    field_sources: {id: inbox, body: inbox, split: inbox, word_count: inbox, customer_id: inbox, owner: triage, priority: triage}
+  customer:
+    identity_source: customers
+    field_sources: {id: customers, name: customers, region: customers, tier: customers}

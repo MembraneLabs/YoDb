@@ -80,8 +80,9 @@ _SPECS: tuple[OperatorSpec, ...] = (
         ("read_order", "restrict_by_ids"), requires=(_K.SCAN,),
     ),
     OperatorSpec(
-        _K.JOIN, _C.RELATIONAL, _S.PLANNED, "Join",
+        _K.JOIN, _C.RELATIONAL, _S.IMPLEMENTED, "Join",
         "Join two datasets over a declared relationship (not a same-dataset ID combine).",
+        ("driver_left", "driver_right"), requires=(_K.SCAN,),
     ),
     OperatorSpec(
         _K.AGGREGATE, _C.RELATIONAL, _S.PLANNED, "Aggregate",

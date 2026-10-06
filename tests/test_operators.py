@@ -21,6 +21,7 @@ from yodb.planning import (
     PlanExplanationNode,
     POSTGRES_CAPABILITIES,
     RecordAssembly,
+    HashJoin,
     RemoteScan,
     ResultProject,
     SupportLevel,
@@ -53,9 +54,9 @@ class CatalogTests(unittest.TestCase):
     def test_what_exists_today_is_marked_implemented_and_the_rest_planned(self) -> None:
         self.assertEqual(
             {s.kind for s in OPERATORS.implemented()},
-            {K.SCAN, K.FILTER, K.PROJECT, K.ORDER, K.LIMIT, K.COMBINE, K.KEY_LOOKUP, K.VECTOR_SEARCH, K.SEMANTIC_FILTER},
+            {K.SCAN, K.FILTER, K.PROJECT, K.ORDER, K.LIMIT, K.COMBINE, K.JOIN, K.KEY_LOOKUP, K.VECTOR_SEARCH, K.SEMANTIC_FILTER},
         )
-        self.assertEqual({s.kind for s in OPERATORS.planned()}, {K.JOIN, K.AGGREGATE, K.GROUP_BY, K.DISTINCT, K.UNION, K.TRAVERSE})
+        self.assertEqual({s.kind for s in OPERATORS.planned()}, {K.AGGREGATE, K.GROUP_BY, K.DISTINCT, K.UNION, K.TRAVERSE})
 
     def test_implemented_operators_name_strategies_and_planned_ones_do_not(self) -> None:
         for spec in OPERATORS:
@@ -72,7 +73,7 @@ class CatalogTests(unittest.TestCase):
         for bad in (
             specs[1:],                                                              # a kind without a spec
             [replace(spec, strategies=())] + specs[1:],                             # implemented, no strategies
-            [replace(OPERATORS.get(K.JOIN), strategies=("x",))] + [s for s in specs if s.kind is not K.JOIN],  # planned, claims strategies
+            [replace(OPERATORS.get(K.AGGREGATE), strategies=("x",))] + [s for s in specs if s.kind is not K.AGGREGATE],  # planned, claims strategies
             [replace(spec, requires=(K.SCAN,))] + specs[1:],                        # requires itself
         ):
             with self.assertRaises(ValueError):
@@ -95,7 +96,7 @@ class PostgresViewTests(unittest.TestCase):
 
     def test_planned_operators_are_unavailable_everywhere(self) -> None:
         view = by_kind(POSTGRES_CAPABILITIES)
-        for kind in (K.JOIN, K.AGGREGATE, K.GROUP_BY, K.DISTINCT, K.UNION, K.TRAVERSE):
+        for kind in (K.AGGREGATE, K.GROUP_BY, K.DISTINCT, K.UNION, K.TRAVERSE):
             self.assertEqual((view[kind].level, view[kind].strategies), (S.UNAVAILABLE, ()))
 
     def test_strategies_offered_never_exceed_the_catalog(self) -> None:
@@ -251,7 +252,7 @@ class ExecutionHandlerTests(unittest.TestCase):
     def test_every_core_node_type_has_a_default_handler(self) -> None:
         self.assertEqual(
             set(default_handlers()),
-            {RemoteScan, RecordAssembly, CoordinatorFilter, CoordinatorSortPage, ResultProject},
+            {RemoteScan, RecordAssembly, CoordinatorFilter, CoordinatorSortPage, ResultProject, HashJoin},
         )
 
     def test_an_extension_contributes_the_handlers_for_the_nodes_it_adds(self) -> None:

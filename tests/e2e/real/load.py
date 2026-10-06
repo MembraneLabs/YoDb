@@ -1,8 +1,9 @@
 """Load the real dataset into two *separate* Postgres servers: records and vectors.
 
-records server : support.messages (text, split, word_count), triage.assignments (synthetic owner/priority),
+records server : support.messages (text, split, word_count, customer_id), triage.assignments (synthetic owner/priority),
                  support.truth (labelled intent; used only by the test oracle, never in the catalog)
-vectors server : vec.message_vectors (message_id, embedding vector(N)) -- a different server and database
+vectors server : vec.message_vectors (message_id, embedding vector(N)) and crm.customers (2,000 synthetic customers)
+                 -- a different server and database, so a join of customers to messages cannot be a SQL join
 
     PYTHONPATH=src .venv/bin/python tests/e2e/real/load.py --records "<admin conninfo>" --vectors "<admin conninfo>" [--model NAME]
 """
@@ -24,6 +25,7 @@ HERE = Path(__file__).parent
 DATA = Path(tempfile.gettempdir()) / "yodb-e2e-data"      # the downloaded CSVs are cached here
 BASE = "https://raw.githubusercontent.com/PolyAI-LDN/task-specific-datasets/master/banking_data/"
 OWNERS = ("ann", "bob", "cai", "dee", "eli")
+CUSTOMERS = 2_000
 
 
 def fetch() -> list[dict]:
@@ -44,18 +46,19 @@ def fetch() -> list[dict]:
         row["assigned"] = digest % 10 < 7                      # synthetic: 70% of messages are assigned
         row["owner"] = OWNERS[(digest >> 8) % len(OWNERS)]
         row["priority"] = 1 + (digest >> 16) % 5
+        row["customer_id"] = f"u{1 + (digest >> 24) % CUSTOMERS:04d}"     # synthetic: each message belongs to a customer
     return rows
 
 
 def load_records(conninfo: str, rows: list[dict]) -> None:
     with psycopg.connect(conninfo, autocommit=True) as connection, connection.cursor() as cursor:
         cursor.execute("DROP SCHEMA IF EXISTS support, triage CASCADE; CREATE SCHEMA support; CREATE SCHEMA triage")
-        cursor.execute("CREATE TABLE support.messages (message_id text PRIMARY KEY, body text, split text, word_count integer)")
+        cursor.execute("CREATE TABLE support.messages (message_id text PRIMARY KEY, body text, split text, word_count integer, customer_id text)")
         cursor.execute("CREATE TABLE support.truth (message_id text PRIMARY KEY, intent text)")
         cursor.execute("CREATE TABLE triage.assignments (message_id text PRIMARY KEY, owner text, priority integer)")
         with cursor.copy("COPY support.messages FROM STDIN") as copy:
             for r in rows:
-                copy.write_row((r["id"], r["text"], r["split"], r["word_count"]))
+                copy.write_row((r["id"], r["text"], r["split"], r["word_count"], r["customer_id"]))
         with cursor.copy("COPY support.truth FROM STDIN") as copy:
             for r in rows:
                 copy.write_row((r["id"], r["intent"]))
@@ -79,10 +82,15 @@ def load_vectors(conninfo: str, rows: list[dict], vectors: list[tuple[float, ...
         with cursor.copy("COPY vec.message_vectors FROM STDIN") as copy:
             for r, v in zip(rows, vectors):
                 copy.write_row((r["id"], "[" + ",".join(repr(x) for x in v) + "]"))
+        cursor.execute("DROP SCHEMA IF EXISTS crm CASCADE; CREATE SCHEMA crm")
+        cursor.execute("CREATE TABLE crm.customers (customer_id text PRIMARY KEY, name text, region text, tier text)")
+        with cursor.copy("COPY crm.customers FROM STDIN") as copy:
+            for n in range(1, CUSTOMERS + 1):
+                copy.write_row((f"u{n:04d}", f"customer {n}", f"r{n % 10}", ("free", "basic", "pro", "team")[n % 4]))
         cursor.execute("""
             DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'yodb_ro') THEN
               CREATE ROLE yodb_ro LOGIN PASSWORD 'yodb_ro'; END IF; END $$;
-            GRANT USAGE ON SCHEMA vec TO yodb_ro; GRANT SELECT ON ALL TABLES IN SCHEMA vec TO yodb_ro;
+            GRANT USAGE ON SCHEMA vec, crm TO yodb_ro; GRANT SELECT ON ALL TABLES IN SCHEMA vec, crm TO yodb_ro;
             ANALYZE""")
 
 

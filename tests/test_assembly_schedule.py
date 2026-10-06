@@ -139,7 +139,7 @@ class ShortlistSafetyTests(unittest.TestCase):
 
     def test_a_learned_set_too_large_to_restrict_the_anchor_falls_back_to_a_plain_scan(self) -> None:
         planned = self.semantic_plan()
-        planned = replace(planned, plan=with_assembly(planned.plan, maximum_transfer_keys=1))  # 3 learned IDs > 1
+        planned = replace(planned, plan=with_assembly(planned.plan, maximum_transfer_keys=1, maximum_key_batches=1))  # 3 learned IDs > 1, never batched
         rows, queries, trace = self.execute(planned)
         anchor = queries[-1]
         self.assertNotIn("<=>", anchor.sql)                  # no unrestricted ranked read
@@ -149,7 +149,7 @@ class ShortlistSafetyTests(unittest.TestCase):
 
     def test_the_fallback_scan_keeps_a_row_guard(self) -> None:
         planned = self.semantic_plan()
-        planned = replace(planned, plan=with_assembly(planned.plan, maximum_transfer_keys=1))
+        planned = replace(planned, plan=with_assembly(planned.plan, maximum_transfer_keys=1, maximum_key_batches=1))
         _, queries, _ = self.execute(planned)
         self.assertEqual(queries[-1].parameters[-1], planned_row_cap(planned) + 1)
 

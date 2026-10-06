@@ -166,7 +166,63 @@ sources:
           segment: {physical_name: segment}
           score:   {physical_name: score}
           code:    {physical_name: code}
+  buyers_db:
+    kind: postgres
+    connection_ref: e2e-crm
+    read_only: true
+    datasets:
+      buyer:
+        resource: scale.buyers
+        identity: [id]
+        fields:
+          id:        {physical_name: buyer_id}
+          name:      {physical_name: name}
+          region:    {physical_name: region}
+          tier:      {physical_name: tier}
+          joined_at: {physical_name: joined_at}
+  buyer_scores_db:
+    kind: postgres
+    connection_ref: e2e-billing
+    read_only: true
+    datasets:
+      buyer:
+        resource: scale.buyer_scores
+        identity: [id]
+        fields:
+          id:    {physical_name: buyer_id}
+          score: {physical_name: score}
+  purchases_db:
+    kind: postgres
+    connection_ref: e2e-support
+    read_only: true
+    datasets:
+      purchase:
+        resource: scale.purchases
+        identity: [id]
+        fields:
+          id:           {physical_name: purchase_id}
+          buyer_id:     {physical_name: buyer_id}
+          amount:       {physical_name: amount}
+          status:       {physical_name: status}
+          purchased_at: {physical_name: purchased_at}
+  shipping_db:
+    kind: postgres
+    connection_ref: e2e-sales
+    read_only: true
+    datasets:
+      purchase:
+        resource: scale.purchase_shipping
+        identity: [id]
+        fields:
+          id:      {physical_name: purchase_id}
+          carrier: {physical_name: carrier}
 resolution:
+  buyer:
+    identity_source: buyers_db
+    field_sources: {id: buyers_db, name: buyers_db, region: buyers_db, tier: buyers_db, joined_at: buyers_db, score: buyer_scores_db}
+  purchase:
+    identity_source: purchases_db
+    field_sources: {id: purchases_db, buyer_id: purchases_db, amount: purchases_db, status: purchases_db, purchased_at: purchases_db, carrier: shipping_db}
   big:
     identity_source: bigmain
     field_sources: {id: bigmain, kind: bigmain, amount: bigmain, created_at: bigmain, flag: bigmain, note: bigmain, segment: bigattrs, score: bigattrs, code: bigattrs}

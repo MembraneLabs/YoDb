@@ -96,6 +96,22 @@ records. See the plan with `yodb explain` (same arguments), and read more in
 Pass the query as `@query.json` to read a file, or `-` for standard input.
 `--format json` and `--format jsonl` print machine-readable output.
 
+## Join two datasets
+
+If `relations.yaml` declares a relationship between two datasets, a query can follow it. The datasets
+may live in different databases:
+
+```bash
+yodb query catalog/ '{
+  "from": {"dataset": "customer"}, "select": ["name"], "where": {"field": "country", "op": "eq", "value": "US"},
+  "traverse": [{"relationship": "customer_has_ticket", "as": "ticket", "select": ["subject"],
+                "where": {"field": "status", "op": "eq", "value": "open"}}],
+  "page": {"first": 10}
+}'
+```
+
+You get one row per customer and ticket pair, with the ticket's fields prefixed `ticket.`; see [Joins](/query/joins).
+
 ## From Python
 
 ```python

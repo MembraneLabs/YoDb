@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 import time
 from threading import Lock
 from typing import Any
@@ -20,7 +21,8 @@ from .statistics import ColumnStatistics, SourceStatistics
 
 _ROWS_SQL = "/* yodb:stats_rows */ SELECT reltuples::double precision FROM pg_class WHERE oid = to_regclass(%s)"
 _COLUMNS_SQL = """/* yodb:stats_columns */
-SELECT attname, n_distinct, null_frac, most_common_vals::text::text[], most_common_freqs::float8[]
+SELECT attname, n_distinct, null_frac, most_common_vals::text::text[], most_common_freqs::float8[],
+       histogram_bounds::text::text[]
 FROM pg_stats
 WHERE tablename = %s
   AND (schemaname = %s OR (%s::text IS NULL AND schemaname = ANY (current_schemas(false))))
@@ -35,12 +37,27 @@ class _RawColumn:
     null_fraction: float | None
     values: tuple[str, ...]
     frequencies: tuple[float, ...]
+    histogram: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
 class _TableEntry:
     row_count: float
     columns: dict[str, _RawColumn]       # keyed by physical column name, for the whole table
+
+
+def _number(text: str, logical_type: LogicalType) -> float | None:
+    """A histogram bound as a number (timestamps as epoch seconds), or None when it cannot be compared."""
+
+    try:
+        if logical_type in (LogicalType.INT, LogicalType.FLOAT):
+            return float(text)
+        if logical_type is LogicalType.TIMESTAMP:
+            moment = datetime.fromisoformat(text)
+            return (moment if moment.tzinfo is not None else moment.replace(tzinfo=UTC)).timestamp()
+    except ValueError:
+        return None
+    return None
 
 
 def _typed(text: str, logical_type: LogicalType) -> object | None:
@@ -119,10 +136,13 @@ class PostgresStatisticsProvider:
             if raw is None:
                 continue
             typed = [(_typed(text, field.field.spec.type), freq) for text, freq in zip(raw.values, raw.frequencies)]
+            bounds = [_number(text, field.field.spec.type) for text in raw.histogram]
+            usable = len(bounds) >= 2 and None not in bounds and all(b >= a for a, b in zip(bounds, bounds[1:]))
             columns[field.field.name] = ColumnStatistics(
                 distinct_count=raw.distinct,
                 null_fraction=raw.null_fraction,
                 common_values=tuple((value, freq) for value, freq in typed if value is not None),
+                histogram=tuple(bounds) if usable else (),
             )
         return SourceStatistics(row_count=entry.row_count, columns=columns)
 
@@ -147,7 +167,7 @@ class PostgresStatisticsProvider:
                 cursor.execute(_COLUMNS_SQL, (table, schema, schema))
                 column_rows = cursor.fetchall()
         columns: dict[str, _RawColumn] = {}
-        for name, n_distinct, null_fraction, common_values, common_freqs in column_rows:
+        for name, n_distinct, null_fraction, common_values, common_freqs, histogram_bounds in column_rows:
             # n_distinct > 0 is a count; < 0 is a fraction of the row count; 0 is unknown.
             distinct = None
             if n_distinct is not None and n_distinct > 0:
@@ -162,5 +182,6 @@ class PostgresStatisticsProvider:
                 null_fraction=None if null_fraction is None else min(1.0, max(0.0, float(null_fraction))),
                 values=values[:count],
                 frequencies=frequencies[:count],
+                histogram=tuple(histogram_bounds or ()),
             )
         return _TableEntry(float(reltuples), columns)

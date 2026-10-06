@@ -19,6 +19,7 @@ from yodb.planning import (
     CoordinatorFilter,
     CoordinatorSortPage,
     FederatedPhysicalPlanner,
+    PlannerPolicy,
     KeyLookupCapability,
     POSTGRES_CAPABILITIES,
     PostgresPlanningAdapter,
@@ -44,9 +45,9 @@ def swap_kind(active, source_name):
     return active.model_copy(update={"catalog": new_catalog})
 
 
-def planner(*adapters, **semantic):
+def planner(*adapters, policy=PlannerPolicy(), **semantic):
     return FederatedPhysicalPlanner(
-        SourcePlanningRegistry(list(adapters)), extensions=(SemanticExtension(policy=SemanticPolicy(**semantic)),)
+        SourcePlanningRegistry(list(adapters)), policy=policy, extensions=(SemanticExtension(policy=SemanticPolicy(**semantic)),)
     )
 
 
@@ -148,7 +149,7 @@ class LimitedSourceExecutionTests(unittest.TestCase):
             StaticRuntime(active),
             QueryCompilerRegistry([PostgresQueryCompiler(), Compiler()]),
             QueryExecutionAdapterRegistry([SourceRowsExecutor({"billing": self.BILLING}), Executor()]),
-            planner=planner(PostgresPlanningAdapter(), CapabilityPlanningAdapter(limited_caps)),
+            planner=planner(PostgresPlanningAdapter(), CapabilityPlanningAdapter(limited_caps), policy=PlannerPolicy(maximum_key_batches=1)),
         )
         rows = engine.execute({"from": {"dataset": "customer"}, "select": ["name", "plan"], "where": {"field": "plan", "op": "eq", "value": "pro"}, "page": {"first": 10}}).rows
         return [r["id"] for r in rows], {s.source.source_name: s for s in scans}

@@ -200,6 +200,7 @@ class Problem:
         params: CostParameters,
         *,
         maximum_transfer_keys: int | None,
+        maximum_key_batches: int = 1,
         variants: Sequence[Variant] = (),
         constraints: Constraints = Constraints(),
     ) -> None:
@@ -208,6 +209,7 @@ class Problem:
             raise ValueError("exactly one anchor and unique source names are required")
         self.params = params
         self.transfer_bound = maximum_transfer_keys
+        self.key_batches = max(1, maximum_key_batches)
         self.variants = tuple(variants)
         self.constraints = constraints
         self.anchor = anchors[0]
@@ -242,10 +244,13 @@ class Problem:
         profile = source.profile
         if restrict:
             bound = self.bound(source)
-            if keys_in is None or bound is None or keys_in > bound:
+            if keys_in is None or bound is None:
                 return None
+            batches = max(1, math.ceil(keys_in / bound)) if bound > 0 else self.key_batches + 1
+            if batches > self.key_batches:
+                return None                # too many IDs to send, even in batches
             rows = keys_in * self.pass_fraction(source)
-            latency = profile.call_latency_ms + profile.per_key_latency_ms * keys_in + profile.per_row_latency_ms * rows
+            latency = profile.call_latency_ms * batches + profile.per_key_latency_ms * keys_in + profile.per_row_latency_ms * rows
         else:
             rows = source.filtered_rows
             latency = profile.call_latency_ms + profile.per_row_latency_ms * rows

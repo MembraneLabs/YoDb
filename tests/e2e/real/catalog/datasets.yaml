@@ -12,3 +12,11 @@ datasets:
       word_count: {type: int,    description: Number of words in the message.}
       owner:      {type: string, description: Agent the message is assigned to.}
       priority:   {type: int,    description: Triage priority 1-5.}
+      customer_id: {type: id,    description: The customer who wrote the message.}
+  customer:
+    description: A customer, kept on a different server from their messages.
+    fields:
+      id:     {type: id,     description: Customer identity.}
+      name:   {type: string, description: Name.}
+      region: {type: string, description: Region.}
+      tier:   {type: string, description: Tier.}

@@ -81,6 +81,10 @@
           "label": "How queries are planned"
         },
         {
+          "path": "query/joins",
+          "label": "Joins"
+        },
+        {
           "path": "query/semantic-filter",
           "label": "Semantic filter"
         }

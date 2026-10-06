@@ -52,6 +52,8 @@ class ErrorCode(str, Enum):
     QUERY_EXECUTION_UNSUPPORTED = "query_execution_unsupported"
     QUERY_EXECUTION_FAILED = "query_execution_failed"
     QUERY_TIMEOUT = "query_timeout"
+    RELATIONSHIP_NOT_FOUND = "relationship_not_found"
+    RELATIONSHIP_NOT_APPLICABLE = "relationship_not_applicable"
 
 
 class ErrorDetail(BaseModel):
