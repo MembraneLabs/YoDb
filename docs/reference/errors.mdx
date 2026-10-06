@@ -1,0 +1,59 @@
+---
+title: Errors
+description: Every error code, what it means, and whether retrying can help.
+---
+
+Every YoDb error is a `YoDbError` carrying one safe `ErrorDetail`: a stable
+`code`, a message, `retryable`, and sometimes `location` (where in the query)
+and `source_name`. Messages never contain connection strings, credentials, SQL
+or query values. The command line prints `error [code] at location (source
+name): message` and exits with status 1.
+
+## The query was refused (fix the query)
+
+| Code | Meaning |
+| --- | --- |
+| `query_shape_invalid` | Not valid JSON, an unknown key, a missing or duplicate field in the request |
+| `dataset_not_found`, `field_not_found` | A name that is not in the catalog |
+| `field_not_accessible` | A field that exists but is internal |
+| `query_value_type_invalid` | A value of the wrong type, a missing or null value, or a timestamp without a zone |
+| `query_operator_not_supported` | An operator the field's type does not support |
+| `query_expression_invalid` | A malformed `all`, `any` or `not`, or a semantic condition under `any` or `not` |
+| `query_limit_invalid` | A page, list, filter depth or size, or number of semantic conditions over its limit |
+| `query_feature_not_supported` | Not implemented in V0.1: `page.after` (cursors), `traverse`, a second semantic condition, or a term no operator handles |
+| `query_catalog_mismatch` | The query was bound against a different catalog snapshot |
+
+## The plan cannot run safely (change the query or the limits)
+
+| Code | Meaning |
+| --- | --- |
+| `query_row_limit_exceeded` | A read would return more rows than the per-read guard allows (default 10,000) |
+| `query_coordinator_limit_exceeded` | Assembling, sorting or paging would hold more rows than allowed (default 50,000) |
+| `query_semantic_budget_exceeded` | Too many candidates for the verifier, or the cost or latency budget was spent |
+| `query_plan_unsupported` | A plan that was demanded (such as a vector shortlist) is not available |
+| `query_plan_invariant_violation` | An internal check failed, for example an embedder that does not match the stored vectors |
+| `source_binding_unavailable`, `source_logical_id_unavailable` | The catalog does not map what the query needs |
+| `query_compilation_unsupported`, `query_execution_unsupported` | No adapter for the source kind |
+
+## The sources or providers failed
+
+| Code | Retryable | Meaning |
+| --- | --- | --- |
+| `query_timeout` | yes | The whole-query time limit, or the database statement limit, was reached |
+| `connection_pool_timeout` | yes | No connection became free in time |
+| `source_unavailable` | yes | A source could not be reached |
+| `source_authentication_failed` | no | A source rejected the credentials |
+| `source_permission_denied` | no | The role cannot read what the catalog needs |
+| `connection_reference_not_found` | no | No connection settings for a `connection_ref` (the message names the environment variable) |
+| `connection_pool_closed` | no | The client was closed |
+| `query_execution_failed` | no | A source rejected or failed the statement |
+| `semantic_provider_unavailable`, `semantic_provider_failed` | no | No verifier or embedder configured, or one raised or returned something invalid |
+
+## The catalog did not open
+
+| Code | Meaning |
+| --- | --- |
+| `catalog_load_failed` | The YAML files are invalid (run `yodb catalog <dir>` for the exact error) |
+| `source_validation_failed` | A source does not match the catalog or could not be inspected; `details["sources"]` lists the problems per source |
+| `source_inspection_failed`, `source_kind_unsupported`, `source_capability_unavailable` | Inspection could not complete, or the source kind has no adapter |
+| `catalog_runtime_uninitialized` | A query was attempted before a catalog validated |

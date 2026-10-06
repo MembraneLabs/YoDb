@@ -1,0 +1,66 @@
+---
+title: Limits
+description: What V0.1 deliberately does not do, so you can decide whether it fits.
+---
+
+YoDb V0.1 is a read-only query layer over PostgreSQL. It is correct within the
+limits below and refuses, with a clear error, what it cannot do safely.
+
+## Queries
+
+- **No cursor paging.** `page.after` is refused (`query_feature_not_supported`).
+  Ask for up to 500 rows with `page.first`.
+- **Not implemented:** `join`, `aggregate`, `group_by`, `distinct`, `union` and
+  graph `traverse`. Combining sources means one logical dataset assembled by ID.
+- **One row per ID per source.** A source must have at most one row for a
+  logical ID. The catalog validator rejects identities that are not backed by a
+  primary or unique key.
+- **Read-only.** There is no write path.
+
+## Size and memory
+
+- Records from several sources are assembled **in memory**, bounded by the
+  guards (10,000 rows per read that cannot be restricted or paged by its source,
+  50,000 while assembling). Beyond them a query fails; it does not spill to disk.
+- **At most 1,000 IDs** restrict a read. A multi-source query whose filter on one
+  source returns more IDs than that, and whose other source is large, can fail
+  with `query_row_limit_exceeded` even though a database join would be easy.
+  Sending IDs in batches is not implemented.
+- `contains` and `starts_with` run at YoDb, not in the database, so the rows they
+  filter must fit the guards.
+- Reads run one after another; a query does not use concurrent reads.
+- Tested to 1,000,000 rows in the largest table (with the guards doing their
+  job), not beyond.
+
+## Ordering
+
+Text ordered across several sources is sorted by code point at the coordinator,
+which differs from a database collation for mixed-case text. A single-source query
+orders text in the database.
+
+## Planning
+
+- Costs assume that filters are independent. Range estimates use a default
+  (histograms are not read). Run `ANALYZE` on your tables.
+- The cost-based search covers up to 10 sources that bound the result and one
+  extension operator (the semantic filter) per query; otherwise the fixed rules
+  plan the query.
+- A wrong estimate makes a plan slower or makes it fail on a guard. It never
+  changes the rows returned.
+
+## Semantic filter
+
+- One condition per query, ANDed (not under `any` or `not`).
+- The vector shortlist is approximate (see [Semantic filter](/query/semantic-filter)):
+  its rows are always true matches, but it can miss some. Its default recall
+  assumption is cautious; calibrate it for your model.
+- A filter on the anchor source applies after a separate vector store's
+  shortlist, which can cost recall when it is selective.
+- Embedding declarations are not yet validated against the database.
+- Verification is sequential, and verifier results are not cached.
+
+## Sources
+
+- **PostgreSQL only** (with pgvector for vector search). `neo4j` is accepted in
+  the catalog schema but there is no adapter.
+- Source facts are read at startup (`yodb validate`, `db.refresh()`), not watched.

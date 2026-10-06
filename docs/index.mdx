@@ -17,18 +17,26 @@ credentials to callers. Instead, a developer defines a small catalog of
 datasets, sources, and relationships.
 
 <CardGroup cols={2}>
-  <Card title="Get started" icon="play" href="/getting-started/overview">
-    Understand the current V0.1 scope and catalog layout.
+  <Card title="Get started" icon="play" href="/getting-started/quickstart">
+    Install YoDb, open a catalog, and run a first query.
   </Card>
   <Card title="Configure the catalog" icon="table" href="/catalog/overview">
     Define datasets, source resources, and relationships.
   </Card>
 </CardGroup>
 
-## Current implementation status
+## What V0.1 does
 
-Implemented building blocks are strict three-file catalog loading, reusable
-source-connection contracts, bounded PostgreSQL pooling, read-only PostgreSQL
-inspection, PostgreSQL catalog validation, and in-memory all-or-nothing catalog
-activation. Typed query execution, semantic search execution, graph traversal,
-and the Neo4j adapter are still planned.
+- Strict three-file catalog loading, and read-only inspection of PostgreSQL that
+  refuses to open a catalog that does not match the databases.
+- Typed queries over one logical dataset whose fields live in one or several
+  PostgreSQL databases: filters, ordering, paging, assembled by logical ID, with
+  a plan you can inspect.
+- A cost-based planner that uses database statistics, falling back to fixed rules.
+- A semantic filter (a natural-language condition judged by a verifier you
+  supply), optionally shortlisted by vector search, with the vectors in the same
+  database or a separate one.
+- A `yodb` command and a Python front door, `yodb.connect`.
+
+Graph traversal, cursor paging, joins and aggregation, and the Neo4j adapter
+are not implemented; see [Limits](/reference/limits).

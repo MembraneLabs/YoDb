@@ -111,8 +111,10 @@ residual predicate exists, the planner does not push ordering or paging ahead
 of it; it uses a bounded remote scan instead. This is slower than native text
 pushdown but preserves logical results.
 
-Relationship traversal, semantic search, cursor pagination, key transfer,
-parallel scan scheduling, and non-PostgreSQL adapters remain future plan nodes.
+Cost-based read ordering and the semantic filter are described in
+[How queries are planned](/query/planning) and [Semantic filter](/query/semantic-filter).
+Relationship traversal, cursor pagination, parallel scan scheduling, and
+non-PostgreSQL adapters remain future work; see [Limits](/reference/limits).
 
 ## Bounds and explain
 

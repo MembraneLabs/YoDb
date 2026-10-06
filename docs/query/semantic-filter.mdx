@@ -1,0 +1,136 @@
+---
+title: Semantic filter
+description: Ask whether a natural-language proposition is true of a record's text, with a verifier you supply.
+---
+
+```json
+{"from": {"dataset": "message"},
+ "select": ["body"],
+ "where": {"all": [
+   {"field": "split", "op": "eq", "value": "test"},
+   {"semantic": {"field": "body", "proposition": "the customer is asking when their card will arrive"}}
+ ]},
+ "page": {"first": 20}}
+```
+
+The condition is *true of the record*, judged by a model you provide (the
+**verifier**). Similarity between vectors is never part of its meaning; it is
+only a way to find candidates cheaply.
+
+Rules: the field must be a public `text` or `string` field marked
+`semantic_eligible: true` in `datasets.yaml`; the condition must be ANDed (not
+under `any` or `not`); one per query; the proposition is at most 1,000
+characters. Records with no text never qualify.
+
+## Two ways to answer it
+
+| Plan | What happens | Result |
+| --- | --- | --- |
+| **Verify everything** | The other filters run first; every remaining candidate goes to the verifier, in your `order_by` order, until the page is full. | Exact. Refused with `query_semantic_budget_exceeded` above 1,000 candidates. |
+| **Vector shortlist** | The proposition is embedded; the *K* nearest records are found by vector search; only those go to the verifier. | Every row returned is a true match, but a true match outside the shortlist is missed. |
+
+`explain` and `result.reports["semantic"]` say which ran and why. The planner
+chooses between them by cost (verifier calls, embedding calls, latency) once it
+has statistics, and by a fixed rule before.
+
+## Where the vectors live
+
+Either in the source that owns the text, or in a **separate vector store**: a
+different table, database or server holding only each record's ID and vector.
+
+```yaml
+sources:
+  messages:                      # the text
+    kind: postgres
+    connection_ref: records
+    read_only: true
+    datasets:
+      message:
+        resource: support.messages
+        identity: [id]
+        fields: {id: {physical_name: message_id}, body: {physical_name: body}}
+  vectors:                       # the vectors, on another server
+    kind: postgres
+    connection_ref: vectors
+    read_only: true
+    datasets:
+      message:
+        resource: vec.message_vectors
+        identity: [id]
+        fields: {id: {physical_name: message_id}}      # identity only
+        embeddings:
+          body: {column: embedding, model: potion-base-8M, dimensions: 256, metric: cosine}
+```
+
+A field's embeddings are declared once. `model` and `dimensions` must describe
+how the stored vectors were made; YoDb refuses to compare a query embedding
+from a different model. With a separate store, the plan reads the K nearest IDs
+from the store, then reads the records for those IDs only.
+
+## Providers
+
+```python
+import yodb
+from yodb.semantic import SemanticRuntime
+
+class MyVerifier:                      # judges propositions about text
+    info = ProviderInfo("acme", "judge-1", "1")
+    maximum_batch_size = 20
+    cost_hint = ProviderCost(money_per_candidate=0.0005, latency_ms_per_call=300)   # optional
+    def verify(self, request) -> VerificationResult: ...   # a verdict and a confidence per candidate
+
+class MyEmbedder:                      # embeds the proposition (the stored vectors came from the same model)
+    info = ProviderInfo("acme", "embed-1", "1")
+    dimensions = 256
+    def embed(self, request) -> EmbeddingResult: ...
+
+db = yodb.connect("catalog/", semantic=SemanticRuntime(MyVerifier(), MyEmbedder()))
+```
+
+Without an embedder only *verify everything* runs. An exception from a provider
+becomes `semantic_provider_failed` with a fixed message; the provider's own
+message is never exposed. A local open model works well: see `tests/e2e/real/providers.py`
+for a [fastembed](https://github.com/qdrant/fastembed) embedder
+(`pip install ".[semantic]"`).
+
+## Bounds you control
+
+```json
+"constraints": {"maximum_cost": 0.05, "maximum_latency_ms": 2000, "minimum_quality": 0.8, "maximum_results": 50}
+```
+
+`maximum_cost` and `maximum_latency_ms` stop a query that spends too much
+(`query_semantic_budget_exceeded`) and rule out plans estimated to; `minimum_quality`
+drops verdicts below that confidence and is the recall the planner requires of a
+shortlist.
+
+## Choosing the shortlist size well
+
+The planner needs to know how well your embedding model ranks true matches
+first. Its default assumption (`recall = (K / N) ** 0.5`) is cautious. Measure
+your own: on 13,083 real support messages with a 256-dimension open model, the
+nearest 1,000 contained 71% of the true matches on average, where the default
+assumes 28%, and a curve with exponent about 0.15 described it well. A planner
+told so chooses a shortlist that fills pages (recall 0.93 to 1.00 in that test)
+and verifies 60 to 65 percent fewer records than verifying everything where the
+candidate set is large.
+
+```python
+from yodb.semantic import PowerLawRecall, SemanticCosts, SemanticExtension, SemanticRuntime
+
+extension = SemanticExtension(runtime, costs=SemanticCosts(recall_model=PowerLawRecall(0.15)))
+db = yodb.connect("catalog/", semantic=extension)
+```
+
+`tests/e2e/real/run_realdata.py` prints the measured recall curve for your model
+and data, and compares the plans.
+
+## Known limits
+
+- A filter on the *anchor* source is applied after a separate store's shortlist:
+  when it keeps a small share of the records, the shortlist can miss most true
+  matches. Filters on contributor sources do better (their IDs restrict the
+  store) while they fit the 1,000-ID limit.
+- The shortlist uses an exact scan, not an approximate index.
+- `yodb validate` does not yet check that an embedding column exists or has the
+  declared dimensions; a wrong declaration fails at query time.

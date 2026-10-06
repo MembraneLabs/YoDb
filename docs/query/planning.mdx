@@ -1,0 +1,71 @@
+---
+title: How queries are planned
+description: What YoDb pushes to each database, how it assembles records, and how it chooses the cheapest plan.
+---
+
+A logical query becomes a physical plan: reads of the individual sources,
+assembled in memory into logical records, then filtered, ordered, paged and
+projected. `yodb explain` (or `db.explain(query)`) shows the plan without
+running it: sources, which fields are filtered where, the read order, and how
+the choice was made. It never shows values, credentials or SQL.
+
+## What a source does
+
+Each source declares what it can do (filters, ordering, limits, restriction by
+a list of IDs, vector search). For every read the planner pushes down what the
+source accepts. A single-source query can be answered entirely by the database,
+including `ORDER BY` and `LIMIT`. Anything a source cannot enforce, such as the
+text operators `contains` and `starts_with`, YoDb applies itself after reading.
+
+## Assembling records from several sources
+
+One logical dataset can have fields in several sources. The *identity source*
+(the anchor) gives the records; the other sources contribute fields, matched by
+the dataset's logical `id`. This is not a cross-database SQL join: each source
+is read separately and the rows are merged by ID.
+
+- A contributor with a filter is a **required** match (like an inner join);
+  one without only **enriches** (like a left join, missing means NULL).
+- IDs found by one read can **restrict** the next read (`id IN (...)`) when
+  there are at most 1,000 of them. Larger sets are not sent, and the next read
+  runs unrestricted under its row guard.
+- An empty ID set ends the query without reading the remaining sources.
+
+## Choosing the order
+
+The order in which sources are read, and whether each read is restricted by the
+IDs found so far, decides how much data moves. With the default fixed rules the
+required contributors run first, then the anchor, then the enrichers.
+
+With statistics the planner searches all orders (dynamic programming over the
+sources that bound the result) and picks the cheapest valid one. It estimates
+selectivity from the database's own statistics (`pg_stats`, including the most
+common values of skewed columns), and learns from the scans it actually runs.
+`explain` says which was used:
+
+```text
+optimizer: strategy=cost_based estimated_latency_ms=28.8 candidates_considered=1
+optimizer: strategy=rules reason=no statistics are configured
+```
+
+The planner only ever chooses between *valid* plans. Wrong statistics make a
+plan slower or make it fail on a guard; they never change the rows returned.
+Run `ANALYZE` on your tables so that estimates are good.
+
+## Guards
+
+| Guard | Default | When exceeded |
+| --- | --- | --- |
+| rows one read may return (when it cannot be restricted or paged by the source) | 10,000 | `query_row_limit_exceeded` |
+| rows held while assembling, sorting and paging | 50,000 | `query_coordinator_limit_exceeded` |
+| IDs sent to restrict a read | 1,000 | the read runs unrestricted |
+| time for the whole query (`timeout_seconds`) | none | `query_timeout` |
+| time one database statement may run | 60 s | `query_timeout` |
+
+## Ordering text
+
+A single-source query orders text with the database's collation. When several
+sources are involved YoDb sorts at the coordinator, by Unicode code point, so
+text with mixed case can come out in a different order. The plan carries a note
+when that applies. Numbers, timestamps and identifiers order the same way
+everywhere.

@@ -1,0 +1,55 @@
+---
+title: Command line
+description: The yodb command.
+---
+
+```text
+yodb catalog  CATALOG                 what can be queried (no database needed)
+yodb validate CATALOG                 inspect the real sources and check the catalog against them
+yodb explain  CATALOG QUERY           the plan: sources, pushdown, read order, strategy
+yodb query    CATALOG QUERY           run it
+```
+
+`CATALOG` is a directory holding `datasets.yaml`, `sources.yaml` and
+`relations.yaml`. `QUERY` is JSON text, `@file.json`, or `-` for standard input.
+`python -m yodb` is the same command.
+
+## Connections
+
+Each catalog `connection_ref` is read from the environment variable
+`YODB_CONN_<REF>` (upper-cased; every non-alphanumeric character becomes `_`;
+`crm-readonly` is `YODB_CONN_CRM_READONLY`). The value is a libpq connection
+string or URI. Alternatively `--connections FILE` names a YAML or JSON mapping:
+
+```yaml
+crm-readonly: "host=db1 dbname=crm user=yodb_ro password=..."
+billing-readonly: "postgresql://yodb_ro:...@db2/billing"
+```
+
+Keep the file out of version control and readable only by you.
+
+## Options
+
+| Option | Commands | Meaning |
+| --- | --- | --- |
+| `--connections FILE` | validate, explain, query | connection strings by reference |
+| `--no-statistics` | validate, explain, query | plan with the fixed rules only |
+| `--statement-timeout SECONDS` | validate, explain, query | database statement limit when `--timeout` is not given (default 60) |
+| `--timeout SECONDS` | query | time limit for the whole query |
+| `--format table\|json\|jsonl` | query | output format |
+| `--json` | catalog, explain | machine-readable output |
+| `--debug` | all | show a traceback for an unexpected failure |
+
+## Exit status
+
+| Status | Meaning |
+| --- | --- |
+| 0 | success |
+| 1 | a YoDb error, printed to standard error as `error [code]: message` (see [Errors](/reference/errors)) |
+| 2 | bad usage (an unreadable query or connections file) |
+| 3 | an unexpected failure (the exception type is printed; `--debug` shows more) |
+
+Error messages never contain connection strings, passwords, SQL or values.
+
+The command does not configure the [semantic filter](/query/semantic-filter),
+which needs providers: use the Python API for that.
