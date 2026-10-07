@@ -115,7 +115,7 @@ def execute(runtime: SemanticRuntime | None, ctx: ExecutionContext, node: Semant
                 embedding_model_calls=embedding_calls,
             ),
             records=records,
-        )
+        ).combined_with(run.trace.reports.get("semantic"))
     return tuple(qualified)
 
 

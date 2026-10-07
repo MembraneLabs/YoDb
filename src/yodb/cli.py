@@ -4,6 +4,7 @@
     yodb validate CATALOG                 inspect the real sources and check the catalog against them
     yodb explain  CATALOG QUERY           the plan: sources, pushdown, read order, strategy
     yodb query    CATALOG QUERY           run it
+    yodb mcp      CATALOG                 serve the catalog to an AI agent over MCP (standard input/output)
 
 ``CATALOG`` is a directory holding ``datasets.yaml``, ``sources.yaml`` and ``relations.yaml``.
 ``QUERY`` is JSON text, ``@file.json``, or ``-`` for standard input.  Each catalog ``connection_ref``
@@ -16,11 +17,13 @@ Exit status: 0 success, 1 a YoDb error (printed with its code), 2 bad usage, 3 a
 from __future__ import annotations
 
 import argparse
+import base64
 from collections.abc import Mapping, Sequence
 from datetime import date, datetime
 from decimal import Decimal
 from enum import Enum
 import json
+import math
 from pathlib import Path
 import sys
 from typing import Any
@@ -140,6 +143,19 @@ def _query(args: argparse.Namespace) -> int:
     return 0
 
 
+def _mcp(args: argparse.Namespace) -> int:
+    try:
+        from .mcp_server import serve
+        import mcp.server.mcpserver  # noqa: F401 - fail here, before the catalog is opened
+    except ImportError as error:
+        raise UsageError('the MCP server needs the "mcp" package, version 2 or later: pip install "yodb[mcp]"') from error
+    with _open(args) as db:
+        status = db.status()["catalog"]
+        print(f"yodb mcp: serving catalog {status['name']} v{status['version']} on standard input/output", file=sys.stderr)
+        serve(db, timeout_seconds=args.timeout)
+    return 0
+
+
 # --- helpers ------------------------------------------------------------------------------
 
 
@@ -178,6 +194,10 @@ def _read_query(text: str) -> str:
 
 
 def _jsonable(value: Any) -> Any:
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        return base64.b64encode(bytes(value)).decode("ascii")
+    if isinstance(value, float) and not math.isfinite(value):
+        return None                                               # JSON has no NaN or Infinity
     if isinstance(value, (datetime, date)):
         return value.isoformat()
     if isinstance(value, (Decimal, UUID)):
@@ -261,6 +281,12 @@ def _parser() -> argparse.ArgumentParser:
     query.add_argument("--format", choices=("table", "json", "jsonl"), default="table")
     query.add_argument("--timeout", type=float, metavar="SECONDS", help="time limit for the whole query")
     query.set_defaults(run=_query)
+
+    mcp = commands.add_parser("mcp", help="serve the catalog to an AI agent over MCP (standard input/output)")
+    common(mcp)
+    mcp.add_argument("--timeout", type=float, default=60.0, metavar="SECONDS",
+                     help="time limit for each query as a whole (default 60)")
+    mcp.set_defaults(run=_mcp)
     return parser
 
 

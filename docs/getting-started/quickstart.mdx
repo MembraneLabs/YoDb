@@ -10,6 +10,7 @@ From a checkout of the repository:
 ```bash
 pip install .                 # the library and the `yodb` command
 pip install ".[semantic]"     # optional: a local embedding model for the semantic filter
+pip install ".[mcp]"          # optional: the MCP server, to let an AI agent query the catalog
 ```
 
 YoDb needs Python 3.11+ and read access to your PostgreSQL databases. It never

@@ -65,7 +65,7 @@ class PlannerStructureTests(unittest.TestCase):
         with self.assertRaises(QueryError) as caught:
             planner.plan(resolve(q(sem())))   # the spine cannot plan a term nobody claimed
         self.assertEqual(caught.exception.code, ErrorCode.QUERY_FEATURE_NOT_SUPPORTED)
-        self.assertIn("No planning operator is registered", caught.exception.detail.message)
+        self.assertEqual(caught.exception.detail.message, "The query has a semantic condition, but nothing is configured to answer one.")
 
 
 def _walk(node):

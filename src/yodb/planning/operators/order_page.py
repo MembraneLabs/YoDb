@@ -7,7 +7,7 @@ from ...operators import OperatorKind
 from ...query.models import BoundQuery
 from ..capabilities import TextOrdering
 from ..contracts import CoordinatorSortPage, PhysicalNode, RemoteScan, coordinator_location, properties_from
-from .base import PlanningServices
+from .base import PlanningServices, effective_limit
 
 
 class OrderPageOperator:
@@ -28,7 +28,7 @@ class OrderPageOperator:
         return CoordinatorSortPage(
             input=node,
             order_by=query.order_by,
-            first=query.page.first,
+            first=effective_limit(query),
             after=query.page.after,
             notes=self.ordering_notes(query, scans),
             properties=properties_from(node.properties, ordering=query.order_by, location=coordinator_location()),

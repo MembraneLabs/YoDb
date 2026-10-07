@@ -52,6 +52,9 @@ yodb query catalog/ '{
   a natural-language condition judged by a verifier you supply, optionally
   shortlisted by vector search with the vectors in the same database or a separate
   one.
+- **A server for AI agents.** `yodb mcp catalog/` serves the catalog over the Model
+  Context Protocol: an agent can list the datasets, run typed queries and read plans,
+  and nothing else. No SQL, no physical names, no writes.
 - **Safe by construction.** Read-only sessions, parameterised values, every name
   checked against the catalog, bounded filters, one time budget per query, and
   errors that never contain credentials, SQL or values.
@@ -61,6 +64,7 @@ yodb query catalog/ '{
 ```bash
 pip install .                 # the library and the `yodb` command (Python 3.11+)
 pip install ".[semantic]"     # optional: a local embedding model for the semantic filter
+pip install ".[mcp]"          # optional: the MCP server for AI agents (`yodb mcp`)
 ```
 
 ## Use
@@ -70,6 +74,7 @@ yodb catalog  catalog/                  # what can be queried (no database neede
 yodb validate catalog/                  # check the catalog against the real databases
 yodb explain  catalog/ query.json       # the plan, without running it
 yodb query    catalog/ @query.json      # run it
+yodb mcp      catalog/                  # serve it to an AI agent (see docs/reference/mcp.mdx)
 ```
 
 ```python
@@ -109,5 +114,6 @@ PYTHONPATH=src python3 -m unittest discover -s tests          # unit tests, no d
 The end-to-end suites run against a throwaway PostgreSQL in Docker: 77
 hand-written cases, about 8,800 generated queries compared with a native SQL
 oracle, robustness checks (hostile input, timeouts, concurrency, a million rows),
-and the semantic filter on real data with the vectors on a second server. See
+the semantic filter on real data with the vectors on a second server, and the MCP
+server driven by a real MCP client. See
 [tests/e2e/README.md](tests/e2e/README.md).

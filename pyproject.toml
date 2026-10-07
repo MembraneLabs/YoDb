@@ -25,6 +25,8 @@ dependencies = [
 [project.optional-dependencies]
 # a local open embedding model for the semantic filter's vector shortlist (see docs: semantic filter)
 semantic = ["fastembed>=0.4"]
+# the MCP server (`yodb mcp`), so an AI agent can discover and query a catalog
+mcp = ["mcp>=2,<3"]
 
 [project.scripts]
 yodb = "yodb.cli:main"

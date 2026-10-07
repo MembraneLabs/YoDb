@@ -1,0 +1,11 @@
+api_version: yodb/v0.1
+relationships:
+  customer_has_ticket:
+    from: customer
+    to: ticket
+    description: A support ticket belongs to the customer who raised it.
+    cardinality: one_to_many
+    direction: bi
+    implementations:
+      - from: {source: crm, field: id}
+        to: {source: support, field: customer_id}
