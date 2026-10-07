@@ -10,6 +10,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from pathlib import Path
 import sqlite3
+import threading
 from tempfile import TemporaryDirectory
 import weakref
 
@@ -60,12 +61,14 @@ class SqlWorld:
             self._db.execute(f'CREATE TABLE "{schema}"."{table}" ({", ".join(f"{c}" for c in columns)})')
             self._db.executemany(f'INSERT INTO "{schema}"."{table}" VALUES ({", ".join("?" for _ in columns)})', rows)
         self.queries = []
+        self._lock = threading.Lock()      # one SQLite connection: a server that runs tools in threads must take turns
 
     def execute(self, query, *, timeout_seconds=None):
-        self.queries.append(query)
-        cursor = self._db.execute(query.sql.replace("%s", "?"), query.parameters)
+        with self._lock:
+            self.queries.append(query)
+            rows = self._db.execute(query.sql.replace("%s", "?"), query.parameters).fetchall()
         names = [column.logical_field for column in query.output_columns]
-        return tuple(dict(zip(names, row)) for row in cursor.fetchall())
+        return tuple(dict(zip(names, row)) for row in rows)
 
     def reads_of(self, source: str) -> list:
         return [q for q in self.queries if q.source_name == source]

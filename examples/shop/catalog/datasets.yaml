@@ -1,0 +1,19 @@
+api_version: yodb/v0.1
+catalog: {name: shop, version: 1}
+datasets:
+  customer:
+    description: A customer of the shop.
+    fields:
+      id:        {type: id,        description: Customer identity.}
+      name:      {type: string,    description: Name.}
+      country:   {type: string,    description: Two-letter country code., example_values: [US, UK, FI]}
+      plan:      {type: string,    description: Billing plan. Empty when the customer has none., example_values: [free, pro, team]}
+      signed_up: {type: timestamp, description: When the customer signed up.}
+  ticket:
+    description: A support ticket.
+    fields:
+      id:          {type: id,     description: Ticket identity.}
+      customer_id: {type: id,     description: The customer who raised the ticket.}
+      subject:     {type: string, description: Subject line.}
+      status:      {type: string, description: Where the ticket stands., example_values: [open, pending, closed]}
+      priority:    {type: int,    description: From 1 for low to 5 for urgent.}

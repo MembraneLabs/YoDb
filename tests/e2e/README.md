@@ -171,3 +171,31 @@ direction, key batches, and a semantic condition on the messages side).
 PYTHONPATH=src .venv/bin/python tests/e2e/real/run_realjoins.py [-v]
 ```
 
+
+## The MCP server (`run_mcp.py`)
+
+A real MCP client (the SDK's `Client`) starts `yodb mcp` as a subprocess and talks to it over standard
+input/output, against two worlds: the sample in `examples/shop` (three databases) and the real data above
+(13,083 messages on one server, 2,000 customers on another). The oracle reads the tables with plain SQL and
+filters, joins, orders and pages them in Python, with SQL's three-valued logic. A query must return exactly the
+oracle's rows, in order, or be refused by a row guard; it must never return different rows.
+
+```bash
+pip install ".[mcp]"
+examples/shop/setup.sh                    # the sample databases on port 55440
+# and the two real-data servers, loaded as above
+PYTHONPATH=src .venv/bin/python tests/e2e/run_mcp.py [-v] [--only shop,real,errors,hostile,protocol,startup,semantic] [--seed N] [--report FILE]
+examples/shop/teardown.sh
+```
+
+| Section | What it checks |
+| --- | --- |
+| `shop`, `real` | `describe_catalog` against the data; then generated queries, each run and explained: every operator on every field with values taken from the data, random `all`/`any`/`not` trees, field subsets, every orderable field in both directions with several page sizes, two-key orders, and joins (forward and reverse, inner and left, filters and orders on both sides, with and without `as`). The note for a full page must appear exactly when the page is full |
+| `errors` | about 50 refusals, through `query` and through `explain`: the expected code and location, and nothing physical in the message |
+| `hostile` | injection strings as values for every text operator (they must behave as plain values) and as every name in a query (refused with a code); deep nesting, a two-megabyte value, non-queries; the tables are unchanged afterwards |
+| `protocol` | the tool list, annotations, instructions and the query guide; 60 calls at once and 200 in a row in one session; three servers at once; `--timeout`; `--no-statistics`; a cost-based plan |
+| `startup` | a missing catalog, a missing connection variable, a database that is down, a wrong password, a catalog that does not match: exit status 1 with the reason on standard error and nothing on standard output; `--connections`; a clean exit when the input closes |
+| `semantic` | a server built from Python with a semantic filter (`real/serve_mcp_semantic.py`): 8 propositions x 4 filters x 2 page sizes against the labelled truth when every candidate is verified; with a vector shortlist every row must be a true match and the answer must say `"exact": false`; a semantic condition on the joined side across two servers |
+
+On the real data about a fifth of the generated queries are refused by the 10,000-row guard (a read of all
+13,083 messages that no source can restrict); the report counts them separately from the queries answered.

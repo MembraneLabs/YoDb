@@ -1,0 +1,47 @@
+api_version: yodb/v0.1
+sources:
+  crm:                       # database 1: who the customers are
+    kind: postgres
+    connection_ref: crm
+    read_only: true
+    datasets:
+      customer:
+        resource: public.customers
+        identity: [id]
+        fields:
+          id:        {physical_name: customer_id}
+          name:      {physical_name: name}
+          country:   {physical_name: country}
+          signed_up: {physical_name: signed_up}
+  billing:                   # database 2: which plan each customer is on
+    kind: postgres
+    connection_ref: billing
+    read_only: true
+    datasets:
+      customer:
+        resource: public.subscriptions
+        identity: [id]
+        fields:
+          id:   {physical_name: customer_id}
+          plan: {physical_name: plan}
+  support:                   # database 3: their support tickets
+    kind: postgres
+    connection_ref: support
+    read_only: true
+    datasets:
+      ticket:
+        resource: public.tickets
+        identity: [id]
+        fields:
+          id:          {physical_name: ticket_id}
+          customer_id: {physical_name: customer_id}
+          subject:     {physical_name: subject}
+          status:      {physical_name: status}
+          priority:    {physical_name: priority}
+resolution:
+  customer:
+    identity_source: crm
+    field_sources: {id: crm, name: crm, country: crm, signed_up: crm, plan: billing}
+  ticket:
+    identity_source: support
+    field_sources: {id: support, customer_id: support, subject: support, status: support, priority: support}

@@ -98,6 +98,10 @@
           "label": "Command line"
         },
         {
+          "path": "reference/mcp",
+          "label": "MCP server"
+        },
+        {
           "path": "reference/errors",
           "label": "Errors"
         },

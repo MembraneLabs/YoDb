@@ -1,0 +1,212 @@
+---
+title: MCP server
+description: Let an AI agent discover and query a catalog over the Model Context Protocol.
+---
+
+`yodb mcp` serves one catalog to an AI agent over the
+[Model Context Protocol](https://modelcontextprotocol.io). The agent gets three
+read-only tools: it can see what the catalog offers, run a query, and ask how a
+query would run. It gets nothing else: no SQL, no table or column names, no
+fields you marked internal, no connection strings.
+
+```bash
+pip install ".[mcp]"          # adds the MCP SDK (version 2)
+yodb mcp catalog/             # serves over standard input/output until the client disconnects
+```
+
+The server opens the catalog the same way `yodb validate` does. It inspects the
+real databases first and refuses to start if the catalog does not match them.
+On a failure it prints the error to standard error and exits with status 1;
+nothing but protocol messages is ever written to standard output.
+
+## Connect an agent
+
+An MCP client starts the server itself. Give it the command, the catalog
+directory as an absolute path, and the connection strings:
+
+```json
+{
+  "mcpServers": {
+    "yodb": {
+      "command": "yodb",
+      "args": ["mcp", "/srv/yodb/catalog"],
+      "env": {
+        "YODB_CONN_CRM": "host=db1 dbname=crm user=yodb_ro password=...",
+        "YODB_CONN_BILLING": "host=db2 dbname=billing user=yodb_ro password=..."
+      }
+    }
+  }
+}
+```
+
+For Claude Code that file is `.mcp.json` in your project, or one command:
+
+```bash
+claude mcp add yodb \
+  -e YODB_CONN_CRM="host=db1 dbname=crm user=yodb_ro password=..." \
+  -e YODB_CONN_BILLING="host=db2 dbname=billing user=yodb_ro password=..." \
+  -- yodb mcp /srv/yodb/catalog
+```
+
+To keep passwords out of the client's configuration, use
+`--connections FILE` instead of the variables (see [Command line](/reference/cli)).
+Use a database role that can only `SELECT` the tables in the catalog.
+
+## The tools
+
+| Tool | Argument | Returns |
+| --- | --- | --- |
+| `describe_catalog` | none | The catalog's name and version, every dataset with its public fields, and the relationships |
+| `query` | `query`: a [query](/query/query-model) as an object or as JSON text | `{"rows": [...], "row_count": n}` |
+| `explain` | `query`: the same | The plan's steps and how it was chosen, without reading any data |
+
+All three are marked read-only for the client. Every answer is returned both as
+structured content and as the same JSON in text.
+
+### `describe_catalog`
+
+```json
+{
+  "catalog": {"name": "shop", "version": 1},
+  "datasets": {
+    "customer": {
+      "description": "A customer of the shop.",
+      "fields": {
+        "id":      {"type": "id", "description": "Customer identity."},
+        "country": {"type": "string", "description": "Two-letter country code.", "example_values": ["US", "UK"]}
+      }
+    }
+  },
+  "relationships": {
+    "customer_has_ticket": {
+      "from": "customer", "to": "ticket",
+      "description": "A support ticket belongs to the customer who raised it.",
+      "cardinality": "one_to_many",
+      "reversible": true,
+      "on": "customer.id = ticket.customer_id",
+      "traversable": true
+    }
+  }
+}
+```
+
+It is the agent's whole view of your data, so the descriptions, `aliases` and
+`example_values` you write in [`datasets.yaml`](/catalog/datasets) are what the
+agent reasons with. Write them for a reader who has never seen the tables.
+
+- A field with `visibility: internal` is not listed.
+- `reversible` is `true` for a relationship declared `direction: bi`.
+- `traversable` is `false`, with a `why_not`, for a relationship a query cannot
+  follow (it joins on an internal field, or it is stored as graph edges).
+- No source, table, column or connection name appears.
+
+### `query`
+
+The tool's description teaches the agent the query language: the shape of a
+query, the operators for each field type, joins, and what is not available. The
+agent does not need these pages.
+
+```json
+{"query": {"from": {"dataset": "customer"}, "select": ["name"],
+           "where": {"field": "country", "op": "eq", "value": "UK"}}}
+```
+
+```json
+{"rows": [{"id": "c01", "name": "Ada Lovelace"}, {"id": "c03", "name": "Alan Turing"}], "row_count": 2}
+```
+
+Timestamps are returned as RFC 3339 text and decimals as text. When a page comes
+back full, the answer carries a `note` saying that more rows may match. There is
+no next page in V0.1, so the agent has to narrow its filter or raise
+`page.first` (at most 500). There is also no aggregation, so an agent counts by
+fetching rows. Read [Limits](/reference/limits) before you rely on an agent for
+totals over large tables.
+
+### `explain`
+
+```json
+{
+  "plan_kind": "hash_join",
+  "steps": [
+    {"kind": "remote_scan", "at": "support", "fields": ["id", "customer_id", "priority", "status"],
+     "filters_applied_by_the_source": ["status"], "order": ["id asc"], "limit": 10001},
+    {"kind": "remote_scan", "at": "crm", "fields": ["id", "name"],
+     "filters_applied_by_the_source": ["id"], "order": ["id asc"], "limit": 50001},
+    {"kind": "hash_join", "at": "coordinator", "fields": ["id", "name", "ticket.id", "ticket.priority"], "limit": 100,
+     "detail": ["relationship=customer_has_ticket as=ticket kind=inner", "on customer.id = ticket.customer_id"]}
+  ],
+  "optimizer": ["strategy=cost_based", "driver=right", "estimated_root_rows=12", "estimated_traversed_rows=11"]
+}
+```
+
+The example is shortened. `at` is a source name from `sources.yaml` or `coordinator` (YoDb itself). Source
+names are the one piece of the physical layout an agent can see, and only here.
+
+## Errors
+
+A refused query is a tool error whose text carries the
+[error code](/reference/errors), the place in the query, and the message:
+
+```text
+Error executing tool query: [field_not_found] at select[1]: Unknown field 'email' on dataset 'customer'.
+```
+
+That is enough for an agent to correct the query and call again. As everywhere
+in YoDb, an error never contains a connection string, SQL or a value. A failure
+YoDb did not anticipate reaches the agent only as `Error executing tool query`;
+the traceback goes to the server's standard error.
+
+## Options
+
+| Option | Meaning |
+| --- | --- |
+| `--timeout SECONDS` | Time limit for each query as a whole (default 60). A query that exceeds it fails with `query_timeout` |
+| `--connections FILE` | Connection strings by reference, instead of `YODB_CONN_<REF>` variables |
+| `--no-statistics` | Plan with the fixed rules only |
+| `--statement-timeout SECONDS` | Database statement limit (default 60) |
+| `--debug` | Show a traceback if the server fails to start |
+
+Every bound of the query layer still applies: pages of at most 500 rows, the
+row guards, read-only sessions. The catalog is read when the server starts;
+restart the server to pick up a changed catalog.
+
+## With a semantic filter
+
+`yodb mcp` does not configure the [semantic filter](/query/semantic-filter),
+because that needs a verifier you supply. Its `query` tool says so, and
+`describe_catalog` does not mark any field as semantic. To offer semantic
+conditions to an agent, build the server from Python:
+
+```python
+import yodb
+from yodb.mcp_server import serve
+
+with yodb.connect("catalog/", semantic=my_semantic_runtime) as db:
+    serve(db, timeout_seconds=60)           # standard input/output; blocks until the client disconnects
+```
+
+Now `describe_catalog` marks each eligible field with `"semantic": true`, the
+`query` tool explains the condition, and an answer says how the condition ran:
+
+```json
+{"rows": [...], "row_count": 12,
+ "semantic": {"plan": "vector_shortlist", "exact": false, "records_considered": 3080,
+              "shortlisted_by_vector_search": 200, "records_judged": 200, "records_that_qualified": 12}}
+```
+
+`"exact": false` means every row returned is a true match but some matches may
+be missing, so an agent should not report the rows as the complete answer.
+For a join the counts are left out, because the join judges one batch of keys at a time.
+`yodb.mcp_server.build_server(db)` returns the server object without running it,
+for another transport or for tests.
+
+## What the agent cannot do
+
+- Write, or run SQL: there is no tool for either, and sessions are read-only.
+- Name anything that is not in the catalog, or read an internal field.
+- Ask for unbounded work: a query that would read too much is refused with a
+  guard error, not attempted.
+
+Rows are data from your databases and descriptions are text from your catalog.
+If either can contain text written by someone you do not trust, treat what the
+agent reads as untrusted input, as you would with any tool that returns data.

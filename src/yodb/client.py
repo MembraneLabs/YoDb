@@ -63,10 +63,13 @@ Connections = Mapping[str, "str | PostgresConnectionSettings"] | PostgresConnect
 class YoDb:
     """An open, validated catalog and the engine that answers queries against it."""
 
-    def __init__(self, runtime: InMemoryCatalogRuntime, engine: QueryExecutionEngine, *, close=None) -> None:
+    def __init__(
+        self, runtime: InMemoryCatalogRuntime, engine: QueryExecutionEngine, *, close=None, semantic: bool = False
+    ) -> None:
         self._runtime = runtime
         self._engine = engine
         self._close = close
+        self._semantic = semantic
 
     @classmethod
     def connect(
@@ -138,7 +141,7 @@ class YoDb:
         except BaseException:
             adapter.close()
             raise
-        return cls(runtime, engine, close=adapter.close)
+        return cls(runtime, engine, close=adapter.close, semantic=bool(extensions))
 
     # --- asking -------------------------------------------------------------------------
 
@@ -157,6 +160,12 @@ class YoDb:
     @property
     def catalog(self) -> Catalog:
         return self._runtime.require_active().catalog
+
+    @property
+    def semantic_enabled(self) -> bool:
+        """Whether a semantic filter was configured, so a query may hold a semantic condition."""
+
+        return self._semantic
 
     def describe(self) -> dict[str, Any]:
         """What can be queried: each dataset's description and fields with their types."""

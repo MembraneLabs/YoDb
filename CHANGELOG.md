@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- MCP server: `yodb mcp CATALOG` serves a catalog to an AI agent over the Model Context Protocol
+  (standard input/output) with three read-only tools, `describe_catalog`, `query` and `explain`.
+  The agent sees public fields and declared relationships only; a refused query is a tool error
+  with its code and location. `yodb.mcp_server.serve(db)` serves a client opened from Python,
+  including one with a semantic filter. Needs the optional `mcp` extra (`pip install ".[mcp]"`).
+- `YoDb.semantic_enabled`: whether a semantic filter was configured.
+- End-to-end suite for the MCP server (`tests/e2e/run_mcp.py`): a real MCP client against the
+  server as a subprocess, every answer compared with an independent oracle.
+- `examples/shop`: a three-database sample with a setup script.
+
+### Changed
+- A semantic condition sent to a YoDb with no semantic filter is refused with
+  "The query has a semantic condition, but nothing is configured to answer one."
+  (it named an internal class before).
+
 ## 0.1.0
 
 First version.

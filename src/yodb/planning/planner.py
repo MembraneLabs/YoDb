@@ -18,6 +18,7 @@ from dataclasses import replace
 
 from ..errors import ErrorCode, ErrorDetail, QueryError
 from ..query.extensions import extension_terms
+from ..query.registry import DEFAULT_TERMS
 from ..query.resolution import QuerySourceShape, SourceResolvedQuery
 from .contracts import PhysicalNode, PlanExplanation, PlannedQuery, explain_plan, plan_fingerprint
 from .operators import (
@@ -84,7 +85,7 @@ class FederatedPhysicalPlanner:
             raise QueryError(
                 ErrorDetail(
                     code=ErrorCode.QUERY_FEATURE_NOT_SUPPORTED,
-                    message=f"No planning operator is registered for the {type(unclaimed[0]).__name__} term.",
+                    message=_unclaimed_message(unclaimed[0]),
                     retryable=False,
                     location="where",
                 )
@@ -133,3 +134,12 @@ class FederatedPhysicalPlanner:
             plan_fingerprint=fingerprint,
             explain=explanation,
         )
+
+
+def _unclaimed_message(term: object) -> str:
+    """Why a term no extension claimed is refused, in a caller's words when the term is a known one."""
+
+    for extension in DEFAULT_TERMS:
+        if isinstance(term, extension.bound_type):
+            return f"The query has a {extension.noun}, but nothing is configured to answer one."
+    return f"No planning operator is registered for the {type(term).__name__} term."

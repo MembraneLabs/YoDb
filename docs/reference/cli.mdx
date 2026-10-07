@@ -8,6 +8,7 @@ yodb catalog  CATALOG                 what can be queried (no database needed)
 yodb validate CATALOG                 inspect the real sources and check the catalog against them
 yodb explain  CATALOG QUERY           the plan: sources, pushdown, read order, strategy
 yodb query    CATALOG QUERY           run it
+yodb mcp      CATALOG                 serve the catalog to an AI agent over MCP
 ```
 
 `CATALOG` is a directory holding `datasets.yaml`, `sources.yaml` and
@@ -32,10 +33,10 @@ Keep the file out of version control and readable only by you.
 
 | Option | Commands | Meaning |
 | --- | --- | --- |
-| `--connections FILE` | validate, explain, query | connection strings by reference |
-| `--no-statistics` | validate, explain, query | plan with the fixed rules only |
-| `--statement-timeout SECONDS` | validate, explain, query | database statement limit when `--timeout` is not given (default 60) |
-| `--timeout SECONDS` | query | time limit for the whole query |
+| `--connections FILE` | validate, explain, query, mcp | connection strings by reference |
+| `--no-statistics` | validate, explain, query, mcp | plan with the fixed rules only |
+| `--statement-timeout SECONDS` | validate, explain, query, mcp | database statement limit when `--timeout` is not given (default 60) |
+| `--timeout SECONDS` | query, mcp | time limit for the whole query (`mcp`: for each query, default 60) |
 | `--format table\|json\|jsonl` | query | output format |
 | `--json` | catalog, explain | machine-readable output |
 | `--debug` | all | show a traceback for an unexpected failure |
@@ -46,13 +47,16 @@ Keep the file out of version control and readable only by you.
 | --- | --- |
 | 0 | success |
 | 1 | a YoDb error, printed to standard error as `error [code]: message` (see [Errors](/reference/errors)) |
-| 2 | bad usage (an unreadable query or connections file) |
+| 2 | bad usage (an unreadable query or connections file, or `yodb mcp` without the `mcp` package) |
 | 3 | an unexpected failure (the exception type is printed; `--debug` shows more) |
 
 Error messages never contain connection strings, passwords, SQL or values.
 
 A query with a `traverse` step ([joins](/query/joins)) runs and explains the same way; its output rows carry
 the traversed fields prefixed with the `as` name (`ticket.subject`).
+
+`yodb mcp` runs until its client disconnects and writes only protocol messages to standard output; see
+[MCP server](/reference/mcp).
 
 The command does not configure the [semantic filter](/query/semantic-filter),
 which needs providers: use the Python API for that.
