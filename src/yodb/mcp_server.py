@@ -79,8 +79,9 @@ Not available: aggregation (count, sum, group by), distinct, more than one trave
 (page.after), and comparing two fields with each other@NO_SEMANTIC@. To count, fetch the rows and count them.
 A query that would read more than about 10,000 rows from one source, or join more than 50,000, is refused
 with query_row_limit_exceeded or query_coordinator_limit_exceeded, whatever page.first is: add a filter
-on a field with few matching rows (an eq or in, or a range). contains and starts_with do not reduce what
-is read."""
+on a field with few matching rows (an eq or in, or a range). contains and starts_with are applied after
+the rows are read, and can keep other filters from narrowing the read: when a query is refused, call
+explain and check which filters appear under "filters_applied_by_the_source"."""
 
 SEMANTIC_LANGUAGE = """A semantic condition asks whether a statement is true of a record's text, judged by a model:
   {"semantic": {"field": "body", "proposition": "the customer is asking when their card will arrive"}}
