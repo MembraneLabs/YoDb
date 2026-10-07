@@ -57,6 +57,22 @@ class QueryExecutionEngine:
         )
         self._plan_executor = FederatedPlanExecutor(compilers, executors, policy=execution_policy, extensions=extensions)
         self._joins = JoinPlanner(self._planner, validation_policy=validation_policy, policy=join_policy)
+        self._execution_policy = execution_policy
+        self._join_policy = join_policy
+
+    @property
+    def limits(self) -> dict[str, int]:
+        """The bounds in force for this engine, from its own policies."""
+
+        return {
+            "default_page_size": self._validation_policy.default_page_size,
+            "maximum_page_size": self._validation_policy.maximum_page_size,
+            "maximum_in_values": self._validation_policy.maximum_in_values,
+            "maximum_rows_per_source": self._planner.policy.maximum_rows_per_source,
+            "maximum_coordinator_rows": self._execution_policy.maximum_coordinator_rows,
+            "maximum_join_driver_rows": self._join_policy.maximum_driver_rows,
+            "maximum_joined_rows": self._join_policy.maximum_joined_rows,
+        }
 
     def execute(
         self,

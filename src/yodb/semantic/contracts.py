@@ -263,6 +263,27 @@ class SemanticQueryReport:
     stats: SemanticExecutionStats
     records: dict[object, SemanticRecordMetadata]
 
+    def combined_with(self, earlier: "SemanticQueryReport | None") -> "SemanticQueryReport":
+        """This report added to an earlier one for the same query (a join judges one batch of keys at a time)."""
+
+        if earlier is None:
+            return self
+        mine, theirs = self.stats, earlier.stats
+        shortlists = [s.shortlisted for s in (mine, theirs) if s.shortlisted is not None]
+        return SemanticQueryReport(
+            SemanticExecutionStats(
+                # one shortlisted batch makes the whole answer approximate
+                plan=SemanticPlanKind.VECTOR_SHORTLIST if shortlists else mine.plan,
+                candidates_considered=mine.candidates_considered + theirs.candidates_considered,
+                shortlisted=sum(shortlists) if shortlists else None,
+                verified=mine.verified + theirs.verified,
+                qualified=mine.qualified + theirs.qualified,
+                usage=mine.usage + theirs.usage,
+                embedding_model_calls=mine.embedding_model_calls + theirs.embedding_model_calls,
+            ),
+            {**earlier.records, **self.records},
+        )
+
     def restricted_to(self, ids) -> "SemanticQueryReport":
         """The same report keeping per-record metadata only for the returned rows."""
 

@@ -167,6 +167,12 @@ class YoDb:
 
         return self._semantic
 
+    @property
+    def limits(self) -> dict[str, int]:
+        """The bounds in force: page sizes, list sizes and the row guards."""
+
+        return self._engine.limits
+
     def describe(self) -> dict[str, Any]:
         """What can be queried: each dataset's description and fields with their types."""
 

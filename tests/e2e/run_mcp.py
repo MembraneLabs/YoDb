@@ -173,6 +173,13 @@ def shown(value):
     return value.isoformat() if isinstance(value, datetime) else value
 
 
+def page_in_force(query: dict) -> int:
+    """The page, bounded by ``constraints.maximum_results``."""
+
+    first = query.get("page", {}).get("first", 100)
+    return min(first, query.get("constraints", {}).get("maximum_results", first))
+
+
 def expected(world: dict, query: dict) -> list[dict]:
     """What the query must return."""
 
@@ -181,7 +188,7 @@ def expected(world: dict, query: dict) -> list[dict]:
     rows = [r for r in dataset["rows"] if "where" not in query or holds(query["where"], r) is True]
     columns = ["id", *(f for f in query.get("select", public) if f != "id")]
     terms = [(o["field"], o.get("direction", "asc") == "desc") for o in query.get("order_by", [])]
-    first = query.get("page", {}).get("first", 100)
+    first = page_in_force(query)
     if "traverse" not in query:
         if not terms or terms[-1][0] != "id":
             terms.append(("id", False))
@@ -303,6 +310,10 @@ def cases_for(world: dict, rng: random.Random, *, trees: int, joins: int) -> lis
                       [f"{alias}.{f}" for f, k in world["datasets"][other]["types"].items() if k != "text"]
             query["order_by"] = [{"field": f, "direction": rng.choice(("asc", "desc"))} for f in rng.sample(choices, rng.choice((1, 2)))]
         cases.append(("join", query))
+    # a result cap on about one query in six, of every family: it must bound the page whatever the plan
+    for index, (family, query) in enumerate(cases):
+        if rng.random() < 0.16:
+            cases[index] = (family, {**query, "constraints": {"maximum_results": rng.choice((1, 3, 40))}})
     return cases
 
 
@@ -361,7 +372,7 @@ async def compare_cases(report: Report, section: str, client: Client, world: dic
             (f"#{i} got {g} want {w}" for i, (g, w) in enumerate(zip(got, want)) if g != w), "length only")
         report.check(section, label, ok, detail)
         report.count(section, f"{family}: rows identical to the oracle" if ok else f"{family}: WRONG ROWS")
-        full = len(got) >= query.get("page", {}).get("first", 100)
+        full = len(got) >= page_in_force(query)
         if ("note" in result.structured_content) != full:
             report.check(section, "page-full note " + label, False, f"note present={'note' in result.structured_content}, page full={full}")
         if explained.is_error or not explained.structured_content["steps"]:
@@ -704,6 +715,21 @@ async def run_semantic(report: Report, world: dict) -> None:
         want = expected(world, {**joined, "traverse": [{**joined["traverse"][0], "where": leaf("intent", "in", sorted(PROPOSITIONS[proposition]))}]})
         report.check("semantic", "a semantic condition on the joined side, across two servers", (not result.is_error) and result.structured_content["rows"] == want,
                      text_of(result)[:200] if result.is_error else f"{len(want)} rows")
+        capped = {**ask(proposition, flavours["split = test"], 500), "constraints": {"maximum_results": 5}}
+        result = await client.call_tool("query", {"query": capped})
+        report.check("semantic", "a result cap bounds a semantic query, and the note says the page is full",
+                     (not result.is_error) and result.structured_content["rows"] == truth(proposition, flavours["split = test"], 5)[0] and "note" in result.structured_content,
+                     text_of(result)[:160] if result.is_error else f"{result.structured_content['row_count']} rows")
+        # a left join from all 2,000 customers probes the messages in two batches of keys: the report must add them up
+        batched = {"from": {"dataset": "customer"}, "select": ["name"],
+                   "traverse": [{"relationship": "customer_messages", "as": "message", "select": ["split"], "optional": True,
+                                 "where": {"semantic": {"field": "body", "proposition": proposition}}}], "page": {"first": 500}}
+        result = await client.call_tool("query", {"query": batched})
+        matching = sum(m["intent"] in PROPOSITIONS[proposition] for m in messages)
+        counts = None if result.is_error else result.structured_content["semantic"]
+        report.check("semantic", "a join's semantic report counts every batch of keys, not only the last",
+                     counts is not None and counts["records_that_qualified"] == matching and counts["records_judged"] == len(messages),
+                     text_of(result)[:200] if result.is_error else f"{counts}; truth: {matching} of {len(messages)} messages")
         explained = await client.call_tool("explain", {"query": ask(proposition, flavours["split = test"], 10)})
         report.check("semantic", "explain shows the semantic step", (not explained.is_error) and "semantic" in json.dumps(explained.structured_content), json.dumps(explained.structured_content)[:300])
         for name, query, code in (

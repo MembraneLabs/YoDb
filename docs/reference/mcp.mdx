@@ -167,7 +167,9 @@ the traceback goes to the server's standard error.
 | `--debug` | Show a traceback if the server fails to start |
 
 Every bound of the query layer still applies: pages of at most 500 rows, the
-row guards, read-only sessions. The catalog is read when the server starts;
+row guards, read-only sessions. The numbers in the `query` tool's description are
+read from the policies of the client being served, so they stay true if you
+change a policy. The catalog is read when the server starts;
 restart the server to pick up a changed catalog.
 
 ## With a semantic filter
@@ -196,7 +198,6 @@ Now `describe_catalog` marks each eligible field with `"semantic": true`, the
 
 `"exact": false` means every row returned is a true match but some matches may
 be missing, so an agent should not report the rows as the complete answer.
-For a join the counts are left out, because the join judges one batch of keys at a time.
 `yodb.mcp_server.build_server(db)` returns the server object without running it,
 for another transport or for tests.
 

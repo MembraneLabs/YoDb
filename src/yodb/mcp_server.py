@@ -23,11 +23,9 @@ from .catalog import Catalog, RelationshipSpec, Visibility
 from .cli import _jsonable
 from .client import YoDb
 from .errors import ErrorCode, YoDbError
-from .query import QueryValidationPolicy
 
 SERVER_NAME = "yodb"
 
-_PAGE = QueryValidationPolicy()
 _GUARDS = (ErrorCode.QUERY_ROW_LIMIT_EXCEEDED, ErrorCode.QUERY_COORDINATOR_LIMIT_EXCEEDED)
 
 INSTRUCTIONS = """\
@@ -44,14 +42,14 @@ A query is a JSON object. Only names returned by describe_catalog are accepted; 
  "where": <condition>,                                 optional
  "traverse": [<step>],                                 optional; a join to one other dataset
  "order_by": [{"field": "name", "direction": "asc"}],  optional; "direction" is required: "asc" or "desc"; ties break by "id"
- "page": {"first": 25}}                                optional; default 100, at most 500
+ "page": {"first": 25}}                                optional; default @DEFAULT_PAGE@, at most @MAXIMUM_PAGE@
 
 <condition> is one of:
   {"field": "status", "op": "eq", "value": "open"}
   {"all": [<condition>, ...]}    {"any": [<condition>, ...]}    {"not": <condition>}
 
 Operators by field type:
-  every type except json and bytes:  eq, ne, in, not_in (value is a list), is_null, is_not_null (no value)
+  every type except json and bytes:  eq, ne, in, not_in (value is a list of at most @MAXIMUM_IN@), is_null, is_not_null (no value)
   int, float, timestamp:             gt, gte, lt, lte
   string, text:                      contains, starts_with (case-sensitive)
 Values are typed: an int field takes 3, not "3"; a bool takes true; a timestamp takes RFC 3339 with an
@@ -77,7 +75,7 @@ Only a relationship with "traversable": true can be used.
 
 Not available: aggregation (count, sum, group by), distinct, more than one traverse step, a next page
 (page.after), and comparing two fields with each other@NO_SEMANTIC@. To count, fetch the rows and count them.
-A query that would read more than about 10,000 rows from one source, or join more than 50,000, is refused
+A query that would read more than @SOURCE_ROWS@ rows from one source, or join more than @JOINED_ROWS@, is refused
 with query_row_limit_exceeded or query_coordinator_limit_exceeded, whatever page.first is: add a filter
 on a field with few matching rows (an eq or in, or a range). contains and starts_with are applied after
 the rows are read, and can keep other filters from narrowing the read: when a query is refused, call
@@ -93,12 +91,18 @@ records were shortlisted by similarity first: every row returned is a true match
 missing, more so with a small page.first, so do not present such rows as the complete or the top-N answer."""
 
 
-def query_language(*, semantic: bool = False) -> str:
-    """The guide an agent reads in the query tool's description."""
+def query_language(limits: Mapping[str, int], *, semantic: bool = False) -> str:
+    """The guide an agent reads in the query tool's description, with the limits of the engine it describes."""
 
+    guide = QUERY_LANGUAGE
+    for mark, key in (
+        ("@DEFAULT_PAGE@", "default_page_size"), ("@MAXIMUM_PAGE@", "maximum_page_size"), ("@MAXIMUM_IN@", "maximum_in_values"),
+        ("@SOURCE_ROWS@", "maximum_rows_per_source"), ("@JOINED_ROWS@", "maximum_joined_rows"),
+    ):
+        guide = guide.replace(mark, f"{limits[key]:,}")
     if semantic:
-        return QUERY_LANGUAGE.replace("@NO_SEMANTIC@", "") + "\n\n" + SEMANTIC_LANGUAGE
-    return QUERY_LANGUAGE.replace("@NO_SEMANTIC@", ", and semantic conditions (none is configured on this server)")
+        return guide.replace("@NO_SEMANTIC@", "") + "\n\n" + SEMANTIC_LANGUAGE
+    return guide.replace("@NO_SEMANTIC@", ", and semantic conditions (none is configured on this server)")
 
 
 def describe_catalog(catalog: Catalog, *, semantic: bool = False) -> dict[str, Any]:
@@ -144,12 +148,13 @@ def _describe_relationship(catalog: Catalog, relationship: RelationshipSpec) -> 
         "cardinality": relationship.cardinality.value,
         "reversible": relationship.direction == "bi",
     }
-    implementation = relationship.implementations[0]
-    left, right = implementation.from_endpoint.field, implementation.to_endpoint.field
-    if implementation.edge_type is not None:
+    # the implementation a query would use: the first that compares two fields (as the join planner picks it)
+    implementation = next((i for i in relationship.implementations if i.edge_type is None), None)
+    if implementation is None:
         described["traversable"] = False
         described["why_not"] = "It is stored as graph edges, which cannot be traversed yet."
         return described
+    left, right = implementation.from_endpoint.field, implementation.to_endpoint.field
     described["on"] = f"{relationship.from_dataset}.{left} = {relationship.to_dataset}.{right}"
     public = all(
         _is_public(catalog, dataset, field)
@@ -174,7 +179,7 @@ def build_server(db: YoDb, *, timeout_seconds: float | None = 60.0):
     from mcp.server.mcpserver.exceptions import ToolError
     from mcp.types import ToolAnnotations
 
-    semantic = db.semantic_enabled
+    semantic, limits = db.semantic_enabled, db.limits
     server = MCPServer(SERVER_NAME, instructions=INSTRUCTIONS, log_level="WARNING")
     read_only = ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False)
 
@@ -200,7 +205,7 @@ def build_server(db: YoDb, *, timeout_seconds: float | None = 60.0):
         title="Run a query",
         description="Run one read-only query and return its rows as "
         '{"rows": [...], "row_count": n}. A "note" is added when the page is full and more rows may match.\n\n'
-        + query_language(semantic=semantic),
+        + query_language(limits, semantic=semantic),
         annotations=read_only,
     )
     def query_tool(query: dict[str, Any] | str) -> dict[str, Any]:
@@ -208,13 +213,13 @@ def build_server(db: YoDb, *, timeout_seconds: float | None = 60.0):
             result = db.query(query, timeout_seconds=timeout_seconds)
             rows = [_jsonable(dict(row)) for row in result.rows]
             answer: dict[str, Any] = {"rows": rows, "row_count": len(rows)}
-            first, joined = _page_size(query)
             report = result.reports.get("semantic")
             if report is not None:
-                answer["semantic"] = _semantic_report(report, counts=not joined)
+                answer["semantic"] = _semantic_report(report)
+            first = _page_size(query, limits["default_page_size"])
             if first is not None and len(rows) >= first:
-                more = "narrow the filter" if first >= _PAGE.maximum_page_size else (
-                    f"narrow the filter, or raise page.first (at most {_PAGE.maximum_page_size})")
+                more = "narrow the filter" if first >= limits["maximum_page_size"] else (
+                    f"narrow the filter, or raise page.first (at most {limits['maximum_page_size']})")
                 answer["note"] = f"The page is full ({len(rows)} rows), so more rows may match. There is no next page: {more}."
             return answer
 
@@ -264,17 +269,13 @@ def error_text(error: YoDbError) -> str:
     return "\n".join(lines)
 
 
-def _semantic_report(report, *, counts: bool = True) -> dict[str, Any]:
-    """How a semantic condition ran, in terms an agent can weigh: exact, or possibly missing matches.
-
-    A join judges one batch of keys at a time and reports only its last batch, so its counts are left out.
-    """
+def _semantic_report(report) -> dict[str, Any]:
+    """How a semantic condition ran, in terms an agent can weigh: exact, or possibly missing matches."""
 
     stats = report.stats
-    described: dict[str, Any] = {"plan": stats.plan.value, "exact": stats.shortlisted is None}
-    if not counts:
-        return described
-    described |= {
+    described: dict[str, Any] = {
+        "plan": stats.plan.value,
+        "exact": stats.shortlisted is None,
         "records_considered": stats.candidates_considered,
         "records_judged": stats.verified,
         "records_that_qualified": stats.qualified,
@@ -301,22 +302,21 @@ def _step(node) -> dict[str, Any]:
     return step
 
 
-def _page_size(query: Mapping[str, Any] | str) -> tuple[int | None, bool]:
-    """The page size a valid query asked for and whether it is a join, read leniently: the query has already run."""
+def _page_size(query: Mapping[str, Any] | str, default: int) -> int | None:
+    """The page size in force for a query that has already run: its page, bounded by ``constraints.maximum_results``."""
 
     if isinstance(query, str):
         try:
             query = json.loads(query)
         except ValueError:
-            return None, False
+            return None
     if not isinstance(query, Mapping):
-        return None, False
-    joined = bool(query.get("traverse"))
+        return None
     page = query.get("page")
     first = page.get("first") if isinstance(page, Mapping) else None
-    size = first if isinstance(first, int) and not isinstance(first, bool) else _PAGE.default_page_size
+    size = first if isinstance(first, int) and not isinstance(first, bool) else default
     constraints = query.get("constraints")
     cap = constraints.get("maximum_results") if isinstance(constraints, Mapping) else None
-    if joined and isinstance(cap, int) and not isinstance(cap, bool):      # only a join's page honours the cap
+    if isinstance(cap, int) and not isinstance(cap, bool):
         size = min(size, cap)
-    return size, joined
+    return size

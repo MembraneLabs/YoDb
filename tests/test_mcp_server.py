@@ -154,14 +154,16 @@ datasets:
 
 class HelperTests(unittest.TestCase):
     def test_the_page_size_is_what_the_query_asked_for_or_the_default(self) -> None:
-        self.assertEqual(_page_size({"from": {"dataset": "x"}}), (100, False))
-        self.assertEqual(_page_size({"page": {"first": 7}}), (7, False))
-        self.assertEqual(_page_size('{"page": {"first": 9}}'), (9, False))
+        self.assertEqual(_page_size({"from": {"dataset": "x"}}, 100), 100)
+        self.assertEqual(_page_size({"from": {"dataset": "x"}}, 25), 25)
+        self.assertEqual(_page_size({"page": {"first": 7}}, 100), 7)
+        self.assertEqual(_page_size('{"page": {"first": 9}}', 100), 9)
 
-    def test_only_a_join_honours_the_result_cap(self) -> None:
+    def test_the_page_size_is_bounded_by_the_result_cap(self) -> None:
         capped = {"page": {"first": 50}, "constraints": {"maximum_results": 5}}
-        self.assertEqual(_page_size(capped), (50, False))
-        self.assertEqual(_page_size({**capped, "traverse": [{"relationship": "r"}]}), (5, True))
+        self.assertEqual(_page_size(capped, 100), 5)
+        self.assertEqual(_page_size({**capped, "traverse": [{"relationship": "r"}]}, 100), 5)
+        self.assertEqual(_page_size({"constraints": {"maximum_results": 500}}, 100), 100)
 
     def test_bytes_and_numbers_json_cannot_carry_are_made_safe(self) -> None:
         self.assertEqual(cli._jsonable({"a": b"\x00\xff", "b": float("nan"), "c": float("inf"), "d": 1.5}), {"a": "AP8=", "b": None, "c": None, "d": 1.5})
@@ -172,9 +174,9 @@ class HelperTests(unittest.TestCase):
 
     def test_the_page_size_of_something_unreadable_is_unknown_not_a_crash(self) -> None:
         for odd in ("{", "[1]", "3"):
-            self.assertEqual(_page_size(odd), (None, False))
-        self.assertEqual(_page_size({"page": {"first": True}}), (100, False))
-        self.assertEqual(_page_size({"page": "x"}), (100, False))
+            self.assertIsNone(_page_size(odd, 100))
+        self.assertEqual(_page_size({"page": {"first": True}}, 100), 100)
+        self.assertEqual(_page_size({"page": "x"}, 100), 100)
 
     def test_an_error_is_one_line_with_the_code_the_place_and_the_message(self) -> None:
         error = QueryExecutionError(ErrorDetail(
@@ -195,7 +197,38 @@ class HelperTests(unittest.TestCase):
         from yodb.query.models import ComparisonOperator
 
         for operator in ComparisonOperator:
-            self.assertIn(operator.value, query_language(), operator)
+            self.assertIn(operator.value, query_language(open_db().limits), operator)
+
+    def test_the_query_guide_states_the_limits_of_the_engine_it_describes(self) -> None:
+        from yodb.planning import JoinPolicy, PlannerPolicy
+        from yodb.query import QueryValidationPolicy
+
+        runtime = StaticRuntime(ACTIVE)
+        engine = QueryExecutionEngine(
+            runtime, QueryCompilerRegistry([PostgresQueryCompiler()]), QueryExecutionAdapterRegistry([shop_world()]),
+            validation_policy=QueryValidationPolicy(default_page_size=20, maximum_page_size=60, maximum_in_values=30),
+            planner=FederatedPhysicalPlanner(SourcePlanningRegistry([PostgresPlanningAdapter()]), policy=PlannerPolicy(maximum_rows_per_source=777)),
+            join_policy=JoinPolicy(maximum_joined_rows=4321),
+        )
+        guide = query_language(YoDb(runtime, engine).limits)
+        for stated in ("default 20, at most 60", "a list of at most 30", "more than 777 rows from one source", "join more than 4,321"):
+            self.assertIn(stated, guide)
+        self.assertNotIn("@", guide)
+
+    def test_a_relationship_is_described_by_the_implementation_a_query_would_use(self) -> None:
+        from types import SimpleNamespace as N
+
+        edge = N(edge_type="KNOWS", from_endpoint=N(field="id"), to_endpoint=N(field="id"))
+        fields = N(edge_type=None, from_endpoint=N(field="id"), to_endpoint=N(field="customer_id"))
+        base = dict(from_dataset="customer", to_dataset="ticket", description="d", aliases=(), cardinality=N(value="one_to_many"), direction="uni")
+        from yodb.mcp_server import _describe_relationship
+
+        mixed = _describe_relationship(ACTIVE.catalog, N(**base, implementations=(edge, fields)))
+        self.assertTrue(mixed["traversable"])
+        self.assertEqual(mixed["on"], "customer.id = ticket.customer_id")
+        only_edges = _describe_relationship(ACTIVE.catalog, N(**base, implementations=(edge,)))
+        self.assertFalse(only_edges["traversable"])
+        self.assertIn("graph edges", only_edges["why_not"])
 
 
 @unittest.skipUnless(HAS_MCP, 'needs the "mcp" package, version 2 or later')
@@ -283,6 +316,15 @@ class QueryToolTests(unittest.TestCase):
         short = call("query", {"query": {"from": {"dataset": "customer"}, "select": ["name"], "page": {"first": 50}}})
         self.assertEqual(short.structured_content["row_count"], 8)
         self.assertNotIn("note", short.structured_content)
+
+    def test_the_result_cap_bounds_a_query_over_several_sources_and_the_note_says_so(self) -> None:
+        capped = {"from": {"dataset": "customer"}, "select": ["name", "plan"], "constraints": {"maximum_results": 2}, "page": {"first": 50}}
+        result = call("query", {"query": capped})
+        self.assertEqual(result.structured_content["rows"], [{"id": "c1", "name": "Ann", "plan": "pro"}, {"id": "c2", "name": "Bob", "plan": "basic"}])
+        self.assertIn("2 rows", result.structured_content["note"])
+        one_source = call("query", {"query": {**capped, "select": ["name"]}})
+        self.assertEqual(one_source.structured_content["row_count"], 2)
+        self.assertIn("note", one_source.structured_content)
 
     def test_no_rows_is_an_answer_not_an_error(self) -> None:
         result = call("query", {"query": {"from": {"dataset": "customer"}, "where": where("country", "eq", "ZZ")}})
@@ -411,7 +453,30 @@ class SemanticTests(unittest.TestCase):
             sorted((row["name"], row["t.subject"]) for row in result.structured_content["rows"]),
             [("Ann", "Invoice"), ("Ann", "Upgrade"), ("Bob", "Cancel"), ("Cai", "Refund")],
         )
-        self.assertEqual(result.structured_content["semantic"], {"plan": "verify_all", "exact": True})
+        report = result.structured_content["semantic"]
+        self.assertTrue(report["exact"])
+        self.assertEqual(report["records_that_qualified"], 4, "every batch of keys is counted, not only the last")
+        self.assertEqual(report["records_judged"], report["records_considered"])
+        self.assertGreater(report["records_judged"], 4)
+
+    def test_a_joins_semantic_report_adds_up_its_batches(self) -> None:
+        from yodb.planning import JoinPolicy
+
+        runtime = StaticRuntime(ACTIVE)
+        extensions = (SemanticExtension(SemanticRuntime(KeywordVerifier()), policy=SemanticPolicy()),)
+        engine = QueryExecutionEngine(
+            runtime, QueryCompilerRegistry([PostgresQueryCompiler()]), QueryExecutionAdapterRegistry([shop_world()]),
+            planner=FederatedPhysicalPlanner(SourcePlanningRegistry([PostgresPlanningAdapter()]), extensions=extensions),
+            extensions=extensions, join_policy=JoinPolicy(batch_size=2),          # 8 customers: four batches of keys
+        )
+        result = call("query", {"query": {
+            "from": {"dataset": "customer"}, "select": ["name"],
+            # a left join starts from the customers, so the tickets are judged batch by batch
+            "traverse": [{"relationship": "tickets", "as": "t", "select": ["subject"], "where": self.REFUND, "optional": True}]}},
+            db=YoDb(runtime, engine, semantic=True))
+        self.assertEqual(sum(row["t.id"] is not None for row in result.structured_content["rows"]), 4)
+        self.assertEqual(result.structured_content["semantic"]["records_that_qualified"], 4)
+        self.assertEqual(result.structured_content["semantic"]["records_judged"], 12, "the 12 tickets of customers c1..c8")
 
     def test_a_semantic_condition_on_a_field_that_is_not_eligible_is_refused(self) -> None:
         result = call("query", {"query": {
