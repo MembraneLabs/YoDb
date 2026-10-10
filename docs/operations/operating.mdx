@@ -1,7 +1,36 @@
 ---
 title: Running YoDb
-description: Connections, timeouts, pools, safety, and how it is tested.
+description: What to set up before you run YoDb for real: database roles, secrets, time limits and connection pools.
 ---
+
+This page is for the person who deploys YoDb. It covers what YoDb needs from
+your databases, how it protects them, and what to do when the catalog or the
+tables change.
+
+## Before you go live
+
+- Create a database role for YoDb that can only read (see below).
+- Keep connection strings in environment variables or a secret manager, never
+  in the catalog.
+- Run `ANALYZE` on the tables in the catalog, so YoDb can choose good plans.
+- Run `yodb validate catalog/` against the real databases.
+- Decide a time limit for queries (`--timeout`, or `timeout_seconds`).
+- Read [Limits](/reference/limits).
+
+## The database role
+
+Give YoDb its own role with `SELECT` on the tables in the catalog and nothing
+else:
+
+```sql
+CREATE ROLE yodb_ro LOGIN PASSWORD '...';
+GRANT USAGE ON SCHEMA public TO yodb_ro;
+GRANT SELECT ON public.customers, public.subscriptions TO yodb_ro;
+```
+
+YoDb also opens every session read-only, so it cannot write even with a role
+that could. The role is a second line of defence, and it limits what YoDb can
+read to the tables you chose.
 
 ## Connections and secrets
 

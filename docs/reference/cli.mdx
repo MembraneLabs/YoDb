@@ -1,7 +1,10 @@
 ---
 title: Command line
-description: The yodb command.
+description: The yodb command, its five subcommands, options and exit statuses.
 ---
+
+The `yodb` command is installed with the package. Each subcommand takes the
+catalog directory first.
 
 ```text
 yodb catalog  CATALOG                 what can be queried (no database needed)
@@ -14,6 +17,48 @@ yodb mcp      CATALOG                 serve the catalog to an AI agent over MCP
 `CATALOG` is a directory holding `datasets.yaml`, `sources.yaml` and
 `relations.yaml`. `QUERY` is JSON text, `@file.json`, or `-` for standard input.
 `python -m yodb` is the same command.
+
+## What each command prints
+
+`yodb catalog` lists every dataset and field, and the source each field comes
+from. It needs no database.
+
+```text
+catalog shop v1: 2 dataset(s), 3 source(s)
+
+customer  - A customer of the shop.
+  id         id                 from crm
+  plan       string             from billing
+  ...
+```
+
+`yodb validate` connects to each database and reports whether the catalog
+matches it.
+
+```text
+catalog shop v1: active
+  crm                  valid
+  billing              valid
+  support              valid
+```
+
+`yodb query` prints a table by default. `--format json` prints the rows and the
+query's fingerprint; `--format jsonl` prints one row per line.
+
+```text
+id   name             plan
+---  ---------------  ----
+c01  Ada Lovelace     pro
+(1 rows)
+```
+
+```json
+{"rows": [{"id": "c01", "name": "Ada Lovelace", "plan": "pro"}],
+ "query_fingerprint": "fa01beba5083..."}
+```
+
+`yodb explain` prints the plan, one step per line, without reading any data.
+See [How queries are planned](/query/planning) for how to read it.
 
 ## Connections
 

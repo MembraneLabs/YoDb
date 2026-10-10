@@ -1,9 +1,18 @@
 ---
 title: Catalog overview
-description: Understand the three YAML files, their shared rules, and how YoDb validates them.
+description: The three YAML files that describe your data, and the rules they share.
 ---
 
-A YoDb catalog is the approved, business-facing description of connected data.
+The catalog is how you tell YoDb about your data. It is a directory of three
+YAML files that you write and keep in version control. It says which datasets
+exist, which table and column each field comes from, and how datasets connect.
+
+Nothing outside the catalog can be queried. A table you did not map does not
+exist as far as YoDb is concerned.
+
+New to the terms? Read [Concepts](/getting-started/overview) first. For a
+complete, working catalog, see the [Quickstart](/getting-started/quickstart).
+
 It has exactly three files:
 
 ```text
@@ -13,13 +22,15 @@ catalog/
 └── relations.yaml  # approved ways datasets connect
 ```
 
-The files answer different questions and should not be merged together.
+The files answer different questions, and each is kept free of the others'
+concerns. That separation is what lets you move a column to another database
+by editing `sources.yaml` alone, without touching a single query.
 
 | File | Answers | Must not contain |
 | --- | --- | --- |
 | `datasets.yaml` | What does this dataset or field mean? | Table names, labels, columns, credentials. |
 | `sources.yaml` | Which source, resource, and physical field implement it? | Database URLs, passwords, copied schema metadata. |
-| `relations.yaml` | Which business relationships may YoDb use? | Arbitrary SQL, Cypher, or undeclared field access. |
+| `relations.yaml` | Which business relationships may YoDb use? | SQL, or a field that is not mapped in `sources.yaml`. |
 
 ```text
 business dataset → configured source → physical resource → physical field
@@ -30,10 +41,10 @@ customer         → crm_postgres     → public.accounts  → account_uuid
 Read [YAML syntax](/catalog/yaml-syntax) first if `{}`, `[]`, indentation, or
 the `-` list marker are unfamiliar.
 
-## The two layers: intent and facts
+## What you write, and what YoDb finds out
 
-The catalog is user-authored intent. PostgreSQL or Neo4j schema metadata is a
-separate source of facts.
+You write what you intend: "the customer's `id` is the column `account_uuid`".
+YoDb then reads the database to find out whether that is true.
 
 ```text
 Catalog YAML
@@ -48,9 +59,10 @@ Validation report
   says: the approved mapping is valid or lists exact findings
 ```
 
-Do not declare a PostgreSQL foreign key, index, nullability, column type, or
-Neo4j constraint in the catalog. YoDb discovers those facts from the source.
-The catalog only says which resources and fields YoDb is permitted to use.
+So the catalog never repeats what the database already knows. Do not write
+foreign keys, indexes, column types or nullability in it. YoDb reads those from
+the database. The catalog only says which tables and columns YoDb may use, and
+what they mean.
 
 ## Common rules
 
@@ -61,18 +73,32 @@ The catalog only says which resources and fields YoDb is permitted to use.
   than silently ignored.
 - `connection_ref` identifies externally managed connection settings; it is
   never a database URL, password, or token.
-- The catalog is closed-world: a physical resource or field that is not mapped
-  is unavailable to YoDb.
-- `visibility: internal` fields may support configured identity and
-  relationship execution but are not normal caller-facing fields.
+- Only what is mapped can be used. A table or column that is not in the
+  catalog is unavailable to YoDb and to every caller.
+- A field marked `visibility: internal` can be used to match rows, for an
+  identity or a relationship, but a query cannot select or filter on it.
 
-## What validation happens when
+## How the catalog is checked
 
-| Stage | Checks | Connects to a source? |
-| --- | --- | --- |
-| `load_catalog()` | YAML shape, required values, unknown keys, names, and cross-file references | No |
-| PostgreSQL inspection | Physical tables/views, columns, types, keys, foreign keys, indexes, extensions, and vector facts | Yes, read-only |
-| PostgreSQL catalog validation | Configured resources/fields exist; types are compatible; declared source identities are backed by a primary or unique key | Uses inspection snapshot only |
+| Step | Command | Checks | Connects to a database? |
+| --- | --- | --- | --- |
+| Loading | `yodb catalog` | The files are well formed, use only known keys, and agree with each other | No |
+| Validation | `yodb validate` | Every mapped table and column exists with a compatible type, and every `id` column is a primary key or unique | Yes, read-only |
+
+`yodb query`, `yodb mcp` and `yodb.connect` run both steps before they answer
+anything. If either fails, no query runs.
+
+## Writing your first catalog
+
+1. In `datasets.yaml`, list the datasets and fields you want callers to see,
+   with a description for each. Give every dataset an `id` field.
+2. In `sources.yaml`, add one source per database, and map each field to its
+   table and column. Then fill in `resolution` to say which source supplies
+   each field.
+3. In `relations.yaml`, declare how datasets connect. The file must declare at
+   least one relationship.
+4. Run `yodb catalog catalog/` until it lists your datasets, then
+   `yodb validate catalog/` until every source says `valid`.
 
 Continue with [datasets.yaml](/catalog/datasets),
 [sources.yaml](/catalog/sources), and [relations.yaml](/catalog/relations).

@@ -1,20 +1,24 @@
 ---
 title: YoDb
-description: A typed, explainable federated data layer for relational, semantic, and graph queries.
+description: Ask one question about data that lives in several PostgreSQL databases, without SQL.
 ---
 
-YoDb gives applications and agents one typed way to query connected data
-sources without migrating their data.
+YoDb lets an app or an AI agent ask one question about data that lives in
+several PostgreSQL databases. You do not write SQL, and your data is not copied
+anywhere.
 
-The first version is read-only. It is designed for:
+## The idea
 
-- relational reads from PostgreSQL;
-- semantic filtering with PostgreSQL, pgvector, and a verification model;
-- bounded graph traversal through PostgreSQL edge tables or Neo4j.
+A company's data is rarely in one place: customers in one database, billing in
+a second, support tickets in a third. No single SQL query can reach all three.
 
-YoDb does not expose raw SQL, Cypher, vector index names, or database
-credentials to callers. Instead, a developer defines a small catalog of
-datasets, sources, and relationships.
+With YoDb you describe the data once, in three YAML files called the *catalog*.
+After that you query named datasets, such as `customer` and `ticket`, and YoDb
+works out which databases to read, in what order, and how to join the answers.
+
+A query is a small piece of JSON that names datasets and fields. It never names
+a table and it is never SQL, so a caller cannot invent a join, write data, or
+see how the databases are laid out.
 
 <CardGroup cols={2}>
   <Card title="Get started" icon="play" href="/getting-started/quickstart">
@@ -25,22 +29,26 @@ datasets, sources, and relationships.
   </Card>
 </CardGroup>
 
-## What V0.1 does
+## What it does
 
-- Strict three-file catalog loading, and read-only inspection of PostgreSQL that
-  refuses to open a catalog that does not match the databases.
-- Typed queries over one logical dataset whose fields live in one or several
-  PostgreSQL databases: filters, ordering, paging, assembled by logical ID, with
-  a plan you can inspect.
-- [Joins](/query/joins) between two datasets over a relationship you declare, even when they
-  live in different databases or on different servers.
-- A cost-based planner that uses database statistics, falling back to fixed rules.
-- A semantic filter (a natural-language condition judged by a verifier you
-  supply), optionally shortlisted by vector search, with the vectors in the same
-  database or a separate one.
-- A `yodb` command and a Python front door, `yodb.connect`.
-- An [MCP server](/reference/mcp), `yodb mcp`, that lets an AI agent discover and query a catalog
-  without SQL or physical names.
+- **One dataset over several databases.** A dataset's fields can come from
+  different PostgreSQL databases. YoDb assembles each record by its ID.
+- **[Joins](/query/joins) across databases.** Follow a relationship you declared
+  between two datasets, even when they are on different servers.
+- **Filters, ordering and page size**, checked against the catalog before
+  anything reaches a database. See [Query model](/query/query-model).
+- **A [semantic filter](/query/semantic-filter).** A condition written as a
+  sentence, judged by a model you supply, with a cost and time budget.
+- **A plan you can read.** `yodb explain` shows which databases a query reads
+  and what each one is asked. See [How queries are planned](/query/planning).
+- **An [MCP server](/reference/mcp)** (`yodb mcp`), so an AI agent can discover
+  and query a catalog with no SQL and no table names.
+- **Read-only and bounded.** Every session is read-only, and every query has a
+  time limit and row limits. See [Running YoDb](/operations/operating).
 
-Graph traversal, cursor paging, aggregation, and the Neo4j adapter are not
-implemented; see [Limits](/reference/limits).
+## What it does not do yet
+
+PostgreSQL is the only supported database. There is no counting or totals, no
+next page, and one join step per query. Read [Limits](/reference/limits) before
+you rely on a query shape, and [Compatibility](/reference/compatibility) for
+which parts are stable.

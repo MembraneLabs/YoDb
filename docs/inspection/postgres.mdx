@@ -1,11 +1,22 @@
 ---
 title: PostgreSQL inspection
-description: Connect read-only, inspect PostgreSQL facts, and validate a catalog.
+description: What YoDb reads from a database to check your catalog against it.
 ---
 
-PostgreSQL inspection is separate from `load_catalog()`: static loading checks
-the three YAML files without network I/O, while inspection opens a read-only
-source connection and returns a factual snapshot.
+> **This page describes how YoDb works inside.** You do not need it to write a
+> catalog or a query. The classes it names are internal and may change; see
+> [Compatibility](/reference/compatibility).
+
+Before it answers any query, YoDb checks that your catalog is true: that every
+table and column you mapped exists and has a compatible type. To do that it
+reads the database's own description of its tables. This is called inspection,
+and `yodb validate` and `yodb.connect` both run it.
+
+Inspection reads table definitions only. It never reads your rows.
+
+It is a separate step from loading the catalog. Loading (`load_catalog()`)
+checks the three YAML files and needs no database. Inspection connects,
+read-only.
 
 ```text
 sources.yaml connection_ref

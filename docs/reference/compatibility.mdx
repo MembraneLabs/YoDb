@@ -8,7 +8,7 @@ parts may still move. Every part of YoDb is in one of three tiers.
 
 | Tier | What it means |
 | --- | --- |
-| **Stable** | Does not break within 0.x without a deprecation first (see [Changing a stable part](#changing-a-stable-part)). |
+| **Stable** | Does not break within 0.x without a deprecation first (see "Changing a stable part" below). |
 | **Experimental** | Documented and usable, but may change in any release. The changelog says when it does. |
 | **Internal** | No promise. It can change or disappear in any release. |
 
@@ -65,7 +65,8 @@ change in any release. Do not match on them.
 
 ### The Python API
 
-The names exported from the top-level `yodb` package:
+The names exported from the top-level `yodb` package, described in
+[Python API](/reference/python):
 
 - `yodb.connect` and `YoDb`, with `query`, `explain`, `describe`, `status`,
   `refresh`, `close`, and the `catalog`, `limits` and `semantic_enabled`

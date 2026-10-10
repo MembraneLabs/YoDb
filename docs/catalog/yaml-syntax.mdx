@@ -1,7 +1,10 @@
 ---
 title: YAML syntax
-description: Read the YAML patterns used by every YoDb catalog file.
+description: The few YAML patterns the catalog files use. Skip this if you know YAML.
 ---
+
+The catalog files are written in YAML. This page covers the parts of YAML they
+use. If you already read YAML comfortably, skip it.
 
 YAML represents two basic shapes:
 
@@ -56,9 +59,8 @@ identity: [country_code, external_customer_id]
 
 ## A list of objects
 
-`implementations` is a list because the same business relationship can have
-more than one approved physical implementation. For example, it may be
-resolvable through PostgreSQL field equality and later through a Neo4j edge.
+`implementations` is a list because the same relationship can be matched in
+more than one place. Each item is an object with a `from` and a `to`.
 
 ```yaml
 implementations:
@@ -70,12 +72,11 @@ implementations:
       field: customer_account_key
 
   - from:
-      source: relationship_graph
+      source: crm_postgres
       field: account_key
     to:
-      source: relationship_graph
-      field: id
-    edge_type: HAS_TICKET
+      source: archive_postgres
+      field: customer_account_key
 ```
 
 `from` and `to` are mappings with exactly two keys: `source` and `field`.

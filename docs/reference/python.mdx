@@ -1,0 +1,241 @@
+---
+title: Python API
+description: yodb.connect, the client it returns, results and errors.
+---
+
+Everything you need is on the top-level `yodb` package.
+
+```python
+import yodb
+
+with yodb.connect("catalog/") as db:
+    result = db.query({
+        "from": {"dataset": "customer"},
+        "select": ["name", "plan"],
+        "where": {"field": "country", "op": "eq", "value": "UK"},
+    })
+    for row in result.rows:
+        print(row["id"], row["name"], row["plan"])
+```
+
+```text
+c01 Ada Lovelace pro
+c03 Alan Turing free
+c10 Tim Berners-Lee pro
+```
+
+## `yodb.connect`
+
+```python
+db = yodb.connect(catalog, connections=None, *, semantic=None, statistics=True,
+                  pool_size=10, acquire_timeout_seconds=30.0, statement_timeout_seconds=60.0)
+```
+
+`connect` loads the catalog, connects to every database in it, and checks that
+the catalog matches them. It returns a `YoDb` client, or raises if anything is
+wrong. No query can run against a catalog that did not validate.
+
+| Argument | Default | Meaning |
+| --- | --- | --- |
+| `catalog` | required | Path of the directory holding the three YAML files |
+| `connections` | `None` | Where connection strings come from. See below |
+| `semantic` | `None` | A `SemanticRuntime`, to allow [semantic conditions](/query/semantic-filter) |
+| `statistics` | `True` | Use the databases' statistics to choose plans. `False` uses fixed rules only |
+| `pool_size` | `10` | The most connections YoDb keeps open to each database |
+| `acquire_timeout_seconds` | `30.0` | How long a query waits for a free connection |
+| `statement_timeout_seconds` | `60.0` | The longest one database statement may run. `None` for no limit |
+
+`connect` also accepts `planner_policy`, `execution_policy` and `join_policy` to
+change the row limits. These are
+[experimental](/reference/compatibility).
+
+### Connections
+
+The catalog names each database with a `connection_ref`. There are three ways
+to say what each one connects to.
+
+**Environment variables** (the default). The reference `crm` is read from
+`YODB_CONN_CRM`. The name is upper-cased and every character that is not a
+letter or digit becomes `_`, so `crm-readonly` is `YODB_CONN_CRM_READONLY`.
+
+```python
+db = yodb.connect("catalog/")
+```
+
+**A dictionary** of reference to connection string:
+
+```python
+db = yodb.connect("catalog/", {
+    "crm": "host=db1 dbname=crm user=yodb_ro password=...",
+    "billing": "postgresql://yodb_ro:...@db2/billing",
+})
+```
+
+**Your own resolver**, for a secret manager. It is any object with a
+`resolve(ref)` method that returns a `PostgresConnectionSettings`:
+
+```python
+from yodb.connections import PostgresConnectionSettings
+
+class VaultResolver:
+    def resolve(self, connection_ref: str) -> PostgresConnectionSettings:
+        return PostgresConnectionSettings(conninfo=read_secret(connection_ref))
+
+db = yodb.connect("catalog/", VaultResolver())
+```
+
+A connection string is a libpq string (`host=... dbname=...`) or a
+`postgresql://` URI. Use a database role that can only read.
+
+## The client
+
+Use the client in a `with` block, or call `db.close()` when you are done. One
+client can be shared between threads.
+
+### `db.query(query, *, timeout_seconds=None)`
+
+Runs a [query](/query/query-model) and returns a `QueryExecutionResult`.
+
+`query` is a dictionary, or the same thing as JSON text. `timeout_seconds` is a
+limit for the whole query, across every database it reads. When it runs out the
+query fails with `query_timeout`.
+
+```python
+result = db.query(query, timeout_seconds=5)
+```
+
+### `db.explain(query)`
+
+Returns the plan for a query as a `PlanExplanation`, without reading any data.
+
+```python
+plan = db.explain(query)
+print(plan.plan_kind)
+for node in plan.nodes:
+    print(node.kind, node.location, node.fields, node.pushed_filter_fields)
+print(plan.optimizer)
+```
+
+See [How queries are planned](/query/planning) for how to read it.
+
+### `db.describe()`
+
+Returns what can be queried: each dataset with its description and its fields'
+types.
+
+```python
+{"customer": {"description": "A customer of the shop.",
+              "fields": {"id": {"type": "id"}, "name": {"type": "string"}, ...}},
+ "ticket": {...}}
+```
+
+A field that allows a semantic condition also has `"semantic": True`.
+
+### `db.status()`
+
+Returns the catalog's name and version, and whether each source validated.
+
+```python
+{"catalog": {"name": "shop", "version": 1},
+ "evaluated_at": "2026-10-10T02:44:48.594891+00:00",
+ "sources": {"crm": "valid", "billing": "valid", "support": "valid"}}
+```
+
+### `db.refresh()`
+
+Reads the catalog files again and checks them against the databases again. Call
+it after you change the catalog or a table.
+
+If the new catalog validates, it replaces the old one. If it does not, the old
+one stays in use and queries keep working. The returned `CatalogRefreshResult`
+has a `status` of `activated`, `rejected` or `load_failed`.
+
+```python
+result = db.refresh()
+if result.status.value != "activated":
+    print("still using the previous catalog")
+```
+
+### Properties
+
+| Property | Value |
+| --- | --- |
+| `db.catalog` | The loaded `Catalog`: its datasets, sources and relationships |
+| `db.limits` | The row and page limits in force, as a dictionary. See [Limits](/reference/limits) |
+| `db.semantic_enabled` | `True` if a semantic filter was configured |
+
+```python
+>>> db.limits
+{'default_page_size': 100, 'maximum_page_size': 500, 'maximum_in_values': 1000,
+ 'maximum_rows_per_source': 10000, 'maximum_coordinator_rows': 50000,
+ 'maximum_join_driver_rows': 10000, 'maximum_joined_rows': 50000}
+```
+
+## Results
+
+`db.query` returns a `QueryExecutionResult`.
+
+| Attribute | Meaning |
+| --- | --- |
+| `rows` | A tuple of rows. Each row is a read-only mapping of field name to value |
+| `query_fingerprint` | An identifier for the query's meaning. Two queries that differ only in key order or page size share one |
+| `catalog_fingerprint` | An identifier for the catalog the query ran against |
+| `reports` | Extra information from the semantic filter, under `reports["semantic"]`. Empty otherwise |
+
+Values come back as Python values: `str`, `int`, `float`, `bool`,
+`datetime.datetime` for a timestamp, and `None` for no value. In a
+[join](/query/joins), the second dataset's fields have keys such as
+`"ticket.subject"`.
+
+## Errors
+
+Every error YoDb raises on purpose is a `yodb.YoDbError`.
+
+```python
+try:
+    db.query({"from": {"dataset": "customer"}, "select": ["nam"]})
+except yodb.YoDbError as error:
+    print(error.code.value)        # field_not_found
+    print(error.detail.location)   # select[0]
+    print(error.detail.message)    # Unknown field 'nam' on dataset 'customer'.
+    print(error.retryable)         # False
+```
+
+| Attribute | Meaning |
+| --- | --- |
+| `error.code` | An `ErrorCode`. Its `.value` is the text code listed in [Errors](/reference/errors) |
+| `error.retryable` | `True` if sending the same query again might work |
+| `error.detail.message` | A message for a person. Do not match on its wording |
+| `error.detail.location` | Where in the query the problem is, when it applies |
+| `error.detail.source_name` | Which source failed, when it applies |
+
+The subclasses say which stage failed:
+
+| Class | Raised when |
+| --- | --- |
+| `QueryError` | The query is not valid: an unknown field, a wrong type, a shape YoDb cannot plan |
+| `QueryExecutionError` | The query was valid but could not be run: a timeout, a row limit, a database failure |
+| `SourceConnectionError` | A database could not be reached, or refused the credentials, while running a query |
+| `SourceInspectionError` | A database's tables could not be read while checking the catalog |
+| `CatalogRuntimeError` | `connect` could not open the catalog: it does not match the databases, or a database could not be reached. `error.detail.details["sources"]` lists the problems for each source |
+
+`CatalogValidationError` is separate. It is raised when the YAML files
+themselves are wrong, and it is a `ValueError`.
+
+## Loading a catalog without a database
+
+`load_catalog` reads and checks the three files only. It makes no connection,
+so it is safe to run in a test or in CI.
+
+```python
+from yodb import load_catalog
+
+catalog = load_catalog("catalog/")
+print(list(catalog.datasets))        # ['customer', 'ticket']
+```
+
+## What is stable
+
+The names on this page are the public API. Anything you import from a
+subpackage such as `yodb.planning` or `yodb.execution` is internal and may
+change. See [Compatibility](/reference/compatibility).

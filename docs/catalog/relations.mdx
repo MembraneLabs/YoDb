@@ -1,11 +1,18 @@
 ---
 title: relations.yaml
-description: Define approved relational field matches and Neo4j graph edges.
+description: Declare how datasets connect, so that queries can join them.
 ---
 
-`relations.yaml` defines business relationships between datasets. It does not
-grant access to arbitrary tables or columns: every endpoint field must already
-be mapped in `sources.yaml`.
+`relations.yaml` declares how datasets connect: a ticket belongs to a customer,
+an order has line items. A query can join two datasets only over a relationship
+declared here. See [Joins](/query/joins) for how a query uses one.
+
+A relationship names two fields that must be equal. Both fields must already be
+mapped in [`sources.yaml`](/catalog/sources); a relationship cannot reach a
+column that is not in the catalog.
+
+The file is required, and it must declare at least one relationship. A catalog
+with no relationships does not load (`relationships must not be empty`).
 
 ```yaml
 api_version: yodb/v0.1
@@ -24,9 +31,6 @@ relationships:
         to:
           source: support_postgres
           field: customer_account_key
-      - from: {source: relationship_graph, field: account_key}
-        to: {source: relationship_graph, field: id}
-        edge_type: HAS_TICKET
 ```
 
 ## Relationship attributes
@@ -41,9 +45,13 @@ relationships:
 | `direction` | Yes | `uni` or `bi` | Traversal direction policy. |
 | `implementations` | Yes | Non-empty list | Approved physical ways to resolve it. |
 
-`direction: uni` permits traversal from `from` to `to` (see [Joins](/query/joins) for how a query uses a relationship). `direction: bi`
-permits traversal in both directions. `cardinality` is always required even
-though V0.1 is read-only; it records business semantics.
+`direction: uni` lets a query go from the `from` dataset to the `to` dataset
+only. `direction: bi` lets a query go either way: from a customer to its
+tickets, or from a ticket to its customer.
+
+`cardinality` says how many records can be on each side. `one_to_many` here
+means one customer has many tickets. It is required, and it is shown to people
+and agents so they know whether a join can repeat a row.
 
 ## Field-equality implementation
 
@@ -60,12 +68,16 @@ This does **not** require a PostgreSQL foreign key. A foreign key may exist and
 will be reported by inspection, but the catalog relationship is what explicitly
 authorizes YoDb to use the match.
 
-## Neo4j edge implementation
+## What a query can follow
 
-Adding `edge_type` means the implementation traverses a named Neo4j edge.
-The loader requires one Neo4j source for both endpoints, that source must
-represent both datasets, and `edge_type` must be non-empty.
+A query can follow a relationship when:
 
-There is no `kind: key_match`, `kind: edge`, source-binding, target-binding, or
-per-implementation direction attribute. `edge_type` is the only switch between
-a field match and a graph-edge implementation.
+- the two fields have the same type (the catalog refuses to load otherwise);
+- both fields are public, because YoDb has to read the key.
+
+## Graph edges (not available)
+
+The loader accepts an `edge_type` key on an implementation, meant for a
+relationship stored as an edge in a graph database. There is no graph adapter,
+so a query cannot follow such a relationship; it is refused with
+`query_feature_not_supported`. Leave `edge_type` out.

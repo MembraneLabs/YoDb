@@ -1,11 +1,20 @@
 ---
 title: Catalog runtime
-description: Load, inspect, validate, and activate one catalog snapshot in memory.
+description: How a catalog is loaded, checked and put into use, all or nothing.
 ---
 
-`InMemoryCatalogRuntime` is the central read-only coordinator for a configured
-catalog. It holds the parsed `Catalog`, factual source-inspection snapshots,
-and source validation reports together in process memory.
+> **This page describes how YoDb works inside.** You do not need it to write a
+> catalog or a query. The classes it names are internal and may change; see
+> [Compatibility](/reference/compatibility).
+
+The catalog runtime is the part that decides which catalog queries run against.
+Its rule is all or nothing: a catalog is put into use only when every source in
+it validates. If a new version fails, the previous one stays in use.
+`yodb.connect` creates the runtime, and `db.refresh()` asks it to try again.
+
+`InMemoryCatalogRuntime` holds three things together in memory: the loaded
+`Catalog`, what inspection found in each source, and each source's validation
+report.
 
 ```text
 datasets.yaml + sources.yaml + relations.yaml
@@ -49,9 +58,9 @@ The aggregate result is one of:
 - `load_failed`: the three YAML files could not be statically loaded. No
   candidate is created, and any prior active snapshot is retained.
 
-## Wiring PostgreSQL
+## Building a runtime by hand
 
-The coordinator selects inspection adapters; it does not resolve secrets or
+`yodb.connect` does this for you. The runtime selects inspection adapters; it does not resolve secrets or
 open database connections itself. A PostgreSQL inspector is constructed with a
 `PostgresConnectionAdapter`, which owns its bounded connection pool. Then both
 the inspector and its validator are registered together for `postgres`:

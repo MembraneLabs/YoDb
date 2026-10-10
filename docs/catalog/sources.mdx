@@ -3,9 +3,16 @@ title: sources.yaml
 description: Map approved datasets and fields to read-only physical source locations.
 ---
 
-`sources.yaml` connects business fields from `datasets.yaml` to approved
-physical resources. It does not copy source schema facts such as foreign keys,
-indexes, types, or nullability; those are discovered by read-only inspection.
+`sources.yaml` says where each field lives. It lists your databases, and maps
+every field from [`datasets.yaml`](/catalog/datasets) to a table and column in
+one of them.
+
+It has two parts. `sources` describes each database. `resolution` then says,
+for each dataset, which source supplies each field. `resolution` matters when a
+dataset is spread over more than one database.
+
+You do not copy the database's own details here. Column types, indexes and
+foreign keys are read from the database when the catalog is validated.
 
 ```yaml
 api_version: yodb/v0.1
@@ -35,7 +42,7 @@ resolution:
 
 | Path | Required | Allowed value | Meaning |
 | --- | --- | --- | --- |
-| `sources.<name>.kind` | Yes | `postgres` or `neo4j` | Selects the database adapter. |
+| `sources.<name>.kind` | Yes | `postgres` | The kind of database. PostgreSQL is the only kind YoDb can read. |
 | `connection_ref` | Yes | Non-empty opaque string | Reference resolved outside catalog YAML. |
 | `read_only` | Yes | Exactly `true` | V0.1 never writes to a source. |
 | `datasets` | Yes | Non-empty mapping | Datasets represented by this source. |
@@ -44,10 +51,11 @@ resolution:
 | `fields` | Yes | Mapping of dataset field to `physical_name` | Approved physical field locations. |
 | `physical_name` | Yes | Non-empty string | Exact source column or property. |
 
-| Source kind | `resource` | `physical_name` |
-| --- | --- | --- |
-| `postgres` | Schema-qualified table or view, such as `public.accounts` | Column, such as `account_uuid` |
-| `neo4j` | Node label, such as `Customer` | Node property, such as `crmAccountUuid` |
+For PostgreSQL, `resource` is a table or view with its schema, such as
+`public.accounts`, and `physical_name` is a column, such as `account_uuid`.
+
+The loader also accepts `kind: neo4j`, but there is no Neo4j adapter. A catalog
+that uses it loads and then fails validation.
 
 ## `connection_ref` is not a credential
 
@@ -65,9 +73,23 @@ returns or the configured timeout produces `connection_pool_timeout`.
 
 ## Identity and resolution
 
-A dataset may be represented in multiple sources. The `resolution` mapping
-chooses exactly one source for each returned field and exactly one source for
-the dataset identity.
+`identity: [id]` says which of the source's fields identifies one record. YoDb
+uses it to match the same record across sources.
+
+A dataset can appear in more than one source. `resolution` then picks, for each
+field, the one source that supplies it, and one **identity source** that
+decides which records exist. In the sample shop, `crm` is the identity source
+for `customer` and supplies most fields, and `billing` supplies `plan`:
+
+```yaml
+resolution:
+  customer:
+    identity_source: crm
+    field_sources: {id: crm, name: crm, country: crm, signed_up: crm, plan: billing}
+```
+
+A customer with no row in `billing` still appears, with an empty `plan`. A row
+in `billing` for a customer that `crm` does not have is ignored.
 
 Rules enforced by the loader:
 
@@ -82,7 +104,7 @@ Rules enforced by the loader:
 During PostgreSQL validation, the physical columns backing the declared
 identity must be a primary key or unique constraint.
 
-## Closed-world mapping
+## Only mapped columns exist
 
 If `public.accounts` also has `billing_contact_email` but it is not in this
 file, YoDb cannot expose or use it. Add a declared dataset field and explicit

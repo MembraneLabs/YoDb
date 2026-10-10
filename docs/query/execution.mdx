@@ -1,12 +1,18 @@
 ---
 title: Query execution
-description: Run supported structured queries through YoDb's central execution engine.
+description: The steps a query goes through, and the parts that carry them out.
 ---
 
-The central execution engine is the supported route from a caller's structured
-logical query to normalized logical rows. It owns the orchestration but never
-contains SQL, Cypher, credentials, connection-pool logic, or database-driver
-objects.
+> **This page describes how YoDb works inside.** You do not need it to write a
+> catalog or a query. The classes it names are internal and may change; see
+> [Compatibility](/reference/compatibility).
+
+The execution engine takes a query and returns rows. `yodb.connect` builds one
+for you, so most users never touch it directly; see
+[Python API](/reference/python). This page shows what `connect` assembles.
+
+The engine coordinates the steps below. It holds no SQL, passwords or database
+driver objects itself: those live in the adapters.
 
 ```text
 structured query
@@ -19,10 +25,10 @@ structured query
   → normalized logical rows
 ```
 
-## Creating the PostgreSQL path
+## Building an engine by hand
 
-An application wires each concern once at process startup. The catalog runtime
-must already have activated a validated catalog.
+`yodb.connect` does this for you. Build it by hand only to replace a part. The
+catalog runtime must already hold a validated catalog.
 
 ```python
 from yodb.compilation import PostgresQueryCompiler, QueryCompilerRegistry
@@ -76,15 +82,13 @@ Four registry-selected adapter categories isolate providers:
 | compiler adapter | native query construction and parameter binding |
 | execution adapter | running native work and normalizing native result rows |
 
-PostgreSQL is the first implementation of both compiler and execution
-adapters. A future Neo4j, MongoDB, or other backend provides equivalent
-adapters under the same interfaces; the structured caller query and central
-engine do not become database-specific.
+PostgreSQL is the only implementation today. Support for another database
+would be a new set of these four adapters. The query format and the engine
+would not change.
 
-## V0.1 execution boundary
+## How a query over several sources runs
 
-V0.1 executes both single-source PostgreSQL queries and a bounded baseline
-multi-source shape for one logical dataset. The engine has one source-local
+YoDb runs queries that need one source and queries that need several. The engine has one source-local
 `RemoteScan` per participating representation. It assembles contributor rows
 onto the identity-source records by the declared logical `id`, then applies
 any filter the sources did not enforce, the global order, and the page locally
@@ -112,10 +116,11 @@ residual predicate exists, the planner does not push ordering or paging ahead
 of it; it uses a bounded remote scan instead. This is slower than native text
 pushdown but preserves logical results.
 
-Cost-based read ordering and the semantic filter are described in
-[How queries are planned](/query/planning) and [Semantic filter](/query/semantic-filter).
-Relationship traversal, cursor pagination, parallel scan scheduling, and
-non-PostgreSQL adapters remain future work; see [Limits](/reference/limits).
+Choosing the read order by cost is described in
+[How queries are planned](/query/planning), joins between datasets in
+[Joins](/query/joins), and the semantic filter in
+[Semantic filter](/query/semantic-filter). Reads run one after another, not in
+parallel; see [Limits](/reference/limits).
 
 ## Bounds and explain
 
