@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.1 (unreleased)
 
 ### Added
 - MCP server: `yodb mcp CATALOG` serves a catalog to an AI agent over the Model Context Protocol
@@ -23,6 +23,17 @@
 - A semantic condition sent to a YoDb with no semantic filter is refused with
   "The query has a semantic condition, but nothing is configured to answer one."
   (it named an internal class before).
+- The top-level `yodb` package exports only the public surface: `connect`, `YoDb`, the result and
+  explanation types, the catalog loader and the errors. Everything else is imported from its own
+  subpackage (for example `from yodb.inspection import PostgresSourceInspector`) and is internal.
+- `docs/reference/compatibility.mdx` says which parts are stable, experimental or internal.
+
+### Removed
+- `page.after`. It was accepted and then refused with `query_feature_not_supported`; `page` now takes
+  `first` only, and `after` is refused as an unknown key (`query_shape_invalid`).
+- `constraints.allow_partial_results`. It was accepted and never used.
+- The error code `cursor_query_mismatch`. It was never raised.
+- Query fingerprints differ from 0.1.0, because the removed option was part of what they covered.
 
 ## 0.1.0
 

@@ -3,20 +3,8 @@ from __future__ import annotations
 from datetime import UTC, datetime
 import unittest
 
-from yodb import (
-    ErrorCode,
-    ErrorDetail,
-    FindingSeverity,
-    InspectionCapability,
-    PhysicalField,
-    PhysicalKey,
-    PhysicalResource,
-    ResourceKind,
-    SourceInspection,
-    SourceInspectionError,
-    SourceValidationReport,
-    ValidationFinding,
-)
+from yodb import ErrorCode, ErrorDetail, SourceInspectionError
+from yodb.inspection import FindingSeverity, InspectionCapability, PhysicalField, PhysicalKey, PhysicalResource, ResourceKind, SourceInspection, SourceValidationReport, ValidationFinding
 from yodb.catalog import SourceKind
 
 

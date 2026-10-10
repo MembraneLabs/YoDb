@@ -8,8 +8,8 @@ limits below and refuses, with a clear error, what it cannot do safely.
 
 ## Queries
 
-- **No cursor paging.** `page.after` is refused (`query_feature_not_supported`).
-  Ask for up to 500 rows with `page.first`.
+- **No next page.** `page` takes `first` only; there are no cursors. Ask for up
+  to 500 rows with `page.first`.
 - **Joins** (`traverse`, see [Joins](/query/joins)) are one step per query, flat rows,
   over a field-equality relationship on public fields of the same type, with the driving
   side at most 10,000 rows and at most 50,000 joined rows. Two large unfiltered datasets

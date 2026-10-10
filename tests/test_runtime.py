@@ -5,26 +5,9 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
 
-from yodb import (
-    CatalogRuntimeError,
-    ErrorCode,
-    ErrorDetail,
-    FindingSeverity,
-    InMemoryCatalogRuntime,
-    InspectionAdapterBinding,
-    InspectionRequest,
-    PhysicalField,
-    PhysicalKey,
-    PhysicalResource,
-    RefreshStatus,
-    ResourceKind,
-    SourceInspection,
-    SourceInspectionError,
-    SourceInspectionRegistry,
-    SourceRuntimeStatus,
-    SourceValidationReport,
-    ValidationFinding,
-)
+from yodb import CatalogRuntimeError, ErrorCode, ErrorDetail, SourceInspectionError
+from yodb.inspection import FindingSeverity, InspectionAdapterBinding, InspectionRequest, PhysicalField, PhysicalKey, PhysicalResource, ResourceKind, SourceInspection, SourceInspectionRegistry, SourceValidationReport, ValidationFinding
+from yodb.runtime import InMemoryCatalogRuntime, RefreshStatus, SourceRuntimeStatus
 from yodb.catalog import SourceKind
 
 

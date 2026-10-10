@@ -99,17 +99,11 @@ class PostgresQueryCompilerTests(unittest.TestCase):
 
         self.assertEqual(compiled.parameters, (10,))
 
-    def test_rejects_multi_source_cursor_and_not_yet_compiled_text_operators(self) -> None:
+    def test_rejects_multi_source_and_not_yet_compiled_text_operators(self) -> None:
         multi = _single_source_query(shape=QuerySourceShape.MULTI_SOURCE)
         with self.assertRaises(QueryError) as multi_error:
             self.compiler.compile(multi)
         self.assertEqual(multi_error.exception.code, ErrorCode.QUERY_SOURCE_SHAPE_UNSUPPORTED)
-
-        cursor = _single_source_query(after="signed_cursor")
-        with self.assertRaises(QueryError) as cursor_error:
-            self.compiler.compile(cursor)
-        self.assertEqual(cursor_error.exception.code, ErrorCode.QUERY_COMPILATION_UNSUPPORTED)
-        self.assertEqual(cursor_error.exception.detail.location, "page.after")
 
         text = _single_source_query(
             where=BoundPredicate(
@@ -124,7 +118,6 @@ class PostgresQueryCompilerTests(unittest.TestCase):
 def _single_source_query(
     *,
     where: object | None = None,
-    after: str | None = None,
     maximum_results: int | None = None,
     shape: QuerySourceShape = QuerySourceShape.SINGLE_SOURCE,
 ) -> SourceResolvedQuery:
@@ -147,7 +140,7 @@ def _single_source_query(
             BoundOrderTerm(_field("name", LogicalType.STRING), SortDirection.ASC),
             BoundOrderTerm(_field("id", LogicalType.ID), SortDirection.ASC),
         ),
-        page=PageRequest(first=25, after=after),
+        page=PageRequest(first=25),
         constraints=QueryConstraints(maximum_results=maximum_results),
         query_fingerprint="query",
         catalog_fingerprint="catalog",

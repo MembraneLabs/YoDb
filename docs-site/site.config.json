@@ -108,6 +108,10 @@
         {
           "path": "reference/limits",
           "label": "Limits"
+        },
+        {
+          "path": "reference/compatibility",
+          "label": "Compatibility"
         }
       ]
     },

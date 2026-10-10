@@ -64,15 +64,6 @@ class FederatedPhysicalPlanner:
 
     def plan(self, resolved: SourceResolvedQuery) -> PlannedQuery:
         query = resolved.query
-        if query.page.after is not None:
-            raise QueryError(
-                ErrorDetail(
-                    code=ErrorCode.QUERY_FEATURE_NOT_SUPPORTED,
-                    message="Cursor execution is unavailable until signed cursor verification is implemented.",
-                    retryable=False,
-                    location="page.after",
-                )
-            )
         # 1. Extensions claim their terms; the spine plans everything else exactly as usual.
         core, claims = resolved, []
         for extension in self._extensions:

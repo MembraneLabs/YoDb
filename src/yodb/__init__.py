@@ -1,27 +1,11 @@
 """YoDb: a read-only, typed, explainable query layer over several databases.
 
-``yodb.connect(catalog_dir)`` is the short path; see ``yodb.client``.
+``yodb.connect(catalog_dir)`` is the way in; see ``yodb.client``.  The names below are the
+stable public surface (docs: reference/compatibility).  Everything else lives in its own
+subpackage (``yodb.planning``, ``yodb.inspection``, ...) and may change between versions.
 """
 
 from .catalog import Catalog, CatalogValidationError, load_catalog
-from .connections import (
-    EnvPostgresConnectionResolver,
-    ConnectionReferenceResolver,
-    ConnectionAdapterRegistry,
-    MappingPostgresConnectionResolver,
-    PostgresConnectionAdapter,
-    PostgresConnectionReferenceResolver,
-    PostgresConnectionSettings,
-    SourceConnectionAdapter,
-)
-from .compilation import (
-    CompiledOutputColumn,
-    CompiledPostgresQuery,
-    CompiledQuery,
-    PostgresQueryCompiler,
-    QueryCompilerAdapter,
-    QueryCompilerRegistry,
-)
 from .errors import (
     CatalogRuntimeError,
     ErrorCode,
@@ -32,142 +16,45 @@ from .errors import (
     SourceInspectionError,
     YoDbError,
 )
-from .execution import (
-    PostgresQueryExecutionAdapter,
-    QueryExecutionAdapter,
-    QueryExecutionAdapterRegistry,
-    QueryExecutionEngine,
-    QueryExecutionResult,
-)
-from .query import (
-    BoundQuery,
-    FieldUse,
-    LogicalIdLink,
-    QueryRequest,
-    QuerySourceShape,
-    QueryValidationPolicy,
-    ResolvedField,
-    SingleSourceQueryBinding,
-    SourceResolvedQuery,
-    bind_query,
-    parse_query,
-    resolve_query_sources,
-    validate_query,
-)
-from .inspection import (
-    FindingSeverity,
-    InspectionCapability,
-    InspectionRequest,
-    GraphRelationshipType,
-    PhysicalCheckConstraint,
-    PhysicalField,
-    PhysicalForeignKey,
-    PhysicalIndex,
-    PhysicalKey,
-    PhysicalResource,
-    PhysicalUniqueConstraint,
-    PostgresCatalogValidator,
-    PostgresSourceInspector,
-    ResourceKind,
-    InspectionAdapterBinding,
-    SourceCatalogValidator,
-    SourceInspection,
-    SourceInspectionRegistry,
-    SourceInspector,
-    SourceValidationReport,
-    ValidationFinding,
-)
-from .runtime import (
-    CatalogEvaluation,
-    CatalogRefreshResult,
-    InMemoryCatalogRuntime,
-    RefreshStatus,
-    SourceRuntimeState,
-    SourceRuntimeStatus,
-)
+
+__version__ = "0.1.1"
 
 __all__ = [
     "YoDb",
     "connect",
     "Catalog",
-    "CatalogEvaluation",
     "CatalogRefreshResult",
     "CatalogRuntimeError",
     "CatalogValidationError",
-    "ConnectionReferenceResolver",
-    "CompiledOutputColumn",
-    "CompiledPostgresQuery",
-    "CompiledQuery",
-    "ConnectionAdapterRegistry",
-    "EnvPostgresConnectionResolver",
     "ErrorCode",
     "ErrorDetail",
+    "PlanExplanation",
+    "PlanExplanationNode",
     "QueryError",
     "QueryExecutionError",
-    "FindingSeverity",
-    "GraphRelationshipType",
-    "InspectionCapability",
-    "InspectionAdapterBinding",
-    "InspectionRequest",
-    "MappingPostgresConnectionResolver",
-    "InMemoryCatalogRuntime",
-    "PhysicalField",
-    "PhysicalCheckConstraint",
-    "PhysicalForeignKey",
-    "PhysicalIndex",
-    "PhysicalKey",
-    "PhysicalResource",
-    "PhysicalUniqueConstraint",
-    "PostgresCatalogValidator",
-    "PostgresQueryCompiler",
-    "PostgresQueryExecutionAdapter",
-    "PostgresConnectionAdapter",
-    "PostgresConnectionReferenceResolver",
-    "PostgresConnectionSettings",
-    "PostgresSourceInspector",
-    "ResourceKind",
-    "RefreshStatus",
-    "SourceCatalogValidator",
-    "SourceConnectionAdapter",
+    "QueryExecutionResult",
     "SourceConnectionError",
     "SourceInspectionError",
-    "SourceInspection",
-    "SourceInspectionRegistry",
-    "SourceInspector",
-    "SourceValidationReport",
-    "SourceRuntimeState",
-    "SourceRuntimeStatus",
-    "ValidationFinding",
     "YoDbError",
-    "QueryCompilerAdapter",
-    "QueryCompilerRegistry",
-    "QueryExecutionAdapter",
-    "QueryExecutionAdapterRegistry",
-    "QueryExecutionEngine",
-    "QueryExecutionResult",
-    "BoundQuery",
-    "FieldUse",
-    "LogicalIdLink",
-    "QueryRequest",
-    "QuerySourceShape",
-    "QueryValidationPolicy",
-    "ResolvedField",
-    "SingleSourceQueryBinding",
-    "SourceResolvedQuery",
-    "bind_query",
     "load_catalog",
-    "parse_query",
-    "resolve_query_sources",
-    "validate_query",
 ]
+
+# Loaded on first use, so importing ``yodb`` (or a core subpackage) never pulls in the engine
+# or the semantic filter.
+_LAZY = {
+    "YoDb": "client",
+    "connect": "client",
+    "QueryExecutionResult": "execution",
+    "PlanExplanation": "planning",
+    "PlanExplanationNode": "planning",
+    "CatalogRefreshResult": "runtime",
+}
 
 
 def __getattr__(name: str):
-    """``yodb.connect`` / ``yodb.YoDb`` load the front door on first use, so importing a core
-    subpackage (``yodb.query``, ``yodb.planning``, ``yodb.execution``) never pulls in the semantic filter."""
+    module = _LAZY.get(name)
+    if module is None:
+        raise AttributeError(f"module 'yodb' has no attribute {name!r}")
+    from importlib import import_module
 
-    if name in ("YoDb", "connect"):
-        from . import client
-
-        return getattr(client, name)
-    raise AttributeError(f"module 'yodb' has no attribute {name!r}")
+    return getattr(import_module(f".{module}", __name__), name)

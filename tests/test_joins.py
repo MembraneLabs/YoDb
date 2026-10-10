@@ -424,7 +424,7 @@ class ErrorTests(unittest.TestCase):
         self.refused(raw, ErrorCode.FIELD_NOT_FOUND)               # also when the traversal lists its fields
 
     def test_a_cursor_is_refused_and_an_oversized_page_too(self) -> None:
-        self.refused({**query(), "page": {"first": 5, "after": "x"}}, ErrorCode.QUERY_FEATURE_NOT_SUPPORTED)
+        self.refused({**query(), "page": {"first": 5, "after": "x"}}, ErrorCode.QUERY_SHAPE_INVALID)
         self.refused(query(first=501), ErrorCode.QUERY_LIMIT_INVALID)
 
     def test_unknown_top_level_keys_are_still_refused(self) -> None:

@@ -21,7 +21,7 @@ name): message` and exits with status 1.
 | `query_operator_not_supported` | An operator the field's type does not support |
 | `query_expression_invalid` | A malformed `all`, `any` or `not`, or a semantic condition under `any` or `not` |
 | `query_limit_invalid` | A page, list, filter depth or size, or number of semantic conditions over its limit |
-| `query_feature_not_supported` | Not implemented in V0.1: `page.after` (cursors), a second `traverse` step or a graph-edge relationship, a second semantic condition, or a term no operator handles |
+| `query_feature_not_supported` | Not implemented in V0.1: a second `traverse` step or a graph-edge relationship, a second semantic condition, or a term no operator handles |
 | `query_catalog_mismatch` | The query was bound against a different catalog snapshot |
 
 ## The plan cannot run safely (change the query or the limits)
@@ -34,7 +34,7 @@ name): message` and exits with status 1.
 | `query_plan_unsupported` | A plan that was demanded (such as a vector shortlist) is not available |
 | `query_plan_invariant_violation` | An internal check failed, for example an embedder that does not match the stored vectors |
 | `source_binding_unavailable`, `source_logical_id_unavailable` | The catalog does not map what the query needs |
-| `query_compilation_unsupported`, `query_execution_unsupported` | No adapter for the source kind |
+| `query_compilation_unsupported`, `query_execution_unsupported`, `query_source_shape_unsupported` | No adapter for the source kind, or a query shape the adapter cannot run on its own |
 
 ## The sources or providers failed
 

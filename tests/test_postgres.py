@@ -4,12 +4,7 @@ from contextlib import contextmanager
 from typing import Any, Iterator
 import unittest
 
-from yodb import (
-    InspectionCapability,
-    InspectionRequest,
-    PostgresCatalogValidator,
-    PostgresSourceInspector,
-)
+from yodb.inspection import InspectionCapability, InspectionRequest, PostgresCatalogValidator, PostgresSourceInspector
 from yodb.catalog import (
     Catalog,
     CatalogMetadata,

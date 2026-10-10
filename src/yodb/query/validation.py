@@ -346,7 +346,7 @@ def _validate_page(page: PageRequest | None, policy: QueryValidationPolicy) -> P
             f"'page.first' exceeds the maximum page size of {policy.maximum_page_size}.",
             "page.first",
         )
-    return PageRequest(first=first, after=resolved.after)
+    return PageRequest(first=first)
 
 
 def _validate_constraints(constraints: QueryConstraints, policy: QueryValidationPolicy) -> None:
@@ -391,7 +391,6 @@ def _constraints_payload(constraints: QueryConstraints) -> dict[str, object]:
     return {
         "maximum_results": constraints.maximum_results,
         "minimum_quality": constraints.minimum_quality,
-        "allow_partial_results": constraints.allow_partial_results,
     }
 
 

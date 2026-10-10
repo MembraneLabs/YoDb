@@ -244,27 +244,17 @@ This matters because it makes pages stable: records with the same creation
 time still have an unambiguous order. `json` and `bytes` fields cannot be
 ordered in V0.1 because they do not have a portable ordering across adapters.
 
-## Getting the next page
-
-YoDb uses cursor (keyset) pagination rather than offset pagination:
+## Page size
 
 ```yaml
 page:
   first: 25
-  after: opaque_cursor_from_the_previous_response
 ```
 
-The first page has `first` and no `after`. A response will eventually return a
-`next_cursor`; send it back as `after` to request the following page.
-
-A cursor is opaque and signed. Do not inspect, edit, or construct it. It is
-bound to the query, effective ordering, and catalog version, so it cannot be
-reused for a different query. Page-size defaults and maximums are set by the
-server deployment.
-
-Source databases can change while you are paging. Cursor pagination keeps the
-order well-defined but does not claim a global snapshot across multiple source
-databases.
+`page.first` is the number of rows to return, up to the maximum page size
+(see [Limits](/reference/limits)). There is no next page yet: `page` takes
+`first` only, and any other key is refused with `query_shape_invalid`. To see
+more rows, narrow the filter or raise `first`.
 
 ## Request constraints
 
@@ -274,13 +264,12 @@ Callers can state bounded requirements where the service allows them:
 constraints:
   maximum_results: 25
   maximum_latency_ms: 1000
-  allow_partial_results: false
 ```
 
 The server remains the authority on limits. It may reject impossible or unsafe
-requests rather than running unbounded work. `allow_partial_results` is accepted but not
-used yet: V0.1 never returns a partial result, and a failed source fails the query
-rather than being silently omitted from a complete-looking response.
+requests rather than running unbounded work. YoDb never returns a partial
+result: a failed source fails the query rather than being silently omitted from
+a complete-looking response.
 
 ## Relationships and graph traversal
 

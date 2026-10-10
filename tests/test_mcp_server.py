@@ -365,7 +365,7 @@ class QueryToolTests(unittest.TestCase):
         self.assertIn("[query_shape_invalid]", self.error('{"from": '))
 
     def test_what_is_not_implemented_is_refused_by_name(self) -> None:
-        self.assertIn("query_feature_not_supported", self.error({"from": {"dataset": "customer"}, "page": {"first": 2, "after": "x"}}))
+        self.assertIn("[query_shape_invalid]", self.error({"from": {"dataset": "customer"}, "page": {"first": 2, "after": "x"}}))
         self.assertIn("[query_", self.error({"from": {"dataset": "customer"}, "group_by": ["country"]}))
 
     def test_a_missing_argument_is_reported_by_the_protocol_layer(self) -> None:

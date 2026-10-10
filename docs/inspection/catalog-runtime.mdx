@@ -57,13 +57,8 @@ open database connections itself. A PostgreSQL inspector is constructed with a
 the inspector and its validator are registered together for `postgres`:
 
 ```python
-from yodb import (
-    InMemoryCatalogRuntime,
-    InspectionAdapterBinding,
-    PostgresCatalogValidator,
-    PostgresSourceInspector,
-    SourceInspectionRegistry,
-)
+from yodb.inspection import InspectionAdapterBinding, PostgresCatalogValidator, PostgresSourceInspector, SourceInspectionRegistry
+from yodb.runtime import InMemoryCatalogRuntime
 from yodb.catalog import SourceKind
 
 postgres_inspector = PostgresSourceInspector(postgres_connections)
