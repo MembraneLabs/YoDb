@@ -29,7 +29,6 @@ class OrderPageOperator:
             input=node,
             order_by=query.order_by,
             first=effective_limit(query),
-            after=query.page.after,
             notes=self.ordering_notes(query, scans),
             properties=properties_from(node.properties, ordering=query.order_by, location=coordinator_location()),
         )

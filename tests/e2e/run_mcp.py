@@ -470,7 +470,7 @@ ERRORS = [
     ("a page over the maximum", {"from": C, "page": {"first": 501}}, "query_limit_invalid", "page.first"),
     ("a negative page", {"from": C, "page": {"first": -1}}, "query_limit_invalid", "page.first"),
     ("an in-list over 1,000 values", {"from": C, "where": leaf("id", "in", [f"c{n}" for n in range(1001)])}, "query_limit_invalid", "where"),
-    ("a next page", {"from": C, "page": {"first": 2, "after": "cursor"}}, "query_feature_not_supported", "page.after"),
+    ("a next page", {"from": C, "page": {"first": 2, "after": "cursor"}}, "query_shape_invalid", "page"),
     ("group_by", {"from": C, "group_by": ["country"]}, "query_shape_invalid", None),
     ("aggregate", {"from": C, "aggregate": [{"count": "id"}]}, "query_shape_invalid", None),
     ("distinct", {"from": C, "select": ["country"], "distinct": True}, "query_shape_invalid", None),

@@ -331,7 +331,6 @@ class CoordinatorSortPage(UnaryNode):
     input: "PhysicalPlan"
     order_by: tuple[BoundOrderTerm, ...]
     first: int | None
-    after: str | None
     properties: PlanProperties
     # Why the coordinator, not a source, orders (e.g. collation differences).
     notes: tuple[str, ...] = ()

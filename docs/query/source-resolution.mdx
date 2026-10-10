@@ -1,21 +1,25 @@
 ---
 title: Source resolution
-description: How YoDb safely classifies one logical query across one or more approved sources.
+description: How YoDb works out which databases a query needs.
 ---
 
-One business dataset can have fields supplied by more than one source. Source
-resolution is the internal step that takes a validated logical query and finds
-the approved physical mappings it needs. It does not generate SQL, query a
-database, or guess how two records match.
+> **This page describes how YoDb works inside.** You do not need it to write a
+> catalog or a query. The classes it names are internal and may change; see
+> [Compatibility](/reference/compatibility).
+
+A dataset's fields can come from more than one source. Source resolution is the
+step that takes a checked query and works out which sources it needs, using the
+mappings in `sources.yaml`. It does not write SQL, read a database, or guess how
+two records match.
 
 ```text
-BoundQuery
+checked query
     ↓
 source resolution
     ↓
-single-source binding OR multi-source binding
+one source needed, or several
     ↓
-planner and source-specific compiler
+planner, then one SQL statement per source
 ```
 
 ## One source
@@ -39,8 +43,8 @@ customer.status   → crm_postgres → public.accounts.account_status
 ```
 
 Because all requested fields belong to `crm_postgres`, this is classified as a
-**single-source** query. A later PostgreSQL compiler can safely turn that one
-binding into parameterized SQL.
+**single-source** query. The database can answer it alone, with one SQL
+statement.
 
 Physical names remain internal. Callers still use only `customer`, `name`, and
 `status`.
@@ -79,9 +83,9 @@ billing_postgres
 link: crm_postgres.logical_id = billing_postgres.logical_id
 ```
 
-This is not a cross-database SQL join. The record-assembly planner uses the link
-to run bounded source-local work, transfer logical IDs, and merge approved fields
-into one logical customer record.
+This is not a cross-database SQL join. YoDb reads each source separately, passes
+the IDs it found from one read to the next, and merges the fields into one
+customer record. [How queries are planned](/query/planning) describes this.
 
 ## The logical-ID requirement
 
@@ -117,7 +121,7 @@ A logical-ID link joins multiple representations of the **same dataset**:
 CRM customer ↔ Billing customer
 ```
 
-A relationship in [`relations.yaml`](../catalog/relations) joins different
+A relationship in [`relations.yaml`](/catalog/relations) joins different
 business datasets:
 
 ```text
@@ -126,16 +130,5 @@ customer → support_ticket
 
 The first is implicit only after both sources explicitly map the same logical
 `id`. The second must always be explicitly declared; a query follows it with
-`traverse` (see [Joins](/query/joins)), and graph-edge traversal is not implemented yet. Neither is inferred by YoDb.
-
-## Current status
-
-The source-resolution classifier is available now. It verifies that a bound
-query still belongs to the exact active catalog snapshot, returns single- or
-multi-source binding objects, and creates explicit logical-ID links for
-multi-source participation.
-
-The next implementation step is compiling a single-source PostgreSQL binding
-to safe parameterized SQL. Multi-source record assembly, graph traversal, and
-semantic execution are not executable yet.
+`traverse` (see [Joins](/query/joins)). YoDb infers neither.
 

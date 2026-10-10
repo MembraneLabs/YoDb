@@ -81,7 +81,7 @@ class QueryModelTests(unittest.TestCase):
         )
         second = parse_query(
             {
-                "page": {"first": 50, "after": "opaque_cursor_from_a_previous_page"},
+                "page": {"first": 50},
                 "where": {
                     "all": [
                         {"value": True, "op": "eq", "field": "active"},

@@ -1,22 +1,19 @@
 ---
 title: PostgreSQL compilation
-description: How a single-source logical query becomes safe parameterized PostgreSQL SQL.
+description: The SQL that YoDb sends to a database, and why it is safe.
 ---
 
-After a query has been validated and resolved to one PostgreSQL source, YoDb
-can compile it into a PostgreSQL statement. Compilation is not execution: it
-produces SQL text, a separate parameter tuple, and logical output-column
-metadata. The central execution engine then selects the PostgreSQL executor,
-leases a pooled connection, and submits that result.
+> **This page describes how YoDb works inside.** You do not need it to write a
+> catalog or a query. The classes it names are internal and may change; see
+> [Compatibility](/reference/compatibility).
 
-```text
-logical query
-  → bound query
-  → single-source binding
-  → CompiledPostgresQuery
-  → PostgreSQL execution adapter
-  → logical rows
-```
+Every read of a PostgreSQL source is one SQL statement that YoDb writes. This
+page shows what that statement looks like. A query over several sources becomes
+several such statements, one per source.
+
+Writing the statement is separate from running it. The compiler produces the
+SQL text and, apart from it, the list of values. Another component then takes a
+connection from the pool and runs it.
 
 ## Example
 
@@ -59,10 +56,9 @@ Those identifiers are derived only from the active catalog's approved source
 binding. The caller's `active` value is a separate parameter, never
 interpolated into SQL text.
 
-## Current supported relational slice
+## What is turned into SQL
 
-The compiler currently accepts a resolved `single_source` PostgreSQL query and
-compiles:
+For one source, the compiler writes:
 
 - selected fields;
 - Boolean `all`, `any`, and `not` expressions;
@@ -75,18 +71,17 @@ The compiler quotes every resource, column, and output alias derived from the
 catalog. It also rejects an invalid qualified resource instead of attempting
 to construct SQL from it.
 
-## Explicitly not compiled yet
+## What is not turned into SQL
 
-The compiler rejects rather than ignores:
+- **Work across sources.** Matching rows from two sources, and joins between
+  datasets, happen in YoDb after the reads. There is never a SQL join across
+  databases.
+- **`contains` and `starts_with`.** YoDb applies these itself after reading,
+  because databases disagree on how text compares. See
+  [Limits](/reference/limits).
+- **The semantic filter's verdicts.** The model you supply judges rows after
+  they are read.
 
-- multi-source queries and logical-ID record assembly;
-- Neo4j or any non-PostgreSQL source;
-- cursor pagination (`page.after`);
-- text `contains` and `starts_with` predicates, pending final portable text
-  collation semantics;
-- semantic search, relationship traversal, grouping, windows, and raw SQL.
-
-No statement is executed by the compiler itself. See [query execution](./execution)
-for the central engine and PostgreSQL execution adapter that use the existing
-bounded connection pool, send the parameterized statement, and normalize the
-returned rows to logical fields.
+The compiler refuses anything it cannot write correctly. It never drops part of
+a query silently. See [Query execution](/query/execution) for how statements are
+run.

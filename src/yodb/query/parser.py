@@ -37,10 +37,8 @@ _QUERY_KEYS = frozenset({"from", "select", "where", "order_by", "page", "constra
 _FROM_KEYS = frozenset({"dataset", "as"})
 _PREDICATE_KEYS = frozenset({"field", "op", "value"})
 _ORDER_KEYS = frozenset({"field", "direction"})
-_PAGE_KEYS = frozenset({"first", "after"})
-_CONSTRAINT_KEYS = frozenset(
-    {"maximum_results", "maximum_latency_ms", "maximum_cost", "minimum_quality", "allow_partial_results"}
-)
+_PAGE_KEYS = frozenset({"first"})
+_CONSTRAINT_KEYS = frozenset({"maximum_results", "maximum_latency_ms", "maximum_cost", "minimum_quality"})
 
 
 def parse_query(
@@ -196,12 +194,9 @@ def _parse_page(raw: Any) -> PageRequest:
     value = _mapping(raw, "page")
     _reject_unknown(value, _PAGE_KEYS, "page")
     first = value.get("first")
-    after = value.get("after")
     if first is not None and (type(first) is not int or first <= 0):
         _fail(ErrorCode.QUERY_LIMIT_INVALID, "'page.first' must be a positive integer.", "page.first")
-    if after is not None and (not isinstance(after, str) or not after.strip()):
-        _fail(ErrorCode.QUERY_SHAPE_INVALID, "'page.after' must be a non-empty cursor string.", "page.after")
-    return PageRequest(first=first, after=after)
+    return PageRequest(first=first)
 
 
 def _parse_constraints(raw: Any) -> QueryConstraints:
@@ -217,17 +212,9 @@ def _parse_constraints(raw: Any) -> QueryConstraints:
             type(candidate) not in (int, float) or isinstance(candidate, bool) or candidate <= 0
         ):
             _fail(ErrorCode.QUERY_LIMIT_INVALID, f"'constraints.{name}' must be a positive number.", f"constraints.{name}")
-    partial = value.get("allow_partial_results")
-    if partial is not None and type(partial) is not bool:
-        _fail(
-            ErrorCode.QUERY_SHAPE_INVALID,
-            "'constraints.allow_partial_results' must be a boolean.",
-            "constraints.allow_partial_results",
-        )
     return QueryConstraints(
         maximum_results=value.get("maximum_results"),
         maximum_latency_ms=value.get("maximum_latency_ms"),
         maximum_cost=value.get("maximum_cost"),
         minimum_quality=value.get("minimum_quality"),
-        allow_partial_results=partial,
     )

@@ -72,12 +72,6 @@ class PostgresQueryCompiler:
                 ErrorCode.QUERY_COMPILATION_UNSUPPORTED,
                 "The PostgreSQL compiler requires a PostgreSQL source binding.",
             )
-        if query.query.page.after is not None:
-            _fail(
-                ErrorCode.QUERY_COMPILATION_UNSUPPORTED,
-                "Cursor pagination is not compiled until signed cursor verification is implemented.",
-                "page.after",
-            )
 
         context = _CompileContext(query=query, fields_by_name=_field_map(query))
         selected = tuple(

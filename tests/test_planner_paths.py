@@ -220,10 +220,11 @@ class PlanShapeTests(unittest.TestCase):
         self.assertTrue(has_filter(OR(_eq("status", "a"), _eq("plan", "b"))))   # not a conjunction
         self.assertTrue(has_filter(AND(_eq("status", "a"), {"field": "plan", "op": "is_null"})))  # leaf kept local
 
-    def test_cursor_is_rejected_until_signed_cursors_exist(self) -> None:
+    def test_a_cursor_is_not_part_of_a_page(self) -> None:
         with self.assertRaises(QueryError) as caught:
             self.plan(_q(["name"], after="abc"))
-        self.assertEqual(caught.exception.code, ErrorCode.QUERY_FEATURE_NOT_SUPPORTED)
+        self.assertEqual(caught.exception.code, ErrorCode.QUERY_SHAPE_INVALID)
+        self.assertEqual(caught.exception.detail.location, "page")
 
     def test_fingerprint_ignores_values_but_not_shape(self) -> None:
         a = self.plan(_q(["name"], _eq("status", "a")))

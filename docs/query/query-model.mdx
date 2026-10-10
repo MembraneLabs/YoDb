@@ -1,359 +1,277 @@
 ---
 title: Query model
-description: Write portable, structured queries against business datasets.
+description: How to write a query. Every key, every operator, with examples.
 ---
 
-YoDb queries use the business names defined in your catalog. You ask for a
-dataset, its fields, filters, ordering, and a page of results. You never need
-to know whether the data lives in PostgreSQL, Neo4j, a table, a graph label, or
-an index.
+A query is a JSON object. It asks for records of one dataset: which fields,
+which filter, in what order, and how many. Every name in it is a dataset or
+field name from your catalog. A query never names a database, a table or a
+column, and it is never SQL.
 
-```text
-your structured query
-        ↓
-YoDb validates catalog names and types
-        ↓
-YoDb chooses and runs an approved source-specific plan
-        ↓
-normalized logical result
-```
-
-This page defines the public query contract. It is designed to work with the
-PostgreSQL connector first and to keep the same request shape as graph and
-other database connectors are added.
+The examples use the sample shop from the
+[Quickstart](/getting-started/quickstart).
 
 ## A first query
 
-This query asks for up to 25 active customers whose name starts with `Acme`.
+"The names and plans of UK customers, sorted by name, at most 25."
 
-```yaml
-from:
-  dataset: customer
-
-select:
-  - id
-  - name
-  - status
-
-where:
-  all:
-    - field: name
-      op: starts_with
-      value: Acme
-    - field: status
-      op: eq
-      value: active
-
-order_by:
-  - field: name
-    direction: asc
-
-page:
-  first: 25
+```json
+{
+  "from": {"dataset": "customer"},
+  "select": ["name", "plan"],
+  "where": {"field": "country", "op": "eq", "value": "UK"},
+  "order_by": [{"field": "name", "direction": "asc"}],
+  "page": {"first": 25}
+}
 ```
 
-Everything in this query is a logical catalog name:
+Run it with `yodb query catalog/ '<json>'`, or with `db.query(...)` from
+[Python](/reference/python).
 
-- `customer` is a dataset from [`datasets.yaml`](../catalog/datasets).
-- `name` and `status` are fields in that dataset.
-- `starts_with` and `eq` are YoDb filter operators.
+## The keys of a query
 
-YoDb resolves the approved physical mapping internally. For example, `name`
-may currently map to a PostgreSQL column called `company_name`; that fact is
-not part of the query and can change without requiring callers to rewrite it.
+| Key | Required | Meaning |
+| --- | --- | --- |
+| `from` | Yes | The dataset to query: `{"dataset": "customer"}` |
+| `select` | No | The fields to return. Default: every public field |
+| `where` | No | A filter. Default: no filter |
+| `order_by` | No | The sort order. Default: by `id` |
+| `page` | No | How many rows: `{"first": 25}`. Default 100, at most 500 |
+| `traverse` | No | Follow a relationship to another dataset. See [Joins](/query/joins) |
+| `constraints` | No | Extra bounds on the query. See "Constraints" below |
 
-## Using the query package
+Any other key is refused with `query_shape_invalid`. YoDb never ignores a key
+it does not know.
 
-The Python query package parses an ordinary JSON/YAML-compatible dictionary,
-then validates it against the active catalog runtime:
+## `select`: which fields
 
-```python
-from yodb.query import parse_query, validate_query
-
-request = parse_query({
-    "from": {"dataset": "customer"},
-    "select": ["id", "name"],
-    "where": {"field": "status", "op": "eq", "value": "active"},
-    "page": {"first": 25},
-})
-
-bound_query = validate_query(request, runtime)
+```json
+"select": ["name", "country", "plan"]
 ```
 
-Parsing checks the request's structure. Validation then checks the dataset,
-field visibility, field types, operators, ordering, and limits against the
-runtime's currently active catalog. `bound_query` contains trusted logical
-catalog references and two fingerprints: one for the normalized query meaning,
-and one for the active catalog snapshot. It is the only input the query
-planner accepts.
+- The `id` field is always returned, even if you do not list it.
+- Leave `select` out to get every public field.
+- A field that does not exist is refused (`field_not_found`). A field marked
+  `visibility: internal` in the catalog is refused too (`field_not_accessible`).
+  Neither returns an empty column.
 
-## What a query may name
+## `where`: the filter
 
-Queries may name only:
-
-- declared datasets;
-- public fields in those datasets;
-- declared relationships, when relationship traversal is available;
-- portable YoDb operators and request options.
-
-The following are deliberately not accepted in a query:
-
-- database or source names;
-- SQL tables, columns, SQL, Cypher, or database functions;
-- Neo4j labels or edge types;
-- pgvector, index names, embedding models, or query hints;
-- unmapped physical fields;
-- fields marked `visibility: internal`.
-
-This keeps application code independent of where data is stored. It also lets
-YoDb choose an efficient implementation without exposing a database-specific
-escape hatch.
-
-When a query is valid, YoDb also resolves its fields to the approved sources
-behind the catalog. See [source resolution](./source-resolution) for how this
-works when a dataset has fields in more than one database.
-
-For a resolved one-source PostgreSQL query, see [PostgreSQL compilation](./postgres-compilation).
-
-## Selecting fields
-
-`select` is an optional list of public fields to return:
-
-```yaml
-select:
-  - id
-  - name
-  - created_at
-```
-
-If it is omitted, YoDb returns all public fields of the root dataset. The
-logical `id` is always included in the result, even if it is not listed. It is
-the stable identity used for provenance and for [joins](/query/joins) between datasets.
-
-You cannot select an unknown field, a field from a different dataset, or an
-internal field. These are validation errors rather than requests that silently
-return `null`.
-
-## Filtering results
-
-`where` is a structured Boolean expression. It is never a text fragment of
-SQL or Cypher.
+A filter is either one condition, or several combined with `all`, `any` and
+`not`.
 
 ### One condition
 
-```yaml
-where:
-  field: created_at
-  op: gte
-  value: "2026-01-01T00:00:00Z"
+A condition has a `field`, an operator `op`, and usually a `value`:
+
+```json
+"where": {"field": "priority", "op": "gte", "value": 3}
 ```
 
-### All conditions must match
+### Operators
 
-```yaml
-where:
-  all:
-    - field: status
-      op: eq
-      value: open
-    - field: priority
-      op: gte
-      value: 3
+| Operator | Meaning | Works on | Value |
+| --- | --- | --- | --- |
+| `eq`, `ne` | equal, not equal | every type except `json` and `bytes` | one value |
+| `in`, `not_in` | is, or is not, one of a list | the same | a list of up to 1,000 values |
+| `gt`, `gte`, `lt`, `lte` | greater or less than | `int`, `float`, `timestamp` | one value |
+| `contains` | the text contains this | `string`, `text` | text |
+| `starts_with` | the text starts with this | `string`, `text` | text |
+| `is_null`, `is_not_null` | has no value, has a value | every type | none |
+
+```json
+{"field": "status", "op": "in", "value": ["open", "pending"]}
+{"field": "name", "op": "starts_with", "value": "Ada"}
+{"field": "plan", "op": "is_null"}
 ```
 
-### Any condition may match
+Things to know:
 
-```yaml
-where:
-  any:
-    - field: status
-      op: eq
-      value: urgent
-    - field: assigned
-      op: eq
-      value: false
+- **`contains` and `starts_with` are case-sensitive.** `"ace"` matches
+  "Ada Lovelace" and `"ACE"` does not.
+- **A record with no value never matches `eq`, `ne`, `in` or a comparison.**
+  To find records with no value, use `is_null`. Writing `"value": null` is
+  refused.
+- **Text cannot be compared with `gt` or `lt`.** Those work on numbers and
+  timestamps.
+- `contains` and `starts_with` are applied by YoDb after reading the rows, not
+  by the database, so pair them with another filter on a large table. See
+  [Limits](/reference/limits).
+
+### Value types
+
+The value must have the type of the field.
+
+| Field type | Write the value as | Example |
+| --- | --- | --- |
+| `string`, `text`, `id`, `uuid` | JSON text | `"UK"` |
+| `int` | a whole number | `3` (not `"3"`) |
+| `float` | a number | `9.5` |
+| `bool` | `true` or `false` | `true` (not `"true"`) |
+| `timestamp` | text with a date, a time and a zone | `"2026-01-01T00:00:00Z"` |
+
+A value of the wrong type is refused with `query_value_type_invalid`. A
+timestamp without a zone, such as `"2026-01-01"`, is refused as well.
+
+### Combining conditions
+
+`all` means every condition must hold (AND):
+
+```json
+"where": {"all": [
+  {"field": "status", "op": "eq", "value": "open"},
+  {"field": "priority", "op": "gte", "value": 3}
+]}
 ```
 
-### Negating a condition
+`any` means at least one must hold (OR):
 
-```yaml
-where:
-  not:
-    field: status
-    op: eq
-    value: closed
+```json
+"where": {"any": [
+  {"field": "priority", "op": "eq", "value": 5},
+  {"field": "status", "op": "eq", "value": "pending"}
+]}
 ```
 
-`all` and `any` can be nested to express more complex logic. Each leaf
-condition compares one logical field with a typed value. Comparisons between
-arbitrary fields are not supported; approved relationship traversal is the
-portable way to connect datasets.
+`not` reverses one condition or group:
 
-## Available filter operators
+```json
+"where": {"not": {"field": "status", "op": "eq", "value": "closed"}}
+```
 
-| Field type | Operators |
+They nest, up to 32 levels deep and 1,000 conditions in total:
+
+```json
+"where": {"all": [
+  {"field": "country", "op": "eq", "value": "US"},
+  {"any": [
+    {"field": "plan", "op": "eq", "value": "pro"},
+    {"field": "plan", "op": "eq", "value": "team"}
+  ]}
+]}
+```
+
+A condition compares a field with a value. It cannot compare two fields with
+each other.
+
+### A condition written as a sentence
+
+If a semantic filter is configured, a condition can be a sentence that a model
+judges:
+
+```json
+{"semantic": {"field": "body", "proposition": "the customer is asking about a late delivery"}}
+```
+
+It goes where a condition goes: as the whole `where`, or inside `all`. See
+[Semantic filter](/query/semantic-filter).
+
+## `order_by`: the sort order
+
+```json
+"order_by": [
+  {"field": "signed_up", "direction": "desc"},
+  {"field": "name", "direction": "asc"}
+]
+```
+
+`direction` is `asc` or `desc`. Rows are sorted by the first term, and ties are
+broken by the next.
+
+YoDb always adds `id` as the last tie-breaker, so the order is the same every
+time you run the query. With no `order_by`, rows are ordered by `id`.
+
+`json` and `bytes` fields cannot be sorted on.
+
+## `page`: how many rows
+
+```json
+"page": {"first": 25}
+```
+
+`first` is the number of rows to return. The default is 100 and the maximum is
+500. There is no "next page": to see different rows, narrow the filter or
+change the order. `page` takes no other key.
+
+## `traverse`: follow a relationship
+
+`traverse` joins the dataset to another one over a relationship declared in the
+catalog:
+
+```json
+"traverse": [{
+  "relationship": "customer_has_ticket",
+  "as": "ticket",
+  "select": ["subject", "priority"],
+  "where": {"field": "status", "op": "eq", "value": "open"}
+}]
+```
+
+You get one row per matching pair, with the second dataset's fields prefixed by
+the `as` name (`ticket.subject`). [Joins](/query/joins) covers it in full.
+
+## Constraints
+
+`constraints` sets extra bounds for this one query:
+
+```json
+"constraints": {"maximum_results": 50, "maximum_latency_ms": 2000}
+```
+
+| Key | Meaning |
 | --- | --- |
-| `id`, `uuid`, `string`, `text`, `int`, `float`, `bool`, `timestamp` | `eq`, `ne`, `in`, `not_in`, `is_null`, `is_not_null` |
-| `int`, `float`, `timestamp` | `gt`, `gte`, `lt`, `lte` |
-| `string`, `text` | `contains`, `starts_with` |
+| `maximum_results` | Never return more than this many rows, whatever `page.first` says. At most 500 |
+| `maximum_latency_ms` | A time budget for the semantic filter, in milliseconds |
+| `maximum_cost` | A cost budget for the semantic filter |
+| `minimum_quality` | How confident the semantic filter's model must be, from 0 to 1 |
 
-Examples:
+The last three only stop a query that has a
+[semantic condition](/query/semantic-filter). On other queries they are hints to
+the planner and never end the query. To limit the time of any query, pass
+`--timeout` on the command line or `timeout_seconds` in Python.
 
-```yaml
-# One of a small set of values
-field: status
-op: in
-value: [open, pending]
+YoDb never returns part of an answer. If one database fails, the query fails.
+
+## What a query cannot name
+
+- a database, source, table or column;
+- SQL in any form;
+- a field that is not in the catalog, or one marked `visibility: internal`;
+- an index, an embedding model, or a hint about how to run the query.
+
+This is deliberate. It means a query keeps working when you move data between
+databases, and it means a caller cannot reach anything you did not put in the
+catalog.
+
+## When a query is refused
+
+YoDb checks the whole query against the catalog before it contacts any
+database. A refused query gets an error with a code and the place in the query:
+
+```text
+error [field_not_found] at select[0]: Unknown field 'nam' on dataset 'customer'.
 ```
 
-```yaml
-# A nullable field has no value for these operators
-field: resolved_at
-op: is_null
-```
-
-The value must match the declared field type. For example, an integer field
-requires a JSON/YAML number such as `12`, not the string `"12"`; a boolean
-requires `true` or `false`, not `"true"`. Timestamps must use RFC 3339 with a
-UTC offset, such as `2026-01-01T00:00:00Z`.
-
-Use `is_null` and `is_not_null` for missing values. `eq: null` and `ne: null`
-are invalid because different databases handle null comparisons differently.
-
-Whether YoDb uses an index is an execution decision. A valid filter remains a
-valid filter without one, although server query limits may reject work that is
-too expensive to perform safely.
-
-## Ordering
-
-Use `order_by` to request a deterministic result order:
-
-```yaml
-order_by:
-  - field: created_at
-    direction: desc
-  - field: name
-    direction: asc
-```
-
-`direction` is either `asc` or `desc`. YoDb always appends logical `id` as a
-final tie-breaker unless it is already the final order term. If no order is
-given, the default order is `id ASC`.
-
-This matters because it makes pages stable: records with the same creation
-time still have an unambiguous order. `json` and `bytes` fields cannot be
-ordered in V0.1 because they do not have a portable ordering across adapters.
-
-## Getting the next page
-
-YoDb uses cursor (keyset) pagination rather than offset pagination:
-
-```yaml
-page:
-  first: 25
-  after: opaque_cursor_from_the_previous_response
-```
-
-The first page has `first` and no `after`. A response will eventually return a
-`next_cursor`; send it back as `after` to request the following page.
-
-A cursor is opaque and signed. Do not inspect, edit, or construct it. It is
-bound to the query, effective ordering, and catalog version, so it cannot be
-reused for a different query. Page-size defaults and maximums are set by the
-server deployment.
-
-Source databases can change while you are paging. Cursor pagination keeps the
-order well-defined but does not claim a global snapshot across multiple source
-databases.
-
-## Request constraints
-
-Callers can state bounded requirements where the service allows them:
-
-```yaml
-constraints:
-  maximum_results: 25
-  maximum_latency_ms: 1000
-  allow_partial_results: false
-```
-
-The server remains the authority on limits. It may reject impossible or unsafe
-requests rather than running unbounded work. `allow_partial_results` is accepted but not
-used yet: V0.1 never returns a partial result, and a failed source fails the query
-rather than being silently omitted from a complete-looking response.
-
-## Relationships and graph traversal
-
-Relationships come from [`relations.yaml`](../catalog/relations). A caller
-does not write join conditions or mention foreign-key columns. Instead, a
-`traverse` step names a reviewed relationship (see [Joins](/query/joins) for the
-syntax that is implemented):
-
-```yaml
-traverse:
-  - relationship: customer_has_ticket
-    direction: forward
-    as: ticket
-    where:
-      field: status
-      op: eq
-      value: open
-```
-
-`forward` means the relationship's declared `from` dataset to its declared
-`to` dataset. `reverse` is available only for a relationship declared as
-bidirectional. YoDb will enforce a bounded number of hops and a work budget.
-
-The same traversal can later use PostgreSQL joins, a PostgreSQL edge table, or
-Neo4j. The caller does not change the query to choose one.
-
-Traversal between two PostgreSQL datasets is implemented as a join with flat
-result rows (see [Joins](/query/joins)). Nested results and graph traversal are
-not implemented.
-
-## Semantic search
-
-Semantic search follows the same principle: name the business field and the
-meaning you seek, not a vector implementation.
-
-```yaml
-semantic:
-  field: content
-  query: tickets at risk of churn because of price
-  candidates: 100
-```
-
-The field must be public and marked `semantic_eligible` in the dataset catalog.
-YoDb may use pgvector initially and a different semantic adapter later. Index
-selection, embedding generation, exact-scan fallback policy, ranking, and
-freshness are service behavior—not caller configuration.
-
-The semantic condition is implemented: see [Semantic filter](/query/semantic-filter).
-
-## Validation and errors
-
-YoDb validates a query against the active catalog before it contacts any data
-source. Typical errors include:
-
-| Problem | Example error code |
+| Problem | Code |
 | --- | --- |
-| The requested dataset does not exist | `dataset_not_found` |
-| A field is unknown or internal | `field_not_accessible` |
-| A filter value has the wrong type | `query_value_type_invalid` |
-| An operator cannot be used with that type | `query_operator_not_supported` |
-| The Boolean expression is malformed | `query_expression_invalid` |
-| A relationship is not declared or cannot be followed in that direction | `relationship_not_found`, `traversal_not_allowed` |
+| Not valid JSON, or a key YoDb does not know | `query_shape_invalid` |
+| No such dataset | `dataset_not_found` |
+| No such field | `field_not_found` |
+| The field is internal | `field_not_accessible` |
+| A value of the wrong type | `query_value_type_invalid` |
+| An operator the field's type does not support | `query_operator_not_supported` |
+| A page or list over its limit | `query_limit_invalid` |
+| No such relationship | `relationship_not_found` |
 
-An error identifies the logical part of the request, such as
-`where.all[1].value`. It does not expose table names, generated SQL,
-credentials, or other physical source details.
+The place reads like a path into the query: `where.all[1].value` is the `value`
+of the second condition inside `all`. See [Errors](/reference/errors) for every
+code.
 
-## Current status
+## What a query cannot do yet
 
-Milestone 2's relational query-model core is available: strict parsing,
-catalog binding, type/operator validation, effective ordering, request limits,
-and stable query/catalog fingerprints. Catalog loading, source inspection,
-mapping validation, and catalog activation are also available.
+- Count, sum or group. There is no aggregation.
+- Fetch a next page.
+- Follow more than one relationship.
+- Compare two fields with each other.
 
-The next pieces are declared relationship traversal validation, semantic-query
-validation, cursors, PostgreSQL execution, and multi-source record assembly.
+[Limits](/reference/limits) has the full list.

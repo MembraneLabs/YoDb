@@ -3,11 +3,52 @@ title: Errors
 description: Every error code, what it means, and whether retrying can help.
 ---
 
-Every YoDb error is a `YoDbError` carrying one safe `ErrorDetail`: a stable
-`code`, a message, `retryable`, and sometimes `location` (where in the query)
-and `source_name`. Messages never contain connection strings, credentials, SQL
-or query values. The command line prints `error [code] at location (source
-name): message` and exits with status 1.
+When YoDb cannot answer, it says why in a form a program can act on. Every
+error has:
+
+| Part | Meaning |
+| --- | --- |
+| `code` | A fixed word for the kind of problem, such as `field_not_found`. Programs should branch on this |
+| `message` | A sentence for a person. Its wording may change, so do not match on it |
+| `retryable` | `true` if sending the same query again might work |
+| `location` | Where in the query the problem is, such as `where.all[1].value`. Not always present |
+| `source_name` | Which source failed. Not always present |
+
+Messages never contain connection strings, passwords, SQL or query values.
+
+The same error looks like this in each place:
+
+```text
+# command line (exit status 1)
+error [field_not_found] at select[0]: Unknown field 'nam' on dataset 'customer'.
+
+# MCP tool
+Error executing tool query: [field_not_found] at select[0]: Unknown field 'nam' on dataset 'customer'.
+```
+
+```python
+# Python
+except yodb.YoDbError as error:
+    error.code.value        # "field_not_found"
+    error.detail.location   # "select[0]"
+    error.retryable         # False
+```
+
+## How to use this page
+
+The codes are grouped by what you should do about them.
+
+- **The query was refused:** change the query. Retrying the same query gives the
+  same error.
+- **The plan cannot run safely:** the query is valid but would read too much.
+  Add a filter.
+- **The sources or providers failed:** something outside YoDb. Some of these are
+  worth retrying.
+- **The catalog did not open:** fix the catalog or the connection.
+
+`retryable` is set where the error is raised, because it can depend on the
+source. The tables below show the usual value. **Always read the flag on the
+error you got.**
 
 ## The query was refused (fix the query)
 
@@ -21,7 +62,7 @@ name): message` and exits with status 1.
 | `query_operator_not_supported` | An operator the field's type does not support |
 | `query_expression_invalid` | A malformed `all`, `any` or `not`, or a semantic condition under `any` or `not` |
 | `query_limit_invalid` | A page, list, filter depth or size, or number of semantic conditions over its limit |
-| `query_feature_not_supported` | Not implemented in V0.1: `page.after` (cursors), a second `traverse` step or a graph-edge relationship, a second semantic condition, or a term no operator handles |
+| `query_feature_not_supported` | Not implemented in V0.1: a second `traverse` step or a graph-edge relationship, a second semantic condition, or a term no operator handles |
 | `query_catalog_mismatch` | The query was bound against a different catalog snapshot |
 
 ## The plan cannot run safely (change the query or the limits)
@@ -34,13 +75,13 @@ name): message` and exits with status 1.
 | `query_plan_unsupported` | A plan that was demanded (such as a vector shortlist) is not available |
 | `query_plan_invariant_violation` | An internal check failed, for example an embedder that does not match the stored vectors |
 | `source_binding_unavailable`, `source_logical_id_unavailable` | The catalog does not map what the query needs |
-| `query_compilation_unsupported`, `query_execution_unsupported` | No adapter for the source kind |
+| `query_compilation_unsupported`, `query_execution_unsupported`, `query_source_shape_unsupported` | No adapter for the source kind, or a query shape the adapter cannot run on its own |
 
 ## The sources or providers failed
 
 | Code | Retryable | Meaning |
 | --- | --- | --- |
-| `query_timeout` | yes | The whole-query time limit, or the database statement limit, was reached |
+| `query_timeout` | yes when a database statement was cancelled; no when the query's own `timeout_seconds` ran out | The whole-query time limit, or the database statement limit, was reached |
 | `connection_pool_timeout` | yes | No connection became free in time |
 | `source_unavailable` | yes | A source could not be reached |
 | `source_authentication_failed` | no | A source rejected the credentials |

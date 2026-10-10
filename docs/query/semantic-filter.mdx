@@ -1,7 +1,15 @@
 ---
 title: Semantic filter
-description: Ask whether a natural-language proposition is true of a record's text, with a verifier you supply.
+description: Filter records by meaning, with a sentence that a model you supply judges.
 ---
+
+An ordinary filter compares a field with a value. A semantic filter asks a
+question that needs reading: "is this message about a late delivery?" You write
+the condition as a sentence, and a model that you supply reads each candidate
+record and answers yes or no.
+
+It is one more condition in `where`, next to ordinary ones. This query finds
+test messages that ask when a card will arrive, whatever words they use:
 
 ```json
 {"from": {"dataset": "message"},
@@ -13,9 +21,17 @@ description: Ask whether a natural-language proposition is true of a record's te
  "page": {"first": 20}}
 ```
 
-The condition is *true of the record*, judged by a model you provide (the
-**verifier**). Similarity between vectors is never part of its meaning; it is
-only a way to find candidates cheaply.
+The sentence is called the **proposition**. The model that judges it is called
+the **verifier**. A record is returned only if the verifier says the
+proposition is true of it.
+
+Vector search can be used to find likely candidates cheaply, but it never
+decides the answer. Being "similar" is not enough: the verifier has the last
+word on every row.
+
+To use it you need three things: a field marked `semantic_eligible: true` in
+`datasets.yaml`, a verifier (see "Providers" below), and the Python API.
+The `yodb` command line cannot configure one.
 
 Rules: the field must be a public `text` or `string` field marked
 `semantic_eligible: true` in `datasets.yaml`; the condition must be ANDed (not
@@ -71,7 +87,9 @@ from the store, then reads the records for those IDs only.
 
 ```python
 import yodb
-from yodb.semantic import SemanticRuntime
+from yodb.semantic import (
+    EmbeddingResult, ProviderCost, ProviderInfo, SemanticRuntime, VerificationResult,
+)
 
 class MyVerifier:                      # judges propositions about text
     info = ProviderInfo("acme", "judge-1", "1")

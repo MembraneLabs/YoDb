@@ -3,9 +3,14 @@ title: How queries are planned
 description: What YoDb pushes to each database, how it assembles records, and how it chooses the cheapest plan.
 ---
 
-A logical query becomes a physical plan: reads of the individual sources,
-assembled in memory into logical records, then filtered, ordered, paged and
-projected. `yodb explain` (or `db.explain(query)`) shows the plan without
+Before it runs a query, YoDb decides which databases to read, in what order,
+and what to ask each one. That decision is the plan. This page explains how the
+plan is chosen and how to read it, which helps when a query is slow or is
+refused for reading too much.
+
+A plan has the same shape every time: read the individual sources, put the rows
+together in memory, then filter, sort, cut to the page size and keep the
+requested fields. `yodb explain` (or `db.explain(query)`) shows the plan without
 running it: sources, which fields are filtered where, the read order, and how
 the choice was made. It never shows values, credentials or SQL.
 

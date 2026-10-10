@@ -1,0 +1,132 @@
+---
+title: Compatibility
+description: What you can rely on between versions, and what may change.
+---
+
+YoDb is at version 0.1. This page says which parts you can build on and which
+parts may still move. Every part of YoDb is in one of three tiers.
+
+| Tier | What it means |
+| --- | --- |
+| **Stable** | Does not break within 0.x without a deprecation first (see "Changing a stable part" below). |
+| **Experimental** | Documented and usable, but may change in any release. The changelog says when it does. |
+| **Internal** | No promise. It can change or disappear in any release. |
+
+Anything not listed on this page is internal.
+
+## Stable
+
+### The query
+
+The JSON query described in [Query model](/query/query-model),
+[Joins](/query/joins) and [Semantic filter](/query/semantic-filter): its keys,
+the twelve comparison operators, `all` / `any` / `not`, `order_by`,
+`page.first`, `traverse`, and `constraints`.
+
+- A key or operator that works today keeps its meaning.
+- New optional keys and new operators may be added.
+- An unknown key is always refused with `query_shape_invalid`. It is never
+  ignored.
+
+### The catalog files
+
+The three YAML files described under [Catalog](/catalog/overview). Each file
+states its format in `api_version` (`yodb/v0.1` today). A file with a different
+`api_version` is refused, so an old catalog can never be read with new rules
+by accident. Unknown keys are refused.
+
+### Errors
+
+- The `ErrorDetail` fields: `code`, `message`, `retryable`, `source_name`,
+  `location` and `details`.
+- The codes listed in [Errors](/reference/errors). A code keeps its meaning. New
+  codes may be added, so treat a code you do not know as a failure.
+- `retryable` is decided where the error is raised, because whether a retry can
+  help may depend on the source. **Read the flag on each error.** Do not infer
+  it from the code.
+- `message` is for people. Its wording may change. Do not match on it.
+- Errors never contain connection strings, credentials, SQL or query values.
+
+### Results
+
+`QueryExecutionResult`: `rows` (each row maps a logical field name to a value),
+`query_fingerprint` and `catalog_fingerprint`. The fingerprints are stable
+within one version. They may differ between versions, so do not store them
+across an upgrade.
+
+### The plan explanation
+
+`PlanExplanation`: `plan_kind`, the fingerprints, and each node's `kind`,
+`location`, `fields`, `pushed_filter_fields`, `residual_filter`, `ordering`,
+`limit` and `key_transfer_max_keys`.
+
+The text lines in `detail` and `optimizer` are for people. Their wording may
+change in any release. Do not match on them.
+
+### The Python API
+
+The names exported from the top-level `yodb` package, described in
+[Python API](/reference/python):
+
+- `yodb.connect` and `YoDb`, with `query`, `explain`, `describe`, `status`,
+  `refresh`, `close`, and the `catalog`, `limits` and `semantic_enabled`
+  properties.
+- `QueryExecutionResult`, `PlanExplanation`, `PlanExplanationNode` and
+  `CatalogRefreshResult`.
+- `Catalog`, `load_catalog` and `CatalogValidationError`.
+- `YoDbError` and its subclasses, `ErrorCode` and `ErrorDetail`.
+
+### The command line
+
+The commands `catalog`, `validate`, `explain`, `query` and `mcp`, their
+documented options, and the exit statuses:
+
+| Status | Meaning |
+| --- | --- |
+| 0 | Success |
+| 1 | A YoDb error (the message carries the code) |
+| 2 | Wrong usage |
+| 3 | An unexpected internal error |
+
+The `json` and `jsonl` output formats are stable. The `table` format is for
+people and may change.
+
+### The MCP server
+
+The three tools `describe_catalog`, `query` and `explain`, their inputs, and the
+keys of their results, as described in [MCP](/reference/mcp). The guide text the
+server gives an agent may be reworded.
+
+### Limits
+
+The key names returned by `db.limits` are stable. The values are defaults: they
+may be raised in a later version, and are not lowered within 0.x. See
+[Limits](/reference/limits).
+
+## Experimental
+
+- **The semantic filter's provider interfaces**: the verifier and embedder you
+  supply, `SemanticRuntime`, `SemanticExtension`, and the report under
+  `result.reports["semantic"]`.
+- **The policy arguments of `yodb.connect`**: `planner_policy`,
+  `execution_policy`, `join_policy` and `pool_factory`.
+- **Connection resolvers**: `PostgresConnectionSettings` and the resolver
+  classes in `yodb.connections`.
+- **The dict shapes returned by `db.describe()` and `db.status()`**.
+
+## Internal
+
+Everything else, including the subpackages `yodb.planning`, `yodb.execution`,
+`yodb.compilation`, `yodb.inspection`, `yodb.joins`, `yodb.operators`,
+`yodb.query` and `yodb.runtime`, the adapter and registry classes, and the
+physical plan nodes. They can be imported, and the tests do, but nothing about
+them is promised.
+
+## Changing a stable part
+
+1. The old form keeps working for at least one release, and the changelog lists
+   it under **Deprecated**.
+2. The release that removes it lists it under **Removed**.
+
+A change that fixes a wrong answer is not held back by this rule. It is listed
+under **Fixed**.

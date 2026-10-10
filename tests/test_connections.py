@@ -4,14 +4,8 @@ from contextlib import contextmanager
 from typing import Any, Iterator
 import unittest
 
-from yodb import (
-    ConnectionAdapterRegistry,
-    ErrorCode,
-    MappingPostgresConnectionResolver,
-    PostgresConnectionAdapter,
-    PostgresConnectionSettings,
-    SourceConnectionError,
-)
+from yodb import ErrorCode, SourceConnectionError
+from yodb.connections import ConnectionAdapterRegistry, MappingPostgresConnectionResolver, PostgresConnectionAdapter, PostgresConnectionSettings
 from yodb.catalog import SourceKind
 
 

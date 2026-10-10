@@ -1,63 +1,152 @@
 ---
-title: Overview
-description: Start with YoDb's three-file catalog.
+title: Concepts
+description: The handful of terms YoDb uses, each with an example.
 ---
 
-## Build a catalog in three steps
+YoDb has a small vocabulary. This page defines each term once, using the sample
+shop from the [Quickstart](/getting-started/quickstart).
 
-1. Define business datasets and fields in `datasets.yaml`.
-2. Map only approved source resources and physical fields in `sources.yaml`.
-3. Define approved dataset relationships in `relations.yaml`.
-
-```text
-catalog/
-├── datasets.yaml
-├── sources.yaml
-└── relations.yaml
-```
-
-The catalog has no user-authored mapping files beyond these three documents.
-Read [YAML syntax](/catalog/yaml-syntax) for the object and list notation used
-in examples.
-
-## Static catalog loading
-
-Static loading validates YAML structure and cross-file references. It is safe
-to run in CI because it never resolves `connection_ref` or connects to a
-source.
-
-```python
-from yodb import load_catalog
-
-catalog = load_catalog("catalog")
-print(catalog.datasets.keys())
-```
-
-## Inspect and validate PostgreSQL
-
-The implemented PostgreSQL path is separate from static loading:
+## The picture
 
 ```text
-connection reference → connection resolver → bounded PostgreSQL pool
-                     → read-only inspection snapshot → catalog validation report
+            you ask about:                 YoDb reads:
+
+            customer  ───────────────────  crm database      (name, country)
+              │        └─────────────────  billing database  (plan)
+              │ customer_has_ticket
+              ▼
+            ticket    ───────────────────  support database  (subject, status)
 ```
 
-The inspector reads metadata, not business rows. It discovers tables/views,
-columns, native types, primary and unique keys, foreign keys, indexes,
-extensions, and pgvector facts. The validator then checks that the catalog's
-resource, field, type, and identity claims match that snapshot.
+On the left is what a caller sees: two datasets and a relationship between
+them. On the right is where the data really is. The catalog is the mapping
+between the two.
 
-See [PostgreSQL inspection](/inspection/postgres) for the integration contract.
+## Catalog
 
-From the repository root, run the test suite with:
+The **catalog** is a directory of three YAML files that describes your data. You
+write it once. It is the only place where table and column names appear.
 
-```bash
-PYTHONPATH=src python3 -m unittest discover -s tests -v
-```
+| File | Says |
+| --- | --- |
+| `datasets.yaml` | what datasets and fields exist, in business terms |
+| `sources.yaml` | which database, table and column each field comes from |
+| `relations.yaml` | how datasets connect to each other |
 
-Install the project before using PostgreSQL pooling:
+A table or column that is not in the catalog does not exist as far as YoDb is
+concerned. Nothing can query it. See [Catalog overview](/catalog/overview).
 
-```bash
-python3 -m venv .venv
-.venv/bin/pip install -e .
-```
+## Dataset and field
+
+A **dataset** is a kind of thing you have data about: `customer`, `ticket`,
+`order`. A **field** is one fact about it: a customer's `name`, a ticket's
+`status`. Each field has a type, such as `string`, `int` or `timestamp`.
+
+A dataset looks like a table to the caller, but it does not have to be one
+table. In the shop, `customer` is built from two tables in two databases.
+
+A field can be marked `visibility: internal`. An internal field can be used to
+match rows, but a query cannot select or filter on it.
+
+## Source
+
+A **source** is one database that YoDb reads. Each source says which datasets it
+holds and maps each field to a column. A source is always read-only.
+
+Today a source is a PostgreSQL database.
+
+## Connection reference
+
+A source does not contain a password or a host name. It has a
+**`connection_ref`**: a short name such as `crm`. YoDb looks the real connection
+string up outside the catalog, by default in the environment variable
+`YODB_CONN_CRM`. This keeps secrets out of files you commit.
+
+## ID and identity
+
+Every dataset has a field called **`id`**: the value that identifies one record,
+such as a customer number.
+
+When a dataset is spread over several sources, each source says which of its
+columns holds that same `id`. YoDb uses it to match rows: the `crm` row and the
+`billing` row with the same `id` are the same customer. That column must be a
+primary key or have a unique constraint, so that one ID means one row.
+
+One source is the dataset's **identity source**. It decides which records exist.
+The other sources only add fields to them. If `billing` has no row for a
+customer, that customer still appears, with an empty `plan`.
+
+## Relationship
+
+A **relationship** connects two different datasets: a ticket belongs to a
+customer. It names the two fields that must be equal, here `customer.id` and
+`ticket.customer_id`.
+
+A query follows a relationship with `traverse`. This is a join, and it works
+even when the two datasets are in different databases. A query can only follow
+relationships that the catalog declares. See [Joins](/query/joins).
+
+Do not confuse the two kinds of matching:
+
+| | Matches | Declared by |
+| --- | --- | --- |
+| Identity | rows of the **same** dataset in different sources | each source mapping the dataset's `id` |
+| Relationship | rows of **different** datasets | an entry in `relations.yaml` |
+
+## Query
+
+A **query** is a JSON object that asks for records of one dataset: which fields,
+which filter, what order, and how many. It uses dataset and field names only.
+It is never SQL. See [Query model](/query/query-model).
+
+## Logical and physical
+
+The docs use two words for the two sides of the picture above.
+
+- **Logical** means the names a caller uses: the dataset `customer`, the field
+  `plan`.
+- **Physical** means what is really in a database: the table
+  `public.subscriptions`, the column `plan`.
+
+Callers only ever see logical names. That is why you can move a column to
+another database, update the catalog, and leave every query unchanged.
+
+## Plan
+
+Before running a query, YoDb decides which sources to read, in what order, and
+what to ask each one. That decision is the **plan**, and `yodb explain` prints
+it. Three words appear in plans:
+
+- **Pushed** (or pushdown): a filter the database applies itself, so only
+  matching rows travel. This is the fast case.
+- **Coordinator**: YoDb's own process, where rows from different sources are put
+  together.
+- **Guard**: a row limit. A query that would read more than the limit is
+  stopped and refused, so one question cannot overload a database.
+
+See [How queries are planned](/query/planning).
+
+## Validation
+
+YoDb checks the catalog twice.
+
+1. **Loading** reads the three files and checks they are well formed and agree
+   with each other. It needs no database. `yodb catalog` does this.
+2. **Validation** connects to each database and checks that every table and
+   column in the catalog exists, has a compatible type, and that each `id`
+   column is unique. `yodb validate` does this.
+
+YoDb only answers queries from a catalog that has passed both.
+
+## Semantic filter
+
+A **semantic filter** is a condition written as a sentence, such as "the
+customer is asking about a late delivery". A model that you supply reads each
+candidate record and decides whether the sentence is true of it. See
+[Semantic filter](/query/semantic-filter).
+
+## MCP
+
+**MCP** (Model Context Protocol) is a standard way to give an AI agent tools.
+`yodb mcp` offers a catalog to an agent as three tools: describe the catalog,
+run a query, and explain a query. See [MCP server](/reference/mcp).

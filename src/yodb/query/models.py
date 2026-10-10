@@ -92,7 +92,6 @@ class OrderTerm:
 @dataclass(frozen=True)
 class PageRequest:
     first: int | None = None
-    after: str | None = None
 
 
 @dataclass(frozen=True)
@@ -101,7 +100,6 @@ class QueryConstraints:
     maximum_latency_ms: int | None = None
     maximum_cost: float | None = None
     minimum_quality: float | None = None
-    allow_partial_results: bool | None = None
 
 
 @dataclass(frozen=True)

@@ -3,8 +3,12 @@ title: datasets.yaml
 description: Define business datasets and their typed, user-facing fields.
 ---
 
-`datasets.yaml` defines business meaning. It contains no database names, table
-names, labels, properties, columns, or connection configuration.
+`datasets.yaml` lists the datasets and fields that callers can query, in the
+words your business uses. It contains no database, table or column names: those
+go in [`sources.yaml`](/catalog/sources).
+
+The descriptions matter. They are what a person or an AI agent reads to decide
+which field to use, so write them for someone who has never seen your tables.
 
 ```yaml
 api_version: yodb/v0.1
@@ -75,6 +79,15 @@ datasets:
 Every dataset must contain a public `id` field with `type: id`. The physical
 column supplying it is configured later in `sources.yaml`.
 
-`internal` does not mean undeclared. An internal field is explicitly mapped,
-checked during inspection, and available to approved identity or relationship
-implementations. It is simply not a normal caller-facing field.
+## Internal fields
+
+A field with `visibility: internal` is mapped and checked like any other, and
+YoDb can use it to match rows for a relationship. Callers cannot use it: a query
+that selects or filters on it is refused with `field_not_accessible`, and it is
+left out of what an AI agent is shown over [MCP](/reference/mcp). `yodb catalog`
+still lists it, because that command is for the person who maintains the
+catalog.
+
+Use it for a key that links two datasets but that callers should not read. Note
+that a relationship which joins on an internal field cannot be followed by a
+query yet; see [Joins](/query/joins).

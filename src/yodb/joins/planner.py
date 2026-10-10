@@ -166,8 +166,6 @@ class JoinPlanner:
 
     def _page(self, root_raw: Mapping[str, Any]) -> tuple[int, int | None]:
         page = _parse_page(root_raw["page"]) if "page" in root_raw else None
-        if page is not None and page.after is not None:
-            _fail(ErrorCode.QUERY_FEATURE_NOT_SUPPORTED, "Cursor execution is unavailable until signed cursor verification is implemented.", "page.after")
         first = _validate_page(page, self._user_policy).first
         constraints = root_raw.get("constraints")
         maximum = constraints.get("maximum_results") if isinstance(constraints, Mapping) else None

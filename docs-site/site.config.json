@@ -1,6 +1,6 @@
 {
   "site_name": "YoDb",
-  "site_description": "Documentation for the YoDb federated data catalog.",
+  "site_description": "Documentation for YoDb: one typed way to query data in several PostgreSQL databases.",
   "navigation": [
     {
       "label": "Get started",
@@ -15,20 +15,16 @@
         },
         {
           "path": "getting-started/overview",
-          "label": "Overview"
+          "label": "Concepts"
         }
       ]
     },
     {
-      "label": "Catalog configuration",
+      "label": "Writing a catalog",
       "pages": [
         {
           "path": "catalog/overview",
           "label": "Catalog overview"
-        },
-        {
-          "path": "catalog/yaml-syntax",
-          "label": "YAML syntax"
         },
         {
           "path": "catalog/datasets",
@@ -41,28 +37,74 @@
         {
           "path": "catalog/relations",
           "label": "relations.yaml"
-        }
-      ]
-    },
-    {
-      "label": "Source inspection",
-      "pages": [
-        {
-          "path": "inspection/postgres",
-          "label": "PostgreSQL inspection"
         },
         {
-          "path": "inspection/catalog-runtime",
-          "label": "Catalog runtime"
+          "path": "catalog/yaml-syntax",
+          "label": "YAML syntax"
         }
       ]
     },
     {
-      "label": "Querying data",
+      "label": "Querying",
       "pages": [
         {
           "path": "query/query-model",
           "label": "Query model"
+        },
+        {
+          "path": "query/joins",
+          "label": "Joins"
+        },
+        {
+          "path": "query/semantic-filter",
+          "label": "Semantic filter"
+        }
+      ]
+    },
+    {
+      "label": "Using YoDb",
+      "pages": [
+        {
+          "path": "reference/cli",
+          "label": "Command line"
+        },
+        {
+          "path": "reference/python",
+          "label": "Python API"
+        },
+        {
+          "path": "reference/mcp",
+          "label": "MCP server for AI agents"
+        },
+        {
+          "path": "operations/operating",
+          "label": "Running YoDb"
+        }
+      ]
+    },
+    {
+      "label": "Reference",
+      "pages": [
+        {
+          "path": "reference/errors",
+          "label": "Errors"
+        },
+        {
+          "path": "reference/limits",
+          "label": "Limits"
+        },
+        {
+          "path": "reference/compatibility",
+          "label": "Compatibility"
+        }
+      ]
+    },
+    {
+      "label": "How it works",
+      "pages": [
+        {
+          "path": "query/planning",
+          "label": "How queries are planned"
         },
         {
           "path": "query/source-resolution",
@@ -77,46 +119,12 @@
           "label": "Query execution"
         },
         {
-          "path": "query/planning",
-          "label": "How queries are planned"
+          "path": "inspection/postgres",
+          "label": "PostgreSQL inspection"
         },
         {
-          "path": "query/joins",
-          "label": "Joins"
-        },
-        {
-          "path": "query/semantic-filter",
-          "label": "Semantic filter"
-        }
-      ]
-    },
-    {
-      "label": "Reference",
-      "pages": [
-        {
-          "path": "reference/cli",
-          "label": "Command line"
-        },
-        {
-          "path": "reference/mcp",
-          "label": "MCP server"
-        },
-        {
-          "path": "reference/errors",
-          "label": "Errors"
-        },
-        {
-          "path": "reference/limits",
-          "label": "Limits"
-        }
-      ]
-    },
-    {
-      "label": "Operations",
-      "pages": [
-        {
-          "path": "operations/operating",
-          "label": "Running YoDb"
+          "path": "inspection/catalog-runtime",
+          "label": "Catalog runtime"
         }
       ]
     }

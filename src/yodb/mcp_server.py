@@ -74,7 +74,7 @@ which joined rows can match, before matching: it cannot find rows that have no m
 Only a relationship with "traversable": true can be used.
 
 Not available: aggregation (count, sum, group by), distinct, more than one traverse step, a next page
-(page.after), and comparing two fields with each other@NO_SEMANTIC@. To count, fetch the rows and count them.
+(there are no cursors), and comparing two fields with each other@NO_SEMANTIC@. To count, fetch the rows and count them.
 A query that would read more than @SOURCE_ROWS@ rows from one source, or join more than @JOINED_ROWS@, is refused
 with query_row_limit_exceeded or query_coordinator_limit_exceeded, whatever page.first is: add a filter
 on a field with few matching rows (an eq or in, or a range). contains and starts_with are applied after

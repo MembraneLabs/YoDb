@@ -404,7 +404,7 @@ def build_error_cases(connection) -> list[Case]:
         error_case("limits", "page.first = 0", {**valid, "page": {"first": 0}}),
         error_case("limits", "page.first above the maximum (501)", {**valid, "page": {"first": 501}}),
         error_case("limits", "in-list above the maximum (1001 values)", {**valid, "where": {"field": "customer_ref", "op": "in", "value": [f"u{i}" for i in range(1001)]}}),
-        error_case("limits", "cursor not supported yet", {**valid, "page": {"first": 5, "after": "abc"}}, "not_supported"),
+        error_case("limits", "a cursor is not part of a page", {**valid, "page": {"first": 5, "after": "abc"}}, "shape_invalid"),
         error_case("unimplemented_operator", "group_by", {**valid, "group_by": ["status"]}),
         error_case("unimplemented_operator", "aggregate", {**valid, "aggregate": {"count": "*"}}),
         error_case("unimplemented_operator", "distinct", {**valid, "distinct": True}),
@@ -485,7 +485,7 @@ def semantic_error_cases() -> list[Case]:
         error_case("semantic_rules", "unknown semantic key", {**ticket, "where": {"semantic": {"field": "body", "proposition": "x", "extra": 1}}}, "", engines),
         error_case("semantic_rules", "minimum_quality out of range", {**ticket, "constraints": {"minimum_quality": 1.5}, "where": sem}, "", engines),
         error_case("semantic_rules", "minimum_quality without a semantic term", {**ticket, "constraints": {"minimum_quality": 0.5}, "where": plain}, "", engines),
-        error_case("semantic_rules", "semantic with a cursor", {**ticket, "page": {"first": 5, "after": "x"}, "where": sem}, "not_supported", engines),
+        error_case("semantic_rules", "semantic with a cursor", {**ticket, "page": {"first": 5, "after": "x"}, "where": sem}, "shape_invalid", engines),
     ]
 
 

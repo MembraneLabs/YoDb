@@ -190,7 +190,7 @@ CASES = [
     Case("E02 unknown field", q(["name", "ssn"]), expect_error=""),
     Case("E03 raw SQL is not accepted", {**q(["name"]), "sql": "SELECT 1"}, expect_error=""),
     Case("E04 unsupported operator", q(["name"], {"field": "name", "op": "like", "value": "%a%"}), expect_error=""),
-    Case("E05 cursor not supported yet", q(["name"], after="abc"), expect_error="not_supported"),
+    Case("E05 a cursor is not part of a page", q(["name"], after="abc"), expect_error="shape_invalid"),
     Case("E07 naive timestamp (no timezone) is rejected", q(["name"], p("signup_at", "gte", "2024-01-01T00:00:00")), expect_error="type_invalid"),
     Case("E06 type mismatch (string vs int)", q(["name"], p("seats", "eq", "many")), expect_error=""),
 ]

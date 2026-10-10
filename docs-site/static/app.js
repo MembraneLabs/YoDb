@@ -4,6 +4,7 @@ function inline(value) {
   let text = escapeHtml(value);
   text = text.replace(/`([^`]+)`/g, "<code>$1</code>");
   text = text.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  text = text.replace(/(^|[\s(])\*([^*\s][^*]*)\*(?=[\s.,;:)]|$)/g, "$1<em>$2</em>");
   return text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, label, url) => {
     const path = url.replace(/^\//, "").replace(/\.mdx?$/, "");
     return url.startsWith("/") ? `<a href="#/${path}">${label}</a>` : `<a href="${url}">${label}</a>`;
@@ -26,26 +27,29 @@ function render(markdown) {
   const [meta, body] = parseFrontmatter(markdown);
   const lines = body.split("\n");
   const output = meta.title ? [`<h1>${inline(meta.title)}</h1>`, meta.description ? `<p class="description">${inline(meta.description)}</p>` : ""] : [];
-  let paragraph = [], list = [], code = null, table = [];
+  let paragraph = [], list = [], ordered = false, quote = [], code = null, table = [];
   const flushParagraph = () => { if (paragraph.length) output.push(`<p>${inline(paragraph.join(" "))}</p>`); paragraph = []; };
-  const flushList = () => { if (list.length) output.push(`<ul>${list.map((item) => `<li>${inline(item)}</li>`).join("")}</ul>`); list = []; };
+  const flushList = () => { if (list.length) { const tag = ordered ? "ol" : "ul"; output.push(`<${tag}>${list.map((item) => `<li>${inline(item)}</li>`).join("")}</${tag}>`); } list = []; };
+  const flushQuote = () => { if (quote.length) output.push(`<blockquote><p>${inline(quote.join(" "))}</p></blockquote>`); quote = []; };
   const flushTable = () => { if (table.length) { const rows = table.filter((row) => !/^\|?\s*[-:]+/.test(row.replaceAll("|", "").trim())); const cells = (row) => row.split("|").slice(1, -1).map((cell) => `<td>${inline(cell.trim())}</td>`).join(""); if (rows.length) output.push(`<table><tbody>${rows.map((row, i) => `<tr>${i === 0 ? cells(row).replaceAll("<td>", "<th>").replaceAll("</td>", "</th>") : cells(row)}</tr>`).join("")}</tbody></table>`); table = []; } };
   for (const line of lines) {
-    if (line.startsWith("```")) { flushParagraph(); flushList(); flushTable(); if (code === null) code = []; else { output.push(`<pre><code>${escapeHtml(code.join("\n"))}</code></pre>`); code = null; } continue; }
+    if (line.startsWith("```")) { flushParagraph(); flushList(); flushQuote(); flushTable(); if (code === null) code = []; else { output.push(`<pre><code>${escapeHtml(code.join("\n"))}</code></pre>`); code = null; } continue; }
     if (code !== null) { code.push(line); continue; }
     if (/^<CardGroup/.test(line) || /^<\/CardGroup/.test(line)) continue;
     const card = line.match(/^\s*<Card title="([^"]+)"[^>]*href="([^"]+)">/);
     if (card) { flushParagraph(); output.push(`<a class="card" href="#/${card[2].replace(/^\//, "")}"><strong>${inline(card[1])}</strong>`); continue; }
     if (/^\s*<\/Card>/.test(line)) { output.push("</a>"); continue; }
-    if (line.startsWith("|")) { flushParagraph(); flushList(); table.push(line); continue; } else flushTable();
+    if (line.startsWith("|")) { flushParagraph(); flushList(); flushQuote(); table.push(line); continue; } else flushTable();
+    if (line.startsWith(">")) { flushParagraph(); flushList(); quote.push(line.replace(/^>\s?/, "")); continue; } else flushQuote();
     const heading = line.match(/^(#{1,3})\s+(.+)$/);
     if (heading) { flushParagraph(); flushList(); output.push(`<h${heading[1].length}>${inline(heading[2])}</h${heading[1].length}>`); continue; }
-    const item = line.match(/^[-*]\s+(.+)$/);
-    if (item) { flushParagraph(); list.push(item[1]); continue; }
+    const item = line.match(/^([-*]|\d+\.)\s+(.+)$/);
+    if (item && !(/\d/.test(item[1]) && paragraph.length)) { flushParagraph(); const numbered = /\d/.test(item[1]); if (list.length && numbered !== ordered) flushList(); ordered = numbered; list.push(item[2]); continue; }
+    if (list.length && /^\s+\S/.test(line)) { list[list.length - 1] += " " + line.trim(); continue; }
     if (!line.trim()) { flushParagraph(); flushList(); continue; }
     paragraph.push(line.trim());
   }
-  flushParagraph(); flushList(); flushTable();
+  flushParagraph(); flushList(); flushQuote(); flushTable();
   return output.join("\n");
 }
 

@@ -13,7 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class ErrorCode(str, Enum):
-    """V0.1 error codes needed before query execution exists."""
+    """Every code a YoDb error can carry."""
 
     SOURCE_KIND_UNSUPPORTED = "source_kind_unsupported"
     CONNECTION_REFERENCE_NOT_FOUND = "connection_reference_not_found"
@@ -36,7 +36,6 @@ class ErrorCode(str, Enum):
     QUERY_OPERATOR_NOT_SUPPORTED = "query_operator_not_supported"
     QUERY_EXPRESSION_INVALID = "query_expression_invalid"
     QUERY_LIMIT_INVALID = "query_limit_invalid"
-    CURSOR_QUERY_MISMATCH = "cursor_query_mismatch"
     QUERY_CATALOG_MISMATCH = "query_catalog_mismatch"
     SOURCE_BINDING_UNAVAILABLE = "source_binding_unavailable"
     SOURCE_LOGICAL_ID_UNAVAILABLE = "source_logical_id_unavailable"
