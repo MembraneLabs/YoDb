@@ -31,9 +31,12 @@ the twelve comparison operators, `all` / `any` / `not`, `order_by`,
 ### The catalog files
 
 The three YAML files described under [Catalog](/catalog/overview). Each file
-states its format in `api_version` (`yodb/v0.1` today). A file with a different
-`api_version` is refused, so an old catalog can never be read with new rules
-by accident. Unknown keys are refused.
+states its format in `api_version`. A YoDb reads a file of the same major version
+and any minor version up to its own (`yodb/v0.2` today), file by file, so a
+`yodb/v0.1` catalog keeps loading. A file with a newer minor version, or another
+major version, is refused with an error that names the file. It is never skipped, so a
+catalog can never be read with rules the YoDb does not understand. The format version
+moves only when a file format changes, not with every release. Unknown keys are refused.
 
 ### Errors
 

@@ -15,7 +15,11 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError, model_validator
 
 
-API_VERSION = "yodb/v0.1"
+# The catalog format this YoDb reads: the same major version, and any minor version up to this one.
+# It moves only when a file format changes, not with every release of the package.
+FORMAT_VERSION = (0, 2)
+API_VERSION = f"yodb/v{FORMAT_VERSION[0]}.{FORMAT_VERSION[1]}"
+_API_VERSION = re.compile(r"yodb/v(\d+)\.(\d+)")
 _IDENTIFIER = re.compile(r"^[a-z][a-z0-9_]*$")
 
 
@@ -87,7 +91,7 @@ class CatalogMetadata(StrictModel):
 
 
 class DatasetsDocument(StrictModel):
-    api_version: Literal[API_VERSION]
+    api_version: str
     catalog: CatalogMetadata
     datasets: dict[str, DatasetSpec]
 
@@ -144,7 +148,7 @@ class DatasetResolution(StrictModel):
 
 
 class SourcesDocument(StrictModel):
-    api_version: Literal[API_VERSION]
+    api_version: str
     sources: dict[str, SourceSpec]
     resolution: dict[str, DatasetResolution]
 
@@ -171,7 +175,7 @@ class RelationshipSpec(StrictModel):
 
 
 class RelationsDocument(StrictModel):
-    api_version: Literal[API_VERSION]
+    api_version: str
     relationships: dict[str, RelationshipSpec]
 
 
@@ -217,11 +221,35 @@ def _load_document(path: Path, model: type[StrictModel]) -> Any:
 
     if not isinstance(raw, dict):
         raise CatalogValidationError(f"{path.name} must contain a YAML mapping at its root")
+    _check_api_version(path.name, raw.get("api_version"))
 
     try:
         return model.model_validate(raw)
     except ValidationError as error:
         raise CatalogValidationError(f"Invalid {path.name}: {error}") from error
+
+
+def _check_api_version(file_name: str, declared: Any) -> None:
+    """Refuse a file written for another format major or a newer minor than this YoDb reads.
+
+    A missing key is left to the model, which reports it like any other required key.
+    """
+
+    if declared is None:
+        return
+    match = _API_VERSION.fullmatch(declared) if isinstance(declared, str) else None
+    if match is None:
+        raise CatalogValidationError(f"{file_name}: api_version must look like '{API_VERSION}', not {declared!r}")
+    major, minor = int(match[1]), int(match[2])
+    if (major, minor) > FORMAT_VERSION and major == FORMAT_VERSION[0]:
+        raise CatalogValidationError(
+            f"{file_name}: api_version {declared} is newer than the {API_VERSION} this YoDb reads; "
+            "use a YoDb that supports it."
+        )
+    if major != FORMAT_VERSION[0]:
+        raise CatalogValidationError(
+            f"{file_name}: api_version {declared} is a different major version from the {API_VERSION} this YoDb reads."
+        )
 
 
 def _validate_catalog(catalog: Catalog) -> None:
