@@ -1,0 +1,54 @@
+api_version: yodb/v0.2
+rules:
+  customer:
+    - name: big_accounts
+      definition: Customers licensed for more than twenty seats.
+      condition: {field: seats, op: gt, value: 20}
+    - name: vip
+      definition: Customers flagged as VIP.
+      condition: {field: is_vip, op: eq, value: true}
+    - name: billed
+      definition: Customers that have a billing plan.
+      condition: {field: plan, op: is_not_null}
+    - name: heavily_supported
+      definition: Customers with at least two open support tickets.
+      condition: {field: open_tickets, op: gte, value: 2}
+    - name: big_vip
+      definition: A VIP customer with more than twenty seats.
+      condition: {all: [{rule: big_accounts}, {rule: vip}]}
+    - name: needs_attention
+      definition: A big customer with many open tickets, or any customer without a billing plan.
+      condition:
+        any:
+          - all: [{rule: big_accounts}, {rule: heavily_supported}]
+          - not: {rule: billed}
+    - name: outside_the_us
+      definition: Customers outside the US.
+      condition: {field: country, op: ne, value: US}
+      visible: false
+    - name: foreign_vip
+      definition: A VIP customer outside the US.
+      condition: {all: [{rule: vip}, {rule: outside_the_us}]}
+  order:
+    - name: large_order
+      definition: Orders above one hundred.
+      condition: {field: amount, op: gt, value: 100}
+    - name: rushed
+      definition: Orders marked as rush.
+      condition: {field: rush, op: eq, value: true}
+    - name: settled_payment
+      definition: Orders whose payment has settled.
+      condition: {field: settled, op: eq, value: true}
+    - name: shipped_fast
+      definition: Orders delivered within three days.
+      condition: {field: days, op: lte, value: 3}
+    - name: urgent_large
+      definition: A large order that was rushed or shipped fast.
+      condition: {all: [{rule: large_order}, {any: [{rule: rushed}, {rule: shipped_fast}]}]}
+    - name: not_cancelled
+      definition: Orders that are not cancelled.
+      condition: {field: status, op: ne, value: cancelled}
+      visible: false
+    - name: live_large
+      definition: A large order that is not cancelled.
+      condition: {all: [{rule: not_cancelled}, {rule: large_order}]}

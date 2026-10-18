@@ -55,6 +55,9 @@ The sections below give the detail.
   logical ID. The catalog validator rejects identities that are not backed by a
   primary or unique key.
 - **Read-only.** There is no write path.
+- **Rules** (see [rules.yaml](/catalog/rules)) are filters only: no parameters, no relative time, no field of another
+  dataset, no semantic condition. A rule builds on others at most 8 levels deep; its condition nests 8 levels and
+  holds 200 terms; a query whose rules expand past 1,000 terms or 32 levels is refused.
 
 ## Size and memory
 

@@ -149,8 +149,37 @@ def wire(kind: str, value):
 Tree = tuple
 
 
+# The rules of tests/e2e/catalog/rules.yaml as trees, so the oracle can expand them by hand: ("r", name) is a rule term.
+# Hidden rules (visible=False) are in the bodies only; a query never names them.
+RULE_BODIES: dict[str, Tree] = {
+    "big_accounts": ("p", "seats", "gt", 20),
+    "vip": ("p", "is_vip", "eq", True),
+    "billed": ("p", "plan", "is_not_null", None),
+    "heavily_supported": ("p", "open_tickets", "gte", 2),
+    "big_vip": ("all", [("r", "big_accounts"), ("r", "vip")]),
+    "needs_attention": ("any", [("all", [("r", "big_accounts"), ("r", "heavily_supported")]), ("not", ("r", "billed"))]),
+    "outside_the_us": ("p", "country", "ne", "US"),
+    "foreign_vip": ("all", [("r", "vip"), ("r", "outside_the_us")]),
+    "large_order": ("p", "amount", "gt", 100),
+    "rushed": ("p", "rush", "eq", True),
+    "settled_payment": ("p", "settled", "eq", True),
+    "shipped_fast": ("p", "days", "lte", 3),
+    "urgent_large": ("all", [("r", "large_order"), ("any", [("r", "rushed"), ("r", "shipped_fast")])]),
+    "not_cancelled": ("p", "status", "ne", "cancelled"),
+    "live_large": ("all", [("r", "not_cancelled"), ("r", "large_order")]),
+}
+VISIBLE_RULES = {
+    "customer": ["big_accounts", "vip", "billed", "heavily_supported", "big_vip", "needs_attention", "foreign_vip"],
+    "order": ["large_order", "rushed", "settled_payment", "shipped_fast", "urgent_large", "live_large"],
+}
+HIDDEN_RULES = {"customer": "outside_the_us", "order": "not_cancelled"}
+ORDER_FIELD = {"customer": "seats", "order": "amount"}
+
+
 def render(ds: DS, tree: Tree) -> tuple[dict, str]:
     tag = tree[0]
+    if tag == "r":
+        return {"rule": tree[1]}, render(ds, RULE_BODIES[tree[1]])[1]
     if tag == "p":
         _, name, op, value = tree
         f = ds.field(name)
@@ -185,7 +214,9 @@ def render(ds: DS, tree: Tree) -> tuple[dict, str]:
 
 
 def leaves(tree: Tree):
-    if tree[0] == "p":
+    if tree[0] == "r":
+        yield from leaves(RULE_BODIES[tree[1]])
+    elif tree[0] == "p":
         yield tree
     else:
         for child in tree[1] if tree[0] in ("all", "any") else (tree[1],):
@@ -371,6 +402,60 @@ def build_relational_cases(connection, rng: random.Random) -> list[Case]:
     for first in (1, 2, 99, 100, 101, 500):
         cases.append(relational_case("page", f"order first={first}", ORDER, ["status"], None, first=first))
     return cases
+
+
+def rule_tree(ds: DS, sampler: Sampler, rng: random.Random, depth: int) -> Tree:
+    """A random boolean tree whose leaves are often rules, so rules sit under all, any and not beside typed filters."""
+
+    if depth == 0 or rng.random() < 0.35:
+        return ("r", rng.choice(VISIBLE_RULES[ds.name])) if rng.random() < 0.6 else random_leaf(ds, sampler, rng)
+    kind = rng.choice(["all", "all", "any", "any", "not"])
+    if kind == "not":
+        return ("not", rule_tree(ds, sampler, rng, depth - 1))
+    return (kind, [rule_tree(ds, sampler, rng, depth - 1) for _ in range(rng.randint(2, 3))])
+
+
+def build_rule_cases(connection, rng: random.Random) -> list[Case]:
+    """Every query that names a rule must return what the same query with the rule written out returns."""
+
+    sampler = Sampler(connection)
+    cases: list[Case] = []
+    for ds in (CUSTOMER, ORDER):
+        names = VISIBLE_RULES[ds.name]
+        for name in names:
+            body = RULE_BODIES[name]
+            homes = "".join(sorted({ds.field(leaf[1]).home for leaf in leaves(("r", name))}))
+            cases.append(relational_case("rule", f"{ds.name} rule {name}", ds, [ds.field(next(leaves(body))[1]).name], ("r", name), sources=homes))
+            cases.append(relational_case("rule", f"{ds.name} not rule {name}", ds, ["id"], ("not", ("r", name)), sources=homes))
+            leaf = random_leaf(ds, sampler, rng)
+            cases.append(relational_case("rule", f"{ds.name} rule {name} and a typed filter", ds, [leaf[1]], ("all", [("r", name), leaf]), sources=homes))
+            cases.append(relational_case("rule", f"{ds.name} rule {name} or a typed filter", ds, [leaf[1]], ("any", [leaf, ("r", name)]), sources=homes))
+            # not ordered by a text field: across sources YoDb orders text by code point, a database by its collation (see limits)
+            cases.append(relational_case("rule", f"{ds.name} rule {name} ordered, first=7", ds, [ORDER_FIELD[ds.name]], ("r", name),
+                                         order=[(ORDER_FIELD[ds.name], "desc")], first=7, sources=homes))
+        for a, b in itertools.combinations(names, 2):
+            cases.append(relational_case("rule", f"{ds.name} rules {a} and {b}", ds, [ds.fields[0].name], ("all", [("r", a), ("r", b)])))
+            cases.append(relational_case("rule", f"{ds.name} rules {a} or not {b}", ds, [ds.fields[0].name], ("any", [("r", a), ("not", ("r", b))])))
+        for i in range(120):
+            tree = rule_tree(ds, sampler, rng, depth=3)
+            select = rng.sample([f.name for f in ds.fields], k=rng.randint(1, 3))
+            cases.append(relational_case("rule", f"{ds.name} rule tree #{i}", ds, select, tree, first=rng.choice([5, 50, 500]), leaves=len(list(leaves(tree)))))
+    return cases
+
+
+def build_rule_error_cases() -> list[Case]:
+    valid = {"from": {"dataset": "order"}, "select": ["status"], "page": {"first": 5}}
+    where = lambda name: {**valid, "where": {"rule": name}}   # noqa: E731
+    return [
+        error_case("rule_errors", "unknown rule", where("no_such_rule"), "rule_not_found"),
+        error_case("rule_errors", "near miss of a rule name", where("large_ordr"), "rule_not_found"),
+        error_case("rule_errors", "a hidden rule cannot be named", where(HIDDEN_RULES["order"]), "rule_not_found"),
+        error_case("rule_errors", "a rule of another dataset", where("big_vip"), "rule_not_applicable"),
+        error_case("rule_errors", "a field name is not a rule", where("amount"), "rule_not_found"),
+        error_case("rule_errors", "a rule term holds only its name", {**valid, "where": {"rule": "rushed", "field": "status"}}, "expression_invalid"),
+        error_case("rule_errors", "a rule name must be a string", {**valid, "where": {"rule": 7}}),
+        error_case("rule_errors", "a rule inside a typed filter is still checked", {**valid, "where": {"all": [{"rule": "rushed"}, {"rule": "nope"}]}}, "rule_not_found"),
+    ]
 
 
 def build_error_cases(connection) -> list[Case]:
@@ -827,7 +912,10 @@ def main(argv: list[str]) -> int:
     rng = random.Random(seed)
     matrix = Matrix(verbose)
     started = time.perf_counter()
-    cases = [*build_relational_cases(matrix.oracle, rng), *build_limit_boundary_cases(matrix.oracle), *build_error_cases(matrix.oracle), *semantic_error_cases()]
+    # The rule cases draw from their own generator, so adding them leaves every other case as it was.
+    rule_rng = random.Random(seed + 1)
+    cases = [*build_relational_cases(matrix.oracle, rng), *build_limit_boundary_cases(matrix.oracle), *build_error_cases(matrix.oracle), *semantic_error_cases(),
+             *build_rule_cases(matrix.oracle, rule_rng), *build_rule_error_cases()]
     wanted = lambda category: only is None or category in only
     print(f"== generated {len(cases)} relational/error cases, {len(build_semantic_cases())} semantic cases, seed={seed}")
     for case in cases:

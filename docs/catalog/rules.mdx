@@ -1,0 +1,143 @@
+---
+title: rules.yaml
+description: Write down what a business word means once, and let a query use it by name.
+---
+
+`rules.yaml` is an optional file. In it you write down what a business word means, for
+example "a paying customer is on the pro or team plan", and give it a name. A query then
+says `{"rule": "paying"}` and gets that meaning, whoever or whatever asks. An AI agent that
+reads your catalog does not have to guess what "paying" means, and cannot change it.
+
+```text
+catalog/
+├── datasets.yaml
+├── sources.yaml
+├── relations.yaml
+└── rules.yaml      # optional
+```
+
+A catalog without `rules.yaml` behaves exactly as before.
+
+## A rule
+
+A rule has four parts.
+
+| Key | Required | Meaning |
+| --- | --- | --- |
+| `name` | Yes | What a query calls it. Lower snake case, unique across the whole catalog |
+| `definition` | Yes | One sentence for the reader, and for an AI agent, saying what the rule means. It is shown in discovery and in answers |
+| `condition` | Yes | The filter YoDb runs. It is written in the same language as a query's [`where`](/query/query-model), and it can use other rules |
+| `visible` | No | `true` by default. A rule with `visible: false` is not listed and cannot be named in a query (see [Hidden rules](#hidden-rules)) |
+
+Rules are grouped by the dataset they belong to:
+
+```yaml
+api_version: yodb/v0.2
+rules:
+  customer:
+    - name: paying
+      definition: Customers on a paid plan (pro or team).
+      condition: {field: plan, op: in, value: [pro, team]}
+    - name: european
+      definition: Customers in Europe (the UK and Finland).
+      condition: {field: country, op: in, value: [UK, FI]}
+    - name: paying_european
+      definition: A paying customer in Europe.
+      condition: {all: [{rule: paying}, {rule: european}]}
+  ticket:
+    - name: needs_attention
+      definition: An urgent ticket that is not closed.
+      condition:
+        all:
+          - {field: status, op: ne, value: closed}
+          - {field: priority, op: gte, value: 4}
+```
+
+The file starts with `api_version: yodb/v0.2` (an earlier version is refused, because the
+file did not exist before).
+
+## Using a rule
+
+A rule is a filter term. It goes anywhere a condition can go: alone, or beside other rules
+and ordinary conditions inside `all`, `any` and `not`.
+
+```json
+{"from": {"dataset": "customer"},
+ "where": {"all": [{"rule": "paying"}, {"field": "country", "op": "eq", "value": "UK"}]}}
+```
+
+This returns exactly what the same query returns with the rule written out. YoDb replaces
+the rule with its condition before it plans the query, so a rule is pushed to the database,
+limited by the row guards and shown by `explain` like any condition you typed.
+
+A rule belongs to one dataset and can be used on that dataset only. In a
+[join](/query/joins), a rule in the top-level `where` must belong to the starting dataset,
+and a rule inside a `traverse` step's `where` must belong to the traversed dataset.
+
+## What a rule can and cannot hold
+
+- **A condition is a filter only.** It is not a full query, and it cannot write.
+- **Public fields only.** A rule cannot use a field with `visibility: internal`.
+- **No semantic condition.** A rule cannot hold a `semantic` term.
+- **No parameters, and no relative time.** A rule compares against fixed values.
+  "In the last 30 days" cannot be written yet.
+- **Rules build on rules, as a graph with no loops.** A loop is refused when the catalog
+  loads. A rule may build on others up to 8 levels deep, and its condition may nest 8 levels
+  and hold 200 terms. A query is refused when its rules expand past 1,000 terms or 32 levels.
+
+## Names
+
+A rule name is unique across all rules in the catalog, so `paying` can exist for one
+dataset only. A visible rule must not share its name with a field of any dataset. A hidden
+rule may.
+
+## Hidden rules
+
+A rule with `visible: false` is a building block. Other rules can be built from it, but:
+
+- it is not listed in discovery, and a query cannot name it. Naming one gives
+  `rule_not_found`, the same error as for a rule that does not exist, so it cannot be
+  probed for;
+- it is left out of the `applied` entry of an answer;
+- it **does** appear in `explain`, with its condition, when a query used it through another
+  rule. `explain` is a tool for understanding a query, and an agent that calls it can read
+  the condition.
+
+`visible: false` therefore means "not offered", not "secret".
+
+## What a query reports
+
+An answer carries `applied`: the visible rules the query named, each with its dataset and
+definition. A rule that was reached only through another rule is not repeated there.
+
+```json
+{"rows": [...], "applied": {"rules": [
+  {"name": "paying", "dataset": "customer", "definition": "Customers on a paid plan (pro or team)."}]}}
+```
+
+`explain` lists every rule used, including hidden and nested ones, with how it was reached
+and its condition as written. An agent can tell a user "paying means the pro or team
+plan" because YoDb told it so.
+
+## Checks when the catalog loads
+
+Every rule is checked when the catalog loads, so a broken one never reaches a query. The
+error names the file, the rule and the place:
+
+```text
+rules.yaml: rules.customer.paying.condition.field: Unknown field 'plans' on dataset 'customer'.
+```
+
+YoDb refuses a rule that names a missing field or one an operator cannot use, a value of
+the wrong type, a rule on a dataset that does not exist (it suggests the near match), a
+rule that builds on an unknown rule or on a rule of another dataset, a loop, a duplicate
+name, a visible rule named like a field, and a condition that is too large.
+
+## Rules and the sources
+
+A rule means the same thing wherever the data lives. A rule whose fields come from two
+databases works, but a condition that ORs fields from different sources cannot be pushed to
+either one, so it reads both sources unfiltered; see [Limits](/reference/limits). Write such
+a rule as an AND where you can.
+
+See also [How queries are planned](/query/planning) and [Errors](/reference/errors).

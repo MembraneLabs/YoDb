@@ -154,6 +154,19 @@ They nest, up to 32 levels deep and 1,000 conditions in total:
 A condition compares a field with a value. It cannot compare two fields with
 each other.
 
+### A condition written as a name
+
+If the catalog defines [rules](/catalog/rules) for the dataset, a condition can be one of them:
+
+```json
+{"rule": "paying"}
+```
+
+It goes wherever a condition goes, including inside `all`, `any` and `not`, and it means exactly what
+the rule's author wrote. The rules you may use are listed by dataset in `describe_catalog` (or
+`db.describe()`). A rule belongs to one dataset. An unknown rule is refused with `rule_not_found`,
+and a rule of another dataset with `rule_not_applicable`.
+
 ### A condition written as a sentence
 
 If a semantic filter is configured, a condition can be a sentence that a model

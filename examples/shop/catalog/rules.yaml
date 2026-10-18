@@ -1,0 +1,22 @@
+api_version: yodb/v0.2
+rules:
+  customer:
+    - name: paying
+      definition: Customers on a paid plan (pro or team).
+      condition: {field: plan, op: in, value: [pro, team]}
+    - name: european
+      definition: Customers in Europe (the UK and Finland).
+      condition: {field: country, op: in, value: [UK, FI]}
+    - name: paying_european
+      definition: A paying customer in Europe.
+      condition: {all: [{rule: paying}, {rule: european}]}
+  ticket:
+    - name: unresolved
+      definition: Tickets that are not closed.
+      condition: {field: status, op: ne, value: closed}
+    - name: urgent
+      definition: Tickets of priority four or five.
+      condition: {field: priority, op: gte, value: 4}
+    - name: needs_attention
+      definition: An urgent ticket that is not closed.
+      condition: {all: [{rule: unresolved}, {rule: urgent}]}

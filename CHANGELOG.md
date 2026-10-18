@@ -3,9 +3,20 @@
 ## 0.2.0 (unreleased)
 
 ### Added
+- Rules. A rule is a name, a definition for the reader, a condition (a filter) and a `visible` flag, written
+  per dataset in `rules.yaml`. A query uses one as `{"rule": "paying"}`, anywhere a condition can go and on either
+  side of a join; YoDb replaces it with its condition before planning, so pushdown, row guards and `explain` work
+  as for a typed filter. Rules build on rules (no loops), cannot use internal fields or semantic terms, and every
+  rule is checked when the catalog loads. A hidden rule (`visible: false`) is not listed and cannot be named in a
+  query (it is refused like an unknown rule); `explain` still shows it. Experimental.
+- `applied` on results: the visible rules the query named, with their definitions (`result.applied`, the
+  command-line `--format json` output, the MCP `query` answer). `explain` lists every rule used, hidden and
+  nested ones included (`PlanExplanation.rules`, `yodb explain`, the MCP `explain` tool).
+- Rules are listed in discovery: `describe_catalog`, `db.describe()` and `yodb catalog`. The MCP query guide
+  explains `{"rule": ...}` when the catalog has a visible rule.
+- Error codes `rule_not_found` and `rule_not_applicable`.
 - A catalog may declare no relationships (`relationships: {}`), so a catalog of one dataset loads.
-- An optional `rules.yaml` is read from the catalog directory. It must say `api_version: yodb/v0.2` and
-  `rules: {}` for now; rules themselves come later. Experimental.
+- An optional `rules.yaml` is read from the catalog directory and must say `api_version: yodb/v0.2` or later.
 
 ### Fixed
 - A text `contains` or `starts_with` in an `all` no longer stops the conditions beside it from being

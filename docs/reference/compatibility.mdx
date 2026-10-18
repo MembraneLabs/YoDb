@@ -116,8 +116,10 @@ may be raised in a later version, and are not lowered within 0.x. See
 - **Connection resolvers**: `PostgresConnectionSettings` and the resolver
   classes in `yodb.connections`.
 - **The dict shapes returned by `db.describe()` and `db.status()`**.
-- **`rules.yaml`**: an optional fourth catalog file, at `api_version: yodb/v0.2` or later. A catalog may
-  include it, but it cannot define rules yet, so it must say `rules: {}`.
+- **`rules.yaml`** and rules: the optional fourth catalog file (`api_version: yodb/v0.2` or later), the
+  `{"rule": ...}` filter term, and the codes `rule_not_found` and `rule_not_applicable`.
+- **`applied` on results and `rules` in `explain`**: `result.applied`, `PlanExplanation.rules`, and the
+  `applied` and `rules` entries of the command line and MCP answers.
 
 ## Internal
 

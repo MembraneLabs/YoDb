@@ -1,6 +1,6 @@
 ---
 title: Catalog overview
-description: The three YAML files that describe your data, and the rules they share.
+description: The YAML files that describe your data, and the conventions they share.
 ---
 
 The catalog is how you tell YoDb about your data. It is a directory of three
@@ -13,7 +13,7 @@ exist as far as YoDb is concerned.
 New to the terms? Read [Concepts](/getting-started/overview) first. For a
 complete, working catalog, see the [Quickstart](/getting-started/quickstart).
 
-It has exactly three files:
+It has three required files:
 
 ```text
 catalog/
@@ -22,8 +22,10 @@ catalog/
 └── relations.yaml  # approved ways datasets connect
 ```
 
-An optional fourth file, `rules.yaml`, is read but cannot define anything yet. It is experimental (see
-[Compatibility](/reference/compatibility)).
+(plus the optional `rules.yaml`, below).
+
+An optional fourth file, [`rules.yaml`](/catalog/rules), names what a business word means, so a query can
+use it by name. It is experimental (see [Compatibility](/reference/compatibility)).
 
 The files answer different questions, and each is kept free of the others'
 concerns. That separation is what lets you move a column to another database
