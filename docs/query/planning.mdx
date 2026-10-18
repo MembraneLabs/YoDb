@@ -37,7 +37,9 @@ is read separately and the rows are merged by ID.
 - Each condition of the filter that involves only one source is pushed to it, including a
   whole `any` or `not` over that source's fields. A condition that mixes sources stays at
   YoDb, and so does one that could be true of a record missing from a contributor (such as
-  `plan is null`), because pushing it would drop that record.
+  `plan is null`), because pushing it would drop that record. A condition the source cannot
+  run (text `contains` or `starts_with`) stays at YoDb and does not stop the conditions next
+  to it in the same `all` from being pushed.
 - An empty ID set ends the query without reading the remaining sources.
 
 Joining *two datasets* over a relationship is a separate step, described in [Joins](/query/joins).
