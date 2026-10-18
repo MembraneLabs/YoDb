@@ -11,7 +11,7 @@ from typing import ClassVar, Protocol, TypeAlias, runtime_checkable
 
 from ..catalog import SourceKind, VectorMetric
 from ..operators import OperatorKind
-from ..query.models import BoundFilterExpression, BoundOrderTerm, BoundQuery
+from ..query.models import BoundFilterExpression, BoundOrderTerm, BoundQuery, RuleUse
 from ..query.resolution import ResolvedField, SingleSourceQueryBinding, SourceResolvedQuery
 from .capabilities import SourceCapabilities
 from .expressions import filter_fields, filter_shape
@@ -397,6 +397,8 @@ class PlanExplanation:
     nodes: tuple[PlanExplanationNode, ...]
     # How the plan was chosen: cost-based with its estimates, or the fixed rules and why.
     optimizer: tuple[str, ...] = ()
+    # Every rule the query used, hidden ones and those reached through another rule included.
+    rules: tuple[RuleUse, ...] = ()
 
 
 @dataclass(frozen=True)

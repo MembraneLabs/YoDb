@@ -184,9 +184,14 @@ class YoDb:
                     field: {"type": spec.type.value, **({"semantic": True} if spec.semantic_eligible else {})}
                     for field, spec in dataset.fields.items()
                 },
+                **self._rules_of(name),
             }
             for name, dataset in catalog.datasets.items()
         }
+
+    def _rules_of(self, dataset: str) -> dict[str, Any]:
+        rules = {rule.name: rule.definition for rule in self.catalog.rules.get(dataset, ()) if rule.visible}
+        return {"rules": rules} if rules else {}
 
     def status(self) -> dict[str, Any]:
         """The active catalog and each source's validation status."""

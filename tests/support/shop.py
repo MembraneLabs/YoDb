@@ -154,8 +154,35 @@ TICKETS = [
 ASSIGNMENTS = [("t1", "ann"), ("t3", "ann"), ("t4", "bob"), ("t6", "bob"), ("t8", "ann"), ("t13", "bob")]
 
 
-def shop_active():
-    return evaluation(DATASETS, SOURCES, RELATIONS)
+RULES = """\
+api_version: yodb/v0.2
+rules:
+  customer:
+    - name: in_the_us
+      definition: Customers whose country is the US.
+      condition: {field: country, op: eq, value: US}
+    - name: roomy
+      definition: Customers with more than five seats.
+      condition: {field: seats, op: gt, value: 5}
+    - name: big_us
+      definition: A US customer with more than five seats.
+      condition: {all: [{rule: in_the_us}, {rule: roomy}]}
+  ticket:
+    - name: urgent
+      definition: Tickets of priority four or higher.
+      condition: {field: priority, op: gte, value: 4}
+    - name: not_closed
+      definition: Tickets that are not closed.
+      condition: {field: status, op: ne, value: closed}
+      visible: false
+    - name: needs_attention
+      definition: Urgent tickets that are not closed.
+      condition: {all: [{rule: urgent}, {rule: not_closed}]}
+"""
+
+
+def shop_active(rules: str | None = None):
+    return evaluation(DATASETS, SOURCES, RELATIONS, rules)
 
 
 def shop_world() -> SqlWorld:

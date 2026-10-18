@@ -47,6 +47,13 @@ class Predicate:
     value_supplied: bool
 
 
+@dataclass(frozen=True)
+class RuleReference:
+    """A named rule used as a filter term, before it is expanded into the filter it stands for."""
+
+    name: str
+
+
 class ExtensionTerm:
     """Base of a parsed filter term contributed by an extension operator (see ``extensions``)."""
 
@@ -80,7 +87,7 @@ class NotExpression:
     expression: "FilterExpression"
 
 
-FilterExpression: TypeAlias = Predicate | ExtensionTerm | AllExpression | AnyExpression | NotExpression
+FilterExpression: TypeAlias = Predicate | RuleReference | ExtensionTerm | AllExpression | AnyExpression | NotExpression
 
 
 @dataclass(frozen=True)
@@ -172,6 +179,18 @@ class BoundOrderTerm:
 
 
 @dataclass(frozen=True)
+class RuleUse:
+    """One rule a query used, directly or through another rule."""
+
+    name: str
+    dataset: str
+    definition: str
+    visible: bool
+    condition: str          # the rule's condition as written in the catalog, for ``explain``
+    named_in_query: bool    # False when it was reached only through another rule
+
+
+@dataclass(frozen=True)
 class BoundQuery:
     """A query safe for planning, bound to one active catalog evaluation."""
 
@@ -183,4 +202,5 @@ class BoundQuery:
     constraints: QueryConstraints
     query_fingerprint: str
     catalog_fingerprint: str
+    rules: tuple[RuleUse, ...] = ()
 

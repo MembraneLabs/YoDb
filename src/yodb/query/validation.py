@@ -6,7 +6,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 import math
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from ..catalog import LogicalType, Visibility
@@ -36,11 +36,15 @@ from .models import (
     Predicate,
     QueryConstraints,
     QueryRequest,
+    RuleReference,
     SortDirection,
 )
 from .extensions import TermRegistry, extension_terms, validate_placement
 from .fields import bind_public_field
 from .registry import DEFAULT_TERMS
+
+if TYPE_CHECKING:
+    from ..rules import RuleExpansion
 
 
 _EQUALITY_OPERATORS = frozenset(
@@ -140,9 +144,15 @@ def bind_query(
     if "id" not in selected_names:
         selected_fields = (bind_public_field(root, "id", "select"), *selected_fields)
 
+    from ..rules import RuleExpansion       # rules sit above the query package
+    from ..rules.expand import check_expanded_size
+
+    expansion = RuleExpansion(catalog)
     bound_filter = (
-        _bind_expression(request.where, root, "where", policy, terms) if request.where is not None else None
+        _bind_expression(request.where, root, "where", policy, terms, expansion) if request.where is not None else None
     )
+    if expansion.uses:
+        check_expanded_size(bound_filter)
     validate_placement(bound_filter, terms, policy)
     bound_order = _bind_order(request.order_by, root)
     effective_order = _with_id_tiebreaker(bound_order, root)
@@ -177,7 +187,21 @@ def bind_query(
         constraints=constraints,
         query_fingerprint=query_fingerprint(payload),
         catalog_fingerprint=catalog_fingerprint(catalog),
+        rules=expansion.uses,
     )
+
+
+def bind_filter(
+    expression: FilterExpression,
+    root: BoundDataset,
+    location: str,
+    policy: QueryValidationPolicy,
+    terms: TermRegistry,
+    expansion: "RuleExpansion",
+) -> BoundFilterExpression:
+    """Bind one filter to a dataset, expanding the rules in it (a rule's condition is bound this way)."""
+
+    return _bind_expression(expression, root, location, policy, terms, expansion)
 
 
 def _bind_expression(
@@ -186,7 +210,12 @@ def _bind_expression(
     location: str,
     policy: QueryValidationPolicy,
     terms: TermRegistry,
+    expansion: "RuleExpansion",
 ) -> BoundFilterExpression:
+    if isinstance(expression, RuleReference):
+        return expansion.expand(
+            expression, root, location, lambda inner, at: _bind_expression(inner, root, at, policy, terms, expansion)
+        )
     if isinstance(expression, Predicate):
         field = bind_public_field(root, expression.field, f"{location}.field")
         _validate_operator(field, expression, location)
@@ -197,19 +226,19 @@ def _bind_expression(
     if isinstance(expression, AllExpression):
         return BoundAllExpression(
             tuple(
-                _bind_expression(item, root, f"{location}.all[{index}]", policy, terms)
+                _bind_expression(item, root, f"{location}.all[{index}]", policy, terms, expansion)
                 for index, item in enumerate(expression.expressions)
             )
         )
     if isinstance(expression, AnyExpression):
         return BoundAnyExpression(
             tuple(
-                _bind_expression(item, root, f"{location}.any[{index}]", policy, terms)
+                _bind_expression(item, root, f"{location}.any[{index}]", policy, terms, expansion)
                 for index, item in enumerate(expression.expressions)
             )
         )
     if isinstance(expression, NotExpression):
-        return BoundNotExpression(_bind_expression(expression.expression, root, f"{location}.not", policy, terms))
+        return BoundNotExpression(_bind_expression(expression.expression, root, f"{location}.not", policy, terms, expansion))
     raise AssertionError(f"Unknown expression: {expression!r}")
 
 

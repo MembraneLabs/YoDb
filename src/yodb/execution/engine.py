@@ -16,6 +16,7 @@ from ..planning import (
     StatisticsService,
 )
 from ..query import QueryValidationPolicy, bind_query, parse_query, resolve_query_sources
+from ..rules import applied
 from .contracts import ActiveCatalogProvider, QueryExecutionResult
 from .federated import ExecutionTrace, FederatedPlanExecutor
 from .operators import ExecutionExtension, FederatedExecutionPolicy
@@ -108,6 +109,7 @@ class QueryExecutionEngine:
             query_fingerprint=query_fingerprint,
             catalog_fingerprint=catalog_fingerprint,
             reports=reports,
+            applied=applied(planned.explain.rules),
         )
 
     def explain(self, raw_query: Mapping[str, Any]):

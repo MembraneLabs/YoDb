@@ -18,6 +18,7 @@ from .models import (
     Predicate,
     QueryConstraints,
     QueryRequest,
+    RuleReference,
     SortDirection,
 )
 from .registry import DEFAULT_TERMS
@@ -81,6 +82,19 @@ def parse_query(
     )
 
 
+def parse_filter(
+    raw: Any,
+    location: str,
+    terms: TermRegistry = DEFAULT_TERMS,
+    *,
+    maximum_depth: int = MAXIMUM_EXPRESSION_DEPTH,
+    maximum_terms: int = MAXIMUM_EXPRESSION_TERMS,
+) -> FilterExpression:
+    """Parse one filter on its own (a rule's condition), with the same bounds as a query's ``where``."""
+
+    return _parse_expression(raw, location, terms, _Budget(maximum_depth, maximum_terms))
+
+
 def _parse_from(raw: Any) -> DatasetReference:
     value = _mapping(raw, "from")
     _reject_unknown(value, _FROM_KEYS, "from")
@@ -128,6 +142,10 @@ def _parse_expression(raw: Any, location: str, terms: TermRegistry, budget: _Bud
                     location,
                 )
             return extension.parse(value[extension.key], f"{location}.{extension.key}")
+    if "rule" in keys:
+        if len(keys) != 1:
+            _fail(ErrorCode.QUERY_EXPRESSION_INVALID, "A rule term must contain only 'rule'.", location)
+        return RuleReference(_non_empty_string(value["rule"], f"{location}.rule"))
     boolean_keys = keys & {"all", "any", "not"}
     if boolean_keys:
         if len(keys) != 1 or len(boolean_keys) != 1:

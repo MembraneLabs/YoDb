@@ -43,7 +43,7 @@ class SourceRowsExecutor:
         return self._rows[query.source_name]
 
 
-def multi_source_catalog() -> CatalogEvaluation:
+def multi_source_catalog(rules=None) -> CatalogEvaluation:
     sources = {
         "crm": SourceSpec(
             kind=SourceKind.POSTGRES, connection_ref="crm", read_only=True,
@@ -69,6 +69,7 @@ def multi_source_catalog() -> CatalogEvaluation:
         sources=sources,
         resolution={"customer": DatasetResolution(identity_source="crm", field_sources={"id": "crm", "name": "crm", "status": "crm", "plan": "billing"})},
         relationships={},
+        rules=rules or {},
     )
     return CatalogEvaluation(
         catalog=catalog, evaluated_at=_NOW,

@@ -173,7 +173,7 @@ class CatalogLoaderTests(unittest.TestCase):
             ("api_version: yodb/v0.1\nrules: {}\n", "rules.yaml.*yodb/v0.2 or later"),
             ("api_version: yodb/v0.2\nrules: {}\nextra: 1\n", "Invalid rules.yaml"),
             ("api_version: yodb/v0.2\n", "Invalid rules.yaml"),
-            ("api_version: yodb/v0.2\nrules: {customer: {paying: {}}}\n", "cannot define rules yet"),
+            ("api_version: yodb/v0.2\nrules: {customer: {paying: {}}}\n", "Invalid rules.yaml"),
         )
         for text, message in cases:
             with self.subTest(text=text):
@@ -234,6 +234,148 @@ class CatalogLoaderTests(unittest.TestCase):
         with catalog_directory(sources=invalid_sources) as directory:
             with self.assertRaisesRegex(CatalogValidationError, "field_sources.id must match identity_source"):
                 load_catalog(directory)
+
+
+def rules_yaml(body: str) -> str:
+    return "api_version: yodb/v0.2\nrules:\n" + body
+
+
+PAYING = """\
+  customer:
+    - name: named
+      definition: Has a name.
+      condition: {field: name, op: is_not_null}
+    - name: acme
+      definition: Is Acme.
+      condition: {all: [{rule: named}, {field: name, op: eq, value: Acme}]}
+"""
+
+
+class RuleCatalogTests(unittest.TestCase):
+    def load(self, body: str):
+        with catalog_directory(rules=rules_yaml(body)) as directory:
+            return load_catalog(directory)
+
+    def refused(self, body: str, message: str) -> None:
+        with self.assertRaisesRegex(CatalogValidationError, message):
+            self.load(body)
+
+    def test_rules_load_grouped_by_dataset(self) -> None:
+        catalog = self.load(PAYING)
+
+        self.assertEqual([r.name for r in catalog.rules["customer"]], ["named", "acme"])
+        self.assertTrue(catalog.rules["customer"][0].visible)
+        self.assertEqual(catalog.rules["customer"][1].condition["all"][0], {"rule": "named"})
+
+    def test_a_rule_changes_the_catalog_fingerprint(self) -> None:
+        with catalog_directory() as directory:
+            plain = catalog_fingerprint(load_catalog(directory))
+
+        self.assertNotEqual(catalog_fingerprint(self.load(PAYING)), plain)
+        self.assertEqual(catalog_fingerprint(self.load(PAYING)), catalog_fingerprint(self.load(PAYING)))
+
+    def test_a_rule_that_names_a_missing_field_is_refused_with_where_it_is(self) -> None:
+        self.refused(
+            "  customer:\n    - {name: r, definition: d, condition: {field: nope, op: eq, value: 1}}\n",
+            r"rules.yaml: rules\.customer\.r\.condition.*nope",
+        )
+
+    def test_a_rule_cannot_use_an_internal_field(self) -> None:
+        self.refused(
+            "  customer:\n    - {name: r, definition: d, condition: {field: crm_account_key, op: is_null}}\n",
+            "not publicly queryable",
+        )
+
+    def test_a_rule_with_a_bad_value_for_its_field_is_refused(self) -> None:
+        self.refused(
+            "  customer:\n    - {name: r, definition: d, condition: {field: name, op: gt, value: 1}}\n",
+            "rules.customer.r",
+        )
+
+    def test_rules_on_an_unknown_dataset_are_refused_with_the_near_match(self) -> None:
+        self.refused(
+            "  custmer:\n    - {name: r, definition: d, condition: {field: name, op: is_null}}\n",
+            "no dataset 'custmer'; did you mean 'customer'",
+        )
+
+    def test_rule_names_are_unique_across_the_catalog(self) -> None:
+        self.refused(
+            "  customer:\n    - {name: r, definition: d, condition: {field: name, op: is_null}}\n"
+            "  support_ticket:\n    - {name: r, definition: d, condition: {field: id, op: is_null}}\n",
+            "already used by a rule on 'customer'",
+        )
+        self.refused(
+            "  customer:\n    - {name: r, definition: d, condition: {field: name, op: is_null}}\n"
+            "    - {name: r, definition: d, condition: {field: name, op: is_null}}\n",
+            "already used",
+        )
+
+    def test_a_visible_rule_may_not_share_a_name_with_a_field_but_a_hidden_one_may(self) -> None:
+        self.refused(
+            "  customer:\n    - {name: name, definition: d, condition: {field: name, op: is_null}}\n",
+            "also a field name",
+        )
+        self.refused(
+            "  customer:\n    - {name: content, definition: d, condition: {field: name, op: is_null}}\n",
+            "also a field name",
+        )
+        catalog = self.load(
+            "  customer:\n    - {name: name, definition: d, condition: {field: name, op: is_null}, visible: false}\n"
+        )
+        self.assertFalse(catalog.rules["customer"][0].visible)
+
+    def test_rule_names_use_lower_snake_case(self) -> None:
+        self.refused("  customer:\n    - {name: Bad Name, definition: d, condition: {field: name, op: is_null}}\n", "lower_snake_case")
+
+    def test_rules_that_refer_to_each_other_in_a_loop_are_refused(self) -> None:
+        self.refused(
+            "  customer:\n    - {name: a, definition: d, condition: {rule: b}}\n"
+            "    - {name: b, definition: d, condition: {rule: c}}\n"
+            "    - {name: c, definition: d, condition: {rule: a}}\n",
+            "loop: ",
+        )
+        self.refused("  customer:\n    - {name: a, definition: d, condition: {rule: a}}\n", "loop")
+
+    def test_a_rule_that_refers_to_an_unknown_rule_or_one_on_another_dataset_is_refused(self) -> None:
+        self.refused("  customer:\n    - {name: a, definition: d, condition: {rule: ghost}}\n", "Unknown rule 'ghost'")
+        self.refused(
+            "  customer:\n    - {name: a, definition: d, condition: {rule: t}}\n"
+            "  support_ticket:\n    - {name: t, definition: d, condition: {field: id, op: is_null}}\n",
+            "belongs to dataset 'support_ticket'",
+        )
+
+    def test_a_hidden_rule_may_be_built_on_by_a_visible_one(self) -> None:
+        catalog = self.load(
+            "  customer:\n    - {name: base, definition: d, condition: {field: name, op: is_null}, visible: false}\n"
+            "    - {name: shown, definition: d, condition: {rule: base}}\n"
+        )
+        self.assertEqual(len(catalog.rules["customer"]), 2)
+
+    def test_a_semantic_condition_is_not_allowed_in_a_rule(self) -> None:
+        self.refused(
+            "  support_ticket:\n    - {name: r, definition: d, condition: {semantic: {field: content, concept: refund}}}\n",
+            "rules.support_ticket.r",
+        )
+
+    def test_a_rule_is_held_to_a_smaller_filter_than_a_query(self) -> None:
+        deep = "{field: name, op: is_null}"
+        for _ in range(9):
+            deep = "{not: " + deep + "}"
+        self.refused(f"  customer:\n    - {{name: r, definition: d, condition: {deep}}}\n", "rules.customer.r")
+
+    def test_a_rule_needs_a_name_a_definition_and_a_condition_and_nothing_else(self) -> None:
+        for entry in (
+            "{definition: d, condition: {field: name, op: is_null}}",
+            "{name: r, condition: {field: name, op: is_null}}",
+            "{name: r, definition: '', condition: {field: name, op: is_null}}",
+            "{name: r, definition: d}",
+            "{name: r, definition: d, condition: {field: name, op: is_null}, parameters: {}}",
+        ):
+            with self.subTest(entry=entry):
+                self.refused(f"  customer:\n    - {entry}\n", "Invalid rules.yaml")
+
+    def test_an_empty_rules_file_changes_nothing(self) -> None:
+        self.assertEqual(self.load("  {}\n").rules, {})
 
 
 class catalog_directory:

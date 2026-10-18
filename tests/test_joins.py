@@ -26,7 +26,7 @@ from yodb.planning import (
 from yodb.semantic import SemanticExtension, SemanticPolicy, SemanticRuntime
 
 from support.catalogs import StaticRuntime
-from support.shop import DATASETS, RELATIONS, SOURCES, customer_rows, shop_active, shop_world, ticket_rows
+from support.shop import DATASETS, RELATIONS, RULES, SOURCES, customer_rows, shop_active, shop_world, ticket_rows
 from support.sql_world import evaluation
 from support.statistics import MapProvider
 from support.tickets import KeywordVerifier
@@ -34,13 +34,13 @@ from support.tickets import KeywordVerifier
 ACTIVE = shop_active()
 
 
-def engine(world, *, statistics=None, join_policy=JoinPolicy(), semantic=None):
+def engine(world, *, statistics=None, join_policy=JoinPolicy(), semantic=None, active=ACTIVE):
     extensions = () if semantic is None else (semantic,)
     planner = FederatedPhysicalPlanner(
         SourcePlanningRegistry([PostgresPlanningAdapter()]), statistics=statistics, extensions=extensions
     )
     return QueryExecutionEngine(
-        StaticRuntime(ACTIVE),
+        StaticRuntime(active),
         QueryCompilerRegistry([PostgresQueryCompiler()]),
         QueryExecutionAdapterRegistry([world]),
         planner=planner,
@@ -135,6 +135,74 @@ def oracle(left_rows, right_rows, left_key, right_key, *, left_ok=lambda r: True
 
 def rows_of(result):
     return [dict(row) for row in result.rows]
+
+
+class RuleJoinTests(unittest.TestCase):
+    """A rule in either side's filter is that side's own filter, whichever sources the side spans."""
+
+    def setUp(self) -> None:
+        self.db = engine(shop_world(), active=shop_active(RULES))
+
+    def run_pair(self, with_rules, typed):
+        return self.db.execute(with_rules), self.db.execute(typed)
+
+    def test_a_rule_on_each_side_returns_what_the_typed_filters_return(self) -> None:
+        by_rule, typed = self.run_pair(
+            query(select=("name", "country"), where={"rule": "big_us"},
+                  steps=traverse(select=["subject"], where={"rule": "needs_attention"})),
+            query(select=("name", "country"), where={"all": [p("country", "eq", "US"), p("seats", "gt", 5)]},
+                  steps=traverse(select=["subject"], where={"all": [p("priority", "gte", 4), p("status", "ne", "closed")]})),
+        )
+
+        self.assertTrue(rows_of(typed))
+        self.assertEqual(rows_of(by_rule), rows_of(typed))
+
+    def test_a_left_join_with_a_rule_on_the_traversed_side_keeps_unmatched_rows(self) -> None:
+        by_rule, typed = self.run_pair(
+            query(where={"rule": "in_the_us"}, steps=traverse(where={"rule": "urgent"}, optional=True)),
+            query(where=p("country", "eq", "US"), steps=traverse(where=p("priority", "gte", 4), optional=True)),
+        )
+
+        self.assertEqual(rows_of(by_rule), rows_of(typed))
+        self.assertTrue(any(row["ticket.id"] is None for row in rows_of(by_rule)))
+
+    def test_the_result_names_the_rules_it_used_across_both_sides(self) -> None:
+        result = self.db.execute(
+            query(where={"rule": "in_the_us"}, steps=traverse(where={"rule": "needs_attention"}))
+        )
+
+        self.assertEqual(
+            [entry["name"] for entry in result.applied["rules"]], ["in_the_us", "needs_attention"],
+        )
+        self.assertEqual(result.applied["rules"][1]["dataset"], "ticket")
+        self.assertEqual(result.applied["rules"][1]["definition"], "Urgent tickets that are not closed.")
+
+    def test_explain_lists_every_rule_used_hidden_and_nested_ones_included(self) -> None:
+        explanation = self.db.explain(query(where={"rule": "big_us"}, steps=traverse(where={"rule": "needs_attention"})))
+
+        used = {use.name: use for use in explanation.rules}
+        self.assertEqual(set(used), {"big_us", "in_the_us", "roomy", "needs_attention", "urgent", "not_closed"})
+        self.assertFalse(used["not_closed"].visible)
+        self.assertFalse(used["not_closed"].named_in_query)
+        self.assertTrue(used["needs_attention"].named_in_query)
+        self.assertIn("closed", used["not_closed"].condition)
+
+    def test_a_rule_of_the_other_dataset_is_refused_where_it_was_written(self) -> None:
+        for raw, location in (
+            (query(where={"rule": "urgent"}), "where"),
+            (query(steps=traverse(where={"rule": "in_the_us"})), "traverse[0].where"),
+        ):
+            with self.subTest(location=location), self.assertRaises(QueryError) as caught:
+                self.db.execute(raw)
+            self.assertEqual(caught.exception.detail.code, ErrorCode.RULE_NOT_APPLICABLE)
+            self.assertEqual(caught.exception.detail.location, location)
+
+    def test_a_hidden_rule_cannot_be_named_in_either_filter(self) -> None:
+        with self.assertRaises(QueryError) as caught:
+            self.db.execute(query(steps=traverse(where={"rule": "not_closed"})))
+
+        self.assertEqual(caught.exception.detail.code, ErrorCode.RULE_NOT_FOUND)
+        self.assertEqual(caught.exception.detail.location, "traverse[0].where")
 
 
 class JoinResultTests(unittest.TestCase):
