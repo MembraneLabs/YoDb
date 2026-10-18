@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.1 (unreleased)
+## 0.1.1
 
 ### Added
 - MCP server: `yodb mcp CATALOG` serves a catalog to an AI agent over the Model Context Protocol
