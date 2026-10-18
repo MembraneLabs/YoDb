@@ -115,6 +115,7 @@ class FederatedPhysicalPlanner:
             plan_fingerprint=fingerprint,
             nodes=explain_plan(node),
             optimizer=decision.notes,
+            rules=query.rules,
         )
         return PlannedQuery(
             query=query,

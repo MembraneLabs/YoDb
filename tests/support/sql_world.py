@@ -21,11 +21,13 @@ from yodb.runtime import CatalogEvaluation, SourceRuntimeState, SourceRuntimeSta
 _NOW = datetime(2026, 10, 3, tzinfo=UTC)
 
 
-def evaluation(datasets: str, sources: str, relations: str) -> CatalogEvaluation:
+def evaluation(datasets: str, sources: str, relations: str, rules: str | None = None) -> CatalogEvaluation:
     with TemporaryDirectory() as directory:
         root = Path(directory)
-        for name, text in (("datasets", datasets), ("sources", sources), ("relations", relations)):
-            (root / f"{name}.yaml").write_text(text, encoding="utf-8")
+        files = (("datasets", datasets), ("sources", sources), ("relations", relations), ("rules", rules))
+        for name, text in files:
+            if text is not None:
+                (root / f"{name}.yaml").write_text(text, encoding="utf-8")
         catalog = load_catalog(root)
     return CatalogEvaluation(
         catalog=catalog,

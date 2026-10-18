@@ -56,7 +56,7 @@ Use a database role that can only `SELECT` the tables in the catalog.
 
 | Tool | Argument | Returns |
 | --- | --- | --- |
-| `describe_catalog` | none | The catalog's name and version, every dataset with its public fields, and the relationships |
+| `describe_catalog` | none | The catalog's name and version, every dataset with its public fields and visible [rules](/catalog/rules), and the relationships |
 | `query` | `query`: a [query](/query/query-model) as an object or as JSON text | `{"rows": [...], "row_count": n}` |
 | `explain` | `query`: the same | The plan's steps and how it was chosen, without reading any data |
 
@@ -95,6 +95,7 @@ It is the agent's whole view of your data, so the descriptions, `aliases` and
 agent reasons with. Write them for a reader who has never seen the tables.
 
 - A field with `visibility: internal` is not listed.
+- A dataset with visible [rules](/catalog/rules) has a `"rules"` entry mapping each rule's name to its definition. A hidden rule is not listed. The query guide in the `query` tool's description explains `{"rule": ...}` only when the catalog has a visible rule.
 - `reversible` is `true` for a relationship declared `direction: bi`.
 - `traversable` is `false`, with a `why_not`, for a relationship a query cannot
   follow (it joins on an internal field, or it is stored as graph edges).

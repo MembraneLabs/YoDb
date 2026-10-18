@@ -23,7 +23,7 @@ from yodb.semantic import SemanticExtension, SemanticPolicy, SemanticRuntime
 from yodb.mcp_server import _page_size, build_server, describe_catalog, error_text, query_language
 
 from support.catalogs import StaticRuntime
-from support.shop import shop_active, shop_world
+from support.shop import RULES, shop_active, shop_world
 from support.tickets import KeywordVerifier
 from test_client_cli import run
 
@@ -31,8 +31,8 @@ HAS_MCP = importlib.util.find_spec("mcp") is not None and importlib.util.find_sp
 ACTIVE = shop_active()
 
 
-def open_db(world=None, *, semantic: bool = False) -> YoDb:
-    runtime = StaticRuntime(ACTIVE)
+def open_db(world=None, *, semantic: bool = False, active=None) -> YoDb:
+    runtime = StaticRuntime(active or ACTIVE)
     extensions = (SemanticExtension(SemanticRuntime(KeywordVerifier()), policy=SemanticPolicy()),) if semantic else ()
     engine = QueryExecutionEngine(
         runtime, QueryCompilerRegistry([PostgresQueryCompiler()]), QueryExecutionAdapterRegistry([world or shop_world()]),
@@ -260,6 +260,71 @@ class ProtocolTests(unittest.TestCase):
         self.assertFalse(result.is_error)
         self.assertEqual(result.structured_content, describe_catalog(ACTIVE.catalog))
         self.assertEqual(json.loads(text(result)), result.structured_content)
+
+
+RULE_ACTIVE = shop_active(RULES)
+
+
+@unittest.skipUnless(HAS_MCP, 'needs the "mcp" package, version 2 or later')
+class RuleToolTests(unittest.TestCase):
+    """Rules through the server: found in discovery, used by name, reported in the answer and in explain."""
+
+    def call(self, tool, arguments=None):
+        result = call(tool, arguments, db=open_db(active=RULE_ACTIVE))
+        return result
+
+    def test_discovery_lists_each_datasets_visible_rules_with_their_definitions(self) -> None:
+        described = self.call("describe_catalog").structured_content["datasets"]
+
+        self.assertEqual(described["customer"]["rules"]["in_the_us"], "Customers whose country is the US.")
+        self.assertEqual(set(described["ticket"]["rules"]), {"urgent", "needs_attention"})
+
+    def test_a_hidden_rule_is_not_listed_and_nothing_in_discovery_mentions_it(self) -> None:
+        self.assertNotIn("not_closed", json.dumps(self.call("describe_catalog").structured_content))
+
+    def test_a_catalog_without_rules_has_no_rules_entry_and_no_rules_in_the_guide(self) -> None:
+        described = describe_catalog(ACTIVE.catalog)
+
+        self.assertTrue(all("rules" not in dataset for dataset in described["datasets"].values()))
+        self.assertNotIn('"rule"', query_language(open_db().limits))
+
+    def test_the_guide_explains_rules_only_when_the_catalog_has_some(self) -> None:
+        async def calls(client):
+            return {tool.name: tool for tool in (await client.list_tools()).tools}
+
+        tools = session(calls, db=open_db(active=RULE_ACTIVE))
+        self.assertIn('{"rule": "paying"}', tools["query"].description)
+        self.assertIn("applied", tools["query"].description)
+        self.assertNotIn('"rule"', session(calls)["query"].description)
+
+    def test_a_rule_is_used_by_name_and_the_answer_says_which_it_used(self) -> None:
+        by_rule = self.call("query", {"query": {"from": {"dataset": "customer"}, "select": ["name"], "where": {"rule": "big_us"}}})
+        typed = self.call("query", {"query": {"from": {"dataset": "customer"}, "select": ["name"], "where": {"all": [
+            {"field": "country", "op": "eq", "value": "US"}, {"field": "seats", "op": "gt", "value": 5}]}}})
+
+        self.assertFalse(by_rule.is_error, text(by_rule))
+        self.assertEqual(by_rule.structured_content["rows"], typed.structured_content["rows"])
+        self.assertTrue(by_rule.structured_content["rows"])
+        self.assertEqual(by_rule.structured_content["applied"], {"rules": [
+            {"name": "big_us", "dataset": "customer", "definition": "A US customer with more than five seats."}]})
+        self.assertNotIn("applied", typed.structured_content)
+
+    def test_a_hidden_rule_is_refused_like_an_unknown_one(self) -> None:
+        for name in ("not_closed", "no_such_rule"):
+            with self.subTest(name=name):
+                result = self.call("query", {"query": {"from": {"dataset": "ticket"}, "where": {"rule": name}}})
+                self.assertTrue(result.is_error)
+                self.assertIn("[rule_not_found] at where", text(result))
+
+    def test_explain_shows_every_rule_including_a_hidden_one(self) -> None:
+        explained = self.call("explain", {"query": {"from": {"dataset": "ticket"}, "where": {"rule": "needs_attention"}}}).structured_content
+
+        by_name = {rule["name"]: rule for rule in explained["rules"]}
+        self.assertEqual(set(by_name), {"needs_attention", "urgent", "not_closed"})
+        self.assertTrue(by_name["not_closed"]["hidden"])
+        self.assertFalse(by_name["not_closed"]["named_in_the_query"])
+        self.assertNotIn("hidden", by_name["urgent"])
+        self.assertIn("closed", by_name["not_closed"]["condition"])
 
 
 @unittest.skipUnless(HAS_MCP, 'needs the "mcp" package, version 2 or later')

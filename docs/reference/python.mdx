@@ -114,6 +114,8 @@ print(plan.plan_kind)
 for node in plan.nodes:
     print(node.kind, node.location, node.fields, node.pushed_filter_fields)
 print(plan.optimizer)
+for rule in plan.rules:          # every rule the query used, hidden and nested ones included
+    print(rule.name, rule.named_in_query, rule.condition)
 ```
 
 See [How queries are planned](/query/planning) for how to read it.
@@ -125,7 +127,8 @@ types.
 
 ```python
 {"customer": {"description": "A customer of the shop.",
-              "fields": {"id": {"type": "id"}, "name": {"type": "string"}, ...}},
+              "fields": {"id": {"type": "id"}, "name": {"type": "string"}, ...},
+              "rules": {"paying": "Customers on a paid plan."}},      # only when the dataset has visible rules
  "ticket": {...}}
 ```
 
@@ -181,6 +184,7 @@ if result.status.value != "activated":
 | `query_fingerprint` | An identifier for the query's meaning. Two queries that differ only in key order or page size share one |
 | `catalog_fingerprint` | An identifier for the catalog the query ran against |
 | `reports` | Extra information from the semantic filter, under `reports["semantic"]`. Empty otherwise |
+| `applied` | The [rules](/catalog/rules) the query named: `{"rules": [{"name", "dataset", "definition"}]}`. An empty list when it named none. Experimental |
 
 Values come back as Python values: `str`, `int`, `float`, `bool`,
 `datetime.datetime` for a timestamp, and `None` for no value. In a

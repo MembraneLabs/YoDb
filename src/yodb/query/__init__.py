@@ -21,10 +21,12 @@ from .models import (
     Predicate,
     QueryConstraints,
     QueryRequest,
+    RuleReference,
+    RuleUse,
     SortDirection,
 )
 from .extensions import TermExtension, TermRegistry, extension_terms
-from .parser import parse_query
+from .parser import parse_filter, parse_query
 from .registry import DEFAULT_TERMS
 from .resolution import (
     FieldUse,
@@ -67,6 +69,8 @@ __all__ = [
     "QueryConstraints",
     "QueryRequest",
     "QuerySourceShape",
+    "RuleReference",
+    "RuleUse",
     "QueryValidationPolicy",
     "SemanticPredicate",
     "SortDirection",
@@ -74,6 +78,7 @@ __all__ = [
     "SingleSourceQueryBinding",
     "SourceResolvedQuery",
     "bind_query",
+    "parse_filter",
     "parse_query",
     "resolve_query_sources",
     "semantic_predicates",

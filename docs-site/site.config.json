@@ -39,6 +39,10 @@
           "label": "relations.yaml"
         },
         {
+          "path": "catalog/rules",
+          "label": "rules.yaml"
+        },
+        {
           "path": "catalog/yaml-syntax",
           "label": "YAML syntax"
         }

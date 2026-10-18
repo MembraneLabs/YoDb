@@ -58,10 +58,11 @@ error you got.**
 | `dataset_not_found`, `field_not_found` | A name that is not in the catalog |
 | `relationship_not_found`, `relationship_not_applicable` | A `traverse` names no such relationship, or one that does not start at this dataset or cannot be reversed (see [Joins](/query/joins)) |
 | `field_not_accessible` | A field that exists but is internal |
+| `rule_not_found`, `rule_not_applicable` | A `{"rule": ...}` term names no rule the query may use (an unknown one, or a hidden one), or a rule that belongs to another dataset (see [rules.yaml](/catalog/rules)) |
 | `query_value_type_invalid` | A value of the wrong type, a missing or null value, or a timestamp without a zone |
 | `query_operator_not_supported` | An operator the field's type does not support |
 | `query_expression_invalid` | A malformed `all`, `any` or `not`, or a semantic condition under `any` or `not` |
-| `query_limit_invalid` | A page, list, filter depth or size, or number of semantic conditions over its limit |
+| `query_limit_invalid` | A page, list, filter depth or size, or number of semantic conditions over its limit, counting the conditions its rules expand to |
 | `query_feature_not_supported` | Not implemented in V0.1: a second `traverse` step or a graph-edge relationship, a second semantic condition, or a term no operator handles |
 | `query_catalog_mismatch` | The query was bound against a different catalog snapshot |
 

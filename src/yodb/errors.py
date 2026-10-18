@@ -53,6 +53,8 @@ class ErrorCode(str, Enum):
     QUERY_TIMEOUT = "query_timeout"
     RELATIONSHIP_NOT_FOUND = "relationship_not_found"
     RELATIONSHIP_NOT_APPLICABLE = "relationship_not_applicable"
+    RULE_NOT_FOUND = "rule_not_found"
+    RULE_NOT_APPLICABLE = "rule_not_applicable"
 
 
 class ErrorDetail(BaseModel):

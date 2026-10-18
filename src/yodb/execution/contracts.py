@@ -26,6 +26,8 @@ class QueryExecutionResult:
     catalog_fingerprint: str
     # What each extension operator that ran reports, keyed by its name.
     reports: Mapping[str, Any] = field(default_factory=dict)
+    # The rules the query named, with their definitions: {"rules": [{"name", "dataset", "definition"}]}.
+    applied: Mapping[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_rows(
@@ -35,6 +37,7 @@ class QueryExecutionResult:
         query_fingerprint: str,
         catalog_fingerprint: str,
         reports: Mapping[str, Any] | None = None,
+        applied: Mapping[str, Any] | None = None,
     ) -> "QueryExecutionResult":
         """Freeze adapter-returned row mappings before exposing them."""
 
@@ -43,6 +46,7 @@ class QueryExecutionResult:
             query_fingerprint=query_fingerprint,
             catalog_fingerprint=catalog_fingerprint,
             reports=MappingProxyType(dict(reports or {})),
+            applied=MappingProxyType(dict(applied or {})),
         )
 
 

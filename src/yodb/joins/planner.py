@@ -27,6 +27,7 @@ from ..planning import (
 from ..query import QueryValidationPolicy, bind_query, parse_query, resolve_query_sources
 from ..query.parser import _parse_order_by, _parse_page
 from ..query.validation import _validate_page
+from ..rules import merge_uses
 from ..runtime import CatalogEvaluation
 
 @dataclass(frozen=True)
@@ -159,6 +160,7 @@ class JoinPlanner:
                 plan_fingerprint=fingerprint,
                 nodes=explain_plan(node),
                 optimizer=notes,
+                rules=merge_uses(left_driver.query.rules, right_driver.query.rules),
             ),
         )
 

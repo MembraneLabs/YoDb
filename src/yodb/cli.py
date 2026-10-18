@@ -77,6 +77,7 @@ def _catalog(args: argparse.Namespace) -> int:
             },
             "identity_source": catalog.resolution[name].identity_source,
             "field_sources": dict(catalog.resolution[name].field_sources),
+            **({"rules": {r.name: r.definition + ("" if r.visible else " (hidden)") for r in catalog.rules[name]}} if catalog.rules.get(name) else {}),
         }
         for name, dataset in catalog.datasets.items()
     }
@@ -89,6 +90,8 @@ def _catalog(args: argparse.Namespace) -> int:
         width = max(len(field) for field in item["fields"])
         for field, kind in item["fields"].items():
             print(f"  {field:<{width}}  {kind:<18} from {item['field_sources'].get(field, item['identity_source'])}")
+        for rule_name, definition in item.get("rules", {}).items():
+            print(f"  rule {rule_name}: {definition}")
     return 0
 
 
@@ -125,6 +128,10 @@ def _explain(args: argparse.Namespace) -> int:
         print(f"  {node.kind:<22} @{node.location:<12} {' '.join(parts)}")
     if explanation.optimizer:
         print("  optimizer: " + " ".join(explanation.optimizer))
+    for use in explanation.rules:
+        how = "named" if use.named_in_query else "through another rule"
+        hidden = "" if use.visible else ", hidden"
+        print(f"  rule {use.name} ({use.dataset}, {how}{hidden}): {use.definition}  = {use.condition}")
     return 0
 
 
@@ -134,12 +141,14 @@ def _query(args: argparse.Namespace) -> int:
         result = db.query(query, timeout_seconds=args.timeout)
     rows = [dict(row) for row in result.rows]
     if args.format == "json":
-        print(json.dumps({"rows": _jsonable(rows), "query_fingerprint": result.query_fingerprint}, indent=2))
+        print(json.dumps({"rows": _jsonable(rows), "query_fingerprint": result.query_fingerprint, "applied": _jsonable(result.applied)}, indent=2))
     elif args.format == "jsonl":
         for row in rows:
             print(json.dumps(_jsonable(row)))
     else:
         print(_table(rows))
+        if result.applied.get("rules"):
+            print("rules applied: " + ", ".join(rule["name"] for rule in result.applied["rules"]))
     return 0
 
 

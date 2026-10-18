@@ -418,8 +418,63 @@ SHOP_FIXED = [
 ]
 
 
+# A query that names a rule must return what the same query returns with the rule written out.
+_C = {"dataset": "customer"}
+PAYING = leaf("plan", "in", ["pro", "team"])
+EUROPEAN = leaf("country", "in", ["UK", "FI"])
+URGENT_OPEN = {"all": [leaf("status", "ne", "closed"), leaf("priority", "gte", 4)]}
+SHOP_RULES = [
+    ("a rule", {"from": _C, "select": ["name"], "where": {"rule": "paying"}}, {"from": _C, "select": ["name"], "where": PAYING}, ["paying"]),
+    ("a rule built from rules",
+     {"from": _C, "select": ["name", "country"], "where": {"rule": "paying_european"}},
+     {"from": _C, "select": ["name", "country"], "where": {"all": [PAYING, EUROPEAN]}}, ["paying_european"]),
+    ("a rule beside a typed filter and under not",
+     {"from": _C, "select": ["name"], "where": {"all": [{"rule": "european"}, {"not": {"rule": "paying"}}, leaf("name", "ne", "x")]}},
+     {"from": _C, "select": ["name"], "where": {"all": [EUROPEAN, {"not": PAYING}, leaf("name", "ne", "x")]}}, ["european", "paying"]),
+    ("a rule on each side of a join (two databases and a third)",
+     {"from": _C, "select": ["name"], "where": {"rule": "paying"},
+      "traverse": [{"relationship": "customer_has_ticket", "as": "ticket", "select": ["priority"], "where": {"rule": "needs_attention"}}],
+      "order_by": [{"field": "ticket.priority", "direction": "desc"}, {"field": "name", "direction": "asc"}]},
+     {"from": _C, "select": ["name"], "where": PAYING,
+      "traverse": [{"relationship": "customer_has_ticket", "as": "ticket", "select": ["priority"], "where": URGENT_OPEN}],
+      "order_by": [{"field": "ticket.priority", "direction": "desc"}, {"field": "name", "direction": "asc"}]}, ["paying", "needs_attention"]),
+]
+SHOP_RULE_ERRORS = [
+    ("an unknown rule", {"from": _C, "where": {"rule": "payng"}}, "rule_not_found", "where", "'paying'"),
+    ("a rule of the other dataset", {"from": _C, "where": {"rule": "urgent"}}, "rule_not_applicable", "where", None),
+    ("a customer rule in the joined filter", {"from": _C, "traverse": [{"relationship": "customer_has_ticket", "as": "ticket", "where": {"rule": "paying"}}]},
+     "rule_not_applicable", "traverse[0].where", None),
+]
+
+
+async def run_shop_rules(report: Report, client, world: dict) -> None:
+    described = (await client.call_tool("describe_catalog", {})).structured_content["datasets"]
+    report.check("shop", "describe_catalog lists the rules with their definitions",
+                 described["customer"]["rules"]["paying"] == "Customers on a paid plan (pro or team)." and set(described["ticket"]["rules"]) == {"unresolved", "urgent", "needs_attention"},
+                 str({name: dataset.get("rules") for name, dataset in described.items()}))
+    for name, query, written_out, names in SHOP_RULES:
+        result, plain = await client.call_tool("query", {"query": query}), await client.call_tool("query", {"query": written_out})
+        want = expected(world, written_out)
+        got = None if result.is_error else result.structured_content["rows"]
+        report.check("shop", f"rule: {name}", got == want == plain.structured_content["rows"] and bool(want),
+                     text_of(result)[:200] if result.is_error else f"{len(got)} rows")
+        applied = None if result.is_error else [rule["name"] for rule in result.structured_content.get("applied", {}).get("rules", [])]
+        report.check("shop", f"rule: {name} (the answer names the rules it used)", sorted(applied or []) == sorted(names) or (len(names) > 1 and set(applied or []) <= set(names) and bool(applied)),
+                     str(applied))
+        report.check("shop", f"rule: {name} (the same query written out reports none)", "applied" not in plain.structured_content, str(plain.structured_content.get("applied")))
+        explained = await client.call_tool("explain", {"query": query})
+        report.check("shop", f"rule: {name} (explain lists them)", not explained.is_error and {r["name"] for r in explained.structured_content["rules"]} >= set(names),
+                     text_of(explained)[:200])
+    for name, query, code, location, hint in SHOP_RULE_ERRORS:
+        result = await client.call_tool("query", {"query": query})
+        got_code, got_location = code_of(result)
+        report.check("shop", f"rule error: {name}", result.is_error and got_code == code and (location in (got_location or "")) and (hint is None or hint in text_of(result)),
+                     text_of(result)[:200])
+
+
 async def run_shop_fixed(report: Report, params: StdioServerParameters, world: dict) -> None:
     async with Client(params) as client:
+        await run_shop_rules(report, client, world)
         for name, query, rows in SHOP_FIXED:
             result = await client.call_tool("query", {"query": query})
             got = None if result.is_error else result.structured_content["rows"]

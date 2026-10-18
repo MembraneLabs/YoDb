@@ -46,7 +46,7 @@ A query is a JSON object. Only names returned by describe_catalog are accepted; 
 
 <condition> is one of:
   {"field": "status", "op": "eq", "value": "open"}
-  {"all": [<condition>, ...]}    {"any": [<condition>, ...]}    {"not": <condition>}
+  {"all": [<condition>, ...]}    {"any": [<condition>, ...]}    {"not": <condition>}@RULES_FORM@
 
 Operators by field type:
   every type except json and bytes:  eq, ne, in, not_in (value is a list of at most @MAXIMUM_IN@), is_null, is_not_null (no value)
@@ -81,6 +81,16 @@ on a field with few matching rows (an eq or in, or a range). contains and starts
 the rows are read, and can keep other filters from narrowing the read: when a query is refused, call
 explain and check which filters appear under "filters_applied_by_the_source"."""
 
+RULES_LANGUAGE = """  {"rule": "paying"}              a named rule of the dataset: the filter its business definition stands for"""
+
+RULES_NOTE = """
+
+A rule is a named condition that the catalog's owners wrote down, listed under "rules" in describe_catalog with
+what it means. When a rule matches what is asked, use it instead of writing your own filter: your own filter may
+mean something different. A rule belongs to one dataset and can be used on that dataset only (in a join, in the
+"where" of the dataset it belongs to). Rules can be combined with other conditions under all, any and not. The
+answer's "applied" entry lists the rules the query used, with their definitions: tell the user what they mean."""
+
 SEMANTIC_LANGUAGE = """A semantic condition asks whether a statement is true of a record's text, judged by a model:
   {"semantic": {"field": "body", "proposition": "the customer is asking when their card will arrive"}}
 The field must be marked "semantic": true in describe_catalog. Put it at the top of "where" or inside "all"
@@ -91,15 +101,16 @@ records were shortlisted by similarity first: every row returned is a true match
 missing, more so with a small page.first, so do not present such rows as the complete or the top-N answer."""
 
 
-def query_language(limits: Mapping[str, int], *, semantic: bool = False) -> str:
+def query_language(limits: Mapping[str, int], *, semantic: bool = False, rules: bool = False) -> str:
     """The guide an agent reads in the query tool's description, with the limits of the engine it describes."""
 
-    guide = QUERY_LANGUAGE
+    guide = QUERY_LANGUAGE.replace("@RULES_FORM@", "\n" + RULES_LANGUAGE if rules else "")
     for mark, key in (
         ("@DEFAULT_PAGE@", "default_page_size"), ("@MAXIMUM_PAGE@", "maximum_page_size"), ("@MAXIMUM_IN@", "maximum_in_values"),
         ("@SOURCE_ROWS@", "maximum_rows_per_source"), ("@JOINED_ROWS@", "maximum_joined_rows"),
     ):
         guide = guide.replace(mark, f"{limits[key]:,}")
+    guide += RULES_NOTE if rules else ""
     if semantic:
         return guide.replace("@NO_SEMANTIC@", "") + "\n\n" + SEMANTIC_LANGUAGE
     return guide.replace("@NO_SEMANTIC@", ", and semantic conditions (none is configured on this server)")
@@ -125,10 +136,12 @@ def describe_catalog(catalog: Catalog, *, semantic: bool = False) -> dict[str, A
             if spec.semantic_eligible and semantic:
                 field["semantic"] = True
             fields[field_name] = field
+        rules = {rule.name: rule.definition for rule in catalog.rules.get(name, ()) if rule.visible}
         datasets[name] = {
             "description": dataset.description,
             **({"aliases": list(dataset.aliases)} if dataset.aliases else {}),
             "fields": fields,
+            **({"rules": rules} if rules else {}),
         }
     return {
         "catalog": {"name": catalog.metadata.name, "version": catalog.metadata.version},
@@ -180,6 +193,7 @@ def build_server(db: YoDb, *, timeout_seconds: float | None = 60.0):
     from mcp.types import ToolAnnotations
 
     semantic, limits = db.semantic_enabled, db.limits
+    has_rules = any(rule.visible for rules in db.catalog.rules.values() for rule in rules)
     server = MCPServer(SERVER_NAME, instructions=INSTRUCTIONS, log_level="WARNING")
     read_only = ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False)
 
@@ -205,7 +219,7 @@ def build_server(db: YoDb, *, timeout_seconds: float | None = 60.0):
         title="Run a query",
         description="Run one read-only query and return its rows as "
         '{"rows": [...], "row_count": n}. A "note" is added when the page is full and more rows may match.\n\n'
-        + query_language(limits, semantic=semantic),
+        + query_language(limits, semantic=semantic, rules=has_rules),
         annotations=read_only,
     )
     def query_tool(query: dict[str, Any] | str) -> dict[str, Any]:
@@ -216,6 +230,8 @@ def build_server(db: YoDb, *, timeout_seconds: float | None = 60.0):
             report = result.reports.get("semantic")
             if report is not None:
                 answer["semantic"] = _semantic_report(report)
+            if result.applied.get("rules"):
+                answer["applied"] = {"rules": [dict(rule) for rule in result.applied["rules"]]}
             first = _page_size(query, limits["default_page_size"])
             if first is not None and len(rows) >= first:
                 more = "narrow the filter" if first >= limits["maximum_page_size"] else (
@@ -240,6 +256,7 @@ def build_server(db: YoDb, *, timeout_seconds: float | None = 60.0):
                 "plan_kind": explanation.plan_kind,
                 "steps": [_step(node) for node in explanation.nodes],
                 "optimizer": list(explanation.optimizer),
+                **({"rules": [_rule_use(use) for use in explanation.rules]} if explanation.rules else {}),
             }
 
         return guarded(run)
@@ -283,6 +300,17 @@ def _semantic_report(report) -> dict[str, Any]:
     if stats.shortlisted is not None:
         described["shortlisted_by_vector_search"] = stats.shortlisted
     return described
+
+
+def _rule_use(use) -> dict[str, Any]:
+    return {
+        "name": use.name,
+        "dataset": use.dataset,
+        "definition": use.definition,
+        "condition": use.condition,
+        "named_in_the_query": use.named_in_query,
+        **({} if use.visible else {"hidden": True}),
+    }
 
 
 def _step(node) -> dict[str, Any]:

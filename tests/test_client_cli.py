@@ -18,6 +18,7 @@ from yodb.errors import ErrorCode, QueryError, SourceConnectionError
 from yodb.execution import QueryExecutionAdapterRegistry, QueryExecutionEngine
 
 from support.catalogs import SourceRowsExecutor, StaticRuntime
+from support.sql_world import evaluation
 from support.tickets import ACTIVE, DATASETS, HELPDESK, RELATIONS, SOURCES, prio
 
 QUERY = {"from": {"dataset": "ticket"}, "select": ["subject", "priority"], "where": prio(3), "page": {"first": 3}}
@@ -160,6 +161,59 @@ class ConnectionResolverTests(unittest.TestCase):
         self.assertEqual(mapped.resolve("crm").conninfo, "host=a")
         own = MappingPostgresConnectionResolver({"crm": PostgresConnectionSettings(conninfo="host=b")})
         self.assertIs(_resolver(own), own)
+
+
+TICKET_RULES = """\
+api_version: yodb/v0.2
+rules:
+  ticket:
+    - {name: urgent, definition: Priority three or higher., condition: {field: priority, op: gte, value: 3}}
+    - {name: internal_only, definition: Not for customers., condition: {field: priority, op: lt, value: 99}, visible: false}
+    - {name: urgent_internal, definition: Urgent and internal., condition: {all: [{rule: urgent}, {rule: internal_only}]}}
+"""
+RULE_QUERY = {"from": {"dataset": "ticket"}, "select": ["subject"], "where": {"rule": "urgent_internal"}, "page": {"first": 3}}
+
+
+def open_rule_db() -> YoDb:
+    runtime = StaticRuntime(evaluation(DATASETS, SOURCES, RELATIONS, TICKET_RULES))
+    engine = QueryExecutionEngine(
+        runtime,
+        QueryCompilerRegistry([PostgresQueryCompiler()]),
+        QueryExecutionAdapterRegistry([SourceRowsExecutor({"helpdesk": HELPDESK[:3], "directory": ()})]),
+    )
+    return YoDb(runtime, engine)
+
+
+class RuleCommandTests(unittest.TestCase):
+    def test_catalog_lists_rules_and_marks_the_hidden_ones(self) -> None:
+        with TemporaryDirectory() as directory:
+            for name, text in (("datasets", DATASETS), ("sources", SOURCES), ("relations", RELATIONS), ("rules", TICKET_RULES)):
+                (Path(directory) / f"{name}.yaml").write_text(text)
+            _, out, _ = run(["catalog", directory])
+            self.assertIn("rule urgent: Priority three or higher.", out)
+            self.assertIn("rule internal_only: Not for customers. (hidden)", out)
+            _, out, _ = run(["catalog", directory, "--json"])
+            self.assertEqual(json.loads(out)["ticket"]["rules"]["urgent"], "Priority three or higher.")
+
+    def test_query_json_carries_the_rules_it_applied_and_the_table_names_them(self) -> None:
+        _, out, _ = run(["query", "cat", json.dumps(RULE_QUERY), "--format", "json"], db=open_rule_db())
+        self.assertEqual(json.loads(out)["applied"], {"rules": [
+            {"name": "urgent_internal", "dataset": "ticket", "definition": "Urgent and internal."}]})
+        _, out, _ = run(["query", "cat", json.dumps(RULE_QUERY)], db=open_rule_db())
+        self.assertEqual(out.splitlines()[-1], "rules applied: urgent_internal")
+
+    def test_a_query_without_rules_has_an_empty_applied_and_no_extra_line(self) -> None:
+        _, out, _ = run(["query", "cat", json.dumps(QUERY), "--format", "json"], db=open_db())
+        self.assertEqual(json.loads(out)["applied"], {"rules": []})
+        _, out, _ = run(["query", "cat", json.dumps(QUERY)], db=open_db())
+        self.assertNotIn("rules applied", out)
+
+    def test_explain_prints_every_rule_used_and_how_it_was_reached(self) -> None:
+        _, out, _ = run(["explain", "cat", json.dumps(RULE_QUERY)], db=open_rule_db())
+        self.assertIn("rule urgent_internal (ticket, named): Urgent and internal.", out)
+        self.assertIn("rule internal_only (ticket, through another rule, hidden): Not for customers.", out)
+        _, out, _ = run(["explain", "cat", json.dumps(RULE_QUERY), "--json"], db=open_rule_db())
+        self.assertEqual({r["name"] for r in json.loads(out)["rules"]}, {"urgent_internal", "urgent", "internal_only"})
 
 
 class CommandTests(unittest.TestCase):

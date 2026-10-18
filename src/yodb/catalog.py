@@ -181,10 +181,23 @@ class RelationsDocument(StrictModel):
     relationships: dict[str, RelationshipSpec]
 
 
+class RuleSpec(StrictModel):
+    """A named filter on one dataset: what a business word means.
+
+    ``definition`` is for the agent, ``condition`` is the filter YoDb runs (the query filter
+    language, with ``{"rule": ...}`` to build on other rules), and a rule that is not
+    ``visible`` is left out of discovery and cannot be named in a query.
+    """
+
+    name: str
+    definition: str = Field(min_length=1)
+    condition: dict[str, Any]
+    visible: bool = True
+
+
 class RulesDocument(StrictModel):
     api_version: str
-    # Rules are grouped by dataset.  Reading the file is in place; defining rules is not yet.
-    rules: dict[str, Any]
+    rules: dict[str, tuple[RuleSpec, ...]]
 
 
 class Catalog(StrictModel):
@@ -193,7 +206,7 @@ class Catalog(StrictModel):
     sources: dict[str, SourceSpec]
     resolution: dict[str, DatasetResolution]
     relationships: dict[str, RelationshipSpec]
-    rules: dict[str, Any] = Field(default_factory=dict)
+    rules: dict[str, tuple[RuleSpec, ...]] = Field(default_factory=dict)
 
 
 def load_catalog(directory: str | Path) -> Catalog:
@@ -280,8 +293,6 @@ def _validate_catalog(catalog: Catalog) -> None:
     _validate_named_mapping("datasets", catalog.datasets)
     _validate_named_mapping("sources", catalog.sources)
     _validate_named_mapping("relationships", catalog.relationships, allow_empty=True)
-    if catalog.rules:
-        raise CatalogValidationError("rules.yaml cannot define rules yet; leave 'rules' empty")
 
     for dataset_name, dataset in catalog.datasets.items():
         _validate_named_mapping(f"datasets.{dataset_name}.fields", dataset.fields)
@@ -344,6 +355,10 @@ def _validate_catalog(catalog: Catalog) -> None:
 
     _validate_resolutions(catalog)
     _validate_relationships(catalog)
+
+    from .rules import validate_rules      # the rule checks bind filters, which needs the query package
+
+    validate_rules(catalog)
 
 
 def _validate_embedding_owners(catalog: Catalog) -> None:

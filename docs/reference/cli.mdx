@@ -29,8 +29,11 @@ catalog shop v1: 2 dataset(s), 3 source(s)
 customer  - A customer of the shop.
   id         id                 from crm
   plan       string             from billing
+  rule paying: Customers on a paid plan (pro or team).
   ...
 ```
+
+A dataset's [rules](/catalog/rules) are listed under it, a hidden one marked `(hidden)`.
 
 `yodb validate` connects to each database and reports whether the catalog
 matches it.
@@ -42,8 +45,8 @@ catalog shop v1: active
   support              valid
 ```
 
-`yodb query` prints a table by default. `--format json` prints the rows and the
-query's fingerprint; `--format jsonl` prints one row per line.
+`yodb query` prints a table by default, and a last line `rules applied: ...` when the query named rules.
+`--format json` prints the rows, the query's fingerprint and `applied` (the rules it named); `--format jsonl` prints one row per line.
 
 ```text
 id   name             plan
@@ -57,7 +60,8 @@ c01  Ada Lovelace     pro
  "query_fingerprint": "fa01beba5083..."}
 ```
 
-`yodb explain` prints the plan, one step per line, without reading any data.
+`yodb explain` prints the plan, one step per line, without reading any data, then one line for every
+[rule](/catalog/rules) the query used, with whether it was named in the query or reached through another rule.
 See [How queries are planned](/query/planning) for how to read it.
 
 ## Connections
