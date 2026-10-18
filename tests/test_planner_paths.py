@@ -171,6 +171,23 @@ class PlanShapeTests(unittest.TestCase):
         self.assertIsNone(billing.pushed_filter)                        # the mixed one stays at the coordinator
         self.assertTrue(any(n.residual_filter for n in planned.explain.nodes))
 
+    def test_a_condition_the_source_cannot_run_does_not_stop_its_siblings_being_pushed(self) -> None:
+        starts_with = {"field": "name", "op": "starts_with", "value": "a"}
+        planned = self.plan(_q(["name"], AND(_eq("status", "active"), starts_with)))
+        (scan,) = _scans(planned)
+        self.assertEqual(scan.pushed_filter.field.name, "status")
+        # starts_with still runs in YoDb, so the read is guarded and ordering and paging stay local.
+        self.assertEqual(scan.maximum_rows, 10_000)
+        self.assertTrue(any(n.residual_filter for n in planned.explain.nodes))
+
+    def test_unpushable_siblings_do_not_block_either_source_of_a_multi_source_query(self) -> None:
+        starts_with = {"field": "name", "op": "starts_with", "value": "a"}
+        planned = self.plan(_q(["name", "plan"], AND(_eq("status", "active"), _eq("plan", "pro"), starts_with)))
+        crm, billing = _scans(planned)
+        self.assertEqual(crm.pushed_filter.field.name, "status")
+        self.assertEqual(billing.pushed_filter.field.name, "plan")
+        self.assertTrue(any(n.residual_filter for n in planned.explain.nodes))
+
     def test_a_whole_or_over_the_anchors_fields_is_pushed_to_it(self) -> None:
         where = {"any": [_eq("status", "active"), _eq("status", "pending")]}
         planned = self.plan(_q(["name", "plan"], where))

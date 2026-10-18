@@ -9,18 +9,20 @@ from hashlib import sha256
 import json
 from typing import Any
 
-from ..catalog import API_VERSION, Catalog
+from ..catalog import Catalog
 
 
 def catalog_fingerprint(catalog: Catalog) -> str:
     """Hash the active catalog definition, including mappings and relationships.
 
+    It covers what the catalog says, not the format version its files declare, so
+    upgrading YoDb or relabelling a file leaves it unchanged.
+
     This digest stays inside YoDb/cursor payloads. It is not a public catalog
     export and must never be used to disclose the source definitions it covers.
     """
 
-    payload = {"api_version": API_VERSION, "catalog": catalog.model_dump(mode="json", by_alias=True)}
-    return _digest(payload)
+    return _digest(catalog.model_dump(mode="json", by_alias=True))
 
 
 def query_fingerprint(payload: dict[str, Any]) -> str:

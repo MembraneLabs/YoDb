@@ -22,6 +22,9 @@ catalog/
 └── relations.yaml  # approved ways datasets connect
 ```
 
+An optional fourth file, `rules.yaml`, is read but cannot define anything yet. It is experimental (see
+[Compatibility](/reference/compatibility)).
+
 The files answer different questions, and each is kept free of the others'
 concerns. That separation is what lets you move a column to another database
 by editing `sources.yaml` alone, without touching a single query.
@@ -66,7 +69,9 @@ what they mean.
 
 ## Common rules
 
-- Each document begins with `api_version: yodb/v0.1`.
+- Each document begins with an `api_version` such as `yodb/v0.1`. A YoDb reads any file of the
+  same major version up to its own minor version (`yodb/v0.2` today), checked file by file. A newer
+  file is refused, never skipped.
 - Catalog, dataset, source, field, and relationship names use lower snake
   case: `^[a-z][a-z0-9_]*$`.
 - Every object accepts only documented keys. Unknown keys are rejected rather

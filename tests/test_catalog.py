@@ -5,6 +5,7 @@ from tempfile import TemporaryDirectory
 import unittest
 
 from yodb import CatalogValidationError, load_catalog
+from yodb.query.fingerprint import catalog_fingerprint
 
 
 DATASETS = """\
@@ -115,6 +116,83 @@ class CatalogLoaderTests(unittest.TestCase):
         )
         self.assertEqual(len(catalog.relationships["customer_has_ticket"].implementations), 2)
 
+    def test_each_file_may_declare_any_format_version_up_to_the_one_this_yodb_reads(self) -> None:
+        for datasets, sources, relations in (
+            ("yodb/v0.1", "yodb/v0.2", "yodb/v0.1"),
+            ("yodb/v0.2", "yodb/v0.2", "yodb/v0.2"),
+        ):
+            with self.subTest(datasets=datasets, sources=sources, relations=relations):
+                with catalog_directory(
+                    datasets=DATASETS.replace("yodb/v0.1", datasets),
+                    sources=SOURCES.replace("yodb/v0.1", sources),
+                    relations=RELATIONS.replace("yodb/v0.1", relations),
+                ) as directory:
+                    self.assertEqual(load_catalog(directory).metadata.name, "acme_data")
+
+    def test_a_file_newer_than_this_yodb_reads_is_refused_whichever_file_it_is(self) -> None:
+        for name in ("datasets", "sources", "relations"):
+            with self.subTest(name=name):
+                files = {"datasets": DATASETS, "sources": SOURCES, "relations": RELATIONS}
+                files[name] = files[name].replace("yodb/v0.1", "yodb/v0.3")
+                with catalog_directory(**files) as directory:
+                    with self.assertRaisesRegex(CatalogValidationError, f"{name}.yaml.*yodb/v0.3.*newer"):
+                        load_catalog(directory)
+
+    def test_a_file_with_another_major_or_a_malformed_version_is_refused(self) -> None:
+        for version in ("yodb/v1.0", "yodb/v0", "v0.1", "yodb/v0.1.1", "0.1"):
+            with self.subTest(version=version):
+                with catalog_directory(datasets=DATASETS.replace("yodb/v0.1", version)) as directory:
+                    with self.assertRaisesRegex(CatalogValidationError, "datasets.yaml.*api_version"):
+                        load_catalog(directory)
+
+    def test_the_catalog_fingerprint_covers_content_not_the_declared_format_version(self) -> None:
+        with catalog_directory() as directory:
+            before = catalog_fingerprint(load_catalog(directory))
+        with catalog_directory(
+            datasets=DATASETS.replace("yodb/v0.1", "yodb/v0.2"), sources=SOURCES.replace("yodb/v0.1", "yodb/v0.2")
+        ) as directory:
+            relabelled = catalog_fingerprint(load_catalog(directory))
+        with catalog_directory(datasets=DATASETS.replace("Customer company name.", "Customer name.")) as directory:
+            edited = catalog_fingerprint(load_catalog(directory))
+
+        self.assertEqual(before, relabelled)
+        self.assertNotEqual(before, edited)
+
+    def test_rules_yaml_is_optional_and_an_empty_one_changes_nothing(self) -> None:
+        with catalog_directory() as directory:
+            without = load_catalog(directory)
+        with catalog_directory(rules="api_version: yodb/v0.2\nrules: {}\n") as directory:
+            empty = load_catalog(directory)
+
+        self.assertEqual(without, empty)
+        self.assertEqual(catalog_fingerprint(without), catalog_fingerprint(empty))
+
+    def test_rules_yaml_is_checked_like_the_other_files(self) -> None:
+        cases = (
+            ("api_version: yodb/v0.3\nrules: {}\n", "rules.yaml.*newer"),
+            ("api_version: yodb/v0.1\nrules: {}\n", "rules.yaml.*yodb/v0.2 or later"),
+            ("api_version: yodb/v0.2\nrules: {}\nextra: 1\n", "Invalid rules.yaml"),
+            ("api_version: yodb/v0.2\n", "Invalid rules.yaml"),
+            ("api_version: yodb/v0.2\nrules: {customer: {paying: {}}}\n", "cannot define rules yet"),
+        )
+        for text, message in cases:
+            with self.subTest(text=text):
+                with catalog_directory(rules=text) as directory:
+                    with self.assertRaisesRegex(CatalogValidationError, message):
+                        load_catalog(directory)
+
+    def test_a_catalog_may_declare_no_relationships(self) -> None:
+        with catalog_directory(relations="api_version: yodb/v0.1\nrelationships: {}\n") as directory:
+            catalog = load_catalog(directory)
+
+        self.assertEqual(catalog.relationships, {})
+        self.assertIn("customer", catalog.datasets)
+
+    def test_a_catalog_still_needs_datasets_and_sources(self) -> None:
+        with catalog_directory(datasets=DATASETS.split("datasets:")[0] + "datasets: {}\n") as directory:
+            with self.assertRaisesRegex(CatalogValidationError, "datasets must not be empty"):
+                load_catalog(directory)
+
     def test_rejects_unknown_physical_field_mapping(self) -> None:
         invalid_sources = SOURCES.replace(
             "          name: {physical_name: company_name}\n",
@@ -159,7 +237,10 @@ class CatalogLoaderTests(unittest.TestCase):
 
 
 class catalog_directory:
-    def __init__(self, *, datasets: str = DATASETS, sources: str = SOURCES, relations: str = RELATIONS) -> None:
+    def __init__(
+        self, *, datasets: str = DATASETS, sources: str = SOURCES, relations: str = RELATIONS, rules: str | None = None
+    ) -> None:
+        self._rules = rules
         self._datasets = datasets
         self._sources = sources
         self._relations = relations
@@ -171,6 +252,8 @@ class catalog_directory:
         (directory / "datasets.yaml").write_text(self._datasets, encoding="utf-8")
         (directory / "sources.yaml").write_text(self._sources, encoding="utf-8")
         (directory / "relations.yaml").write_text(self._relations, encoding="utf-8")
+        if self._rules is not None:
+            (directory / "rules.yaml").write_text(self._rules, encoding="utf-8")
         return directory
 
     def __exit__(self, exc_type: object, exc_value: object, traceback: object) -> None:

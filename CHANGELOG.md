@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.2.0 (unreleased)
+
+### Added
+- A catalog may declare no relationships (`relationships: {}`), so a catalog of one dataset loads.
+- An optional `rules.yaml` is read from the catalog directory. It must say `api_version: yodb/v0.2` and
+  `rules: {}` for now; rules themselves come later. Experimental.
+
+### Fixed
+- A text `contains` or `starts_with` in an `all` no longer stops the conditions beside it from being
+  pushed to the database. The coordinator still applies the whole filter, so results are unchanged.
+
+### Changed
+- A catalog file may declare any `api_version` of the same major version up to the one this YoDb reads
+  (`yodb/v0.2`), file by file. A newer file is refused. The format version moves only when a file format
+  changes.
+- The catalog fingerprint covers the catalog's content only, not `api_version`. Fingerprints differ from
+  0.1.1.
+
 ## 0.1.1 (unreleased)
 
 ### Added

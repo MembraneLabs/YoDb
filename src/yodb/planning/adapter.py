@@ -19,6 +19,7 @@ from ..query.models import (
 from ..query.resolution import SingleSourceQueryBinding
 from .capabilities import BooleanOperator, SourceCapabilities
 from .contracts import PushdownDecision, SourceOperationRequest, SourcePlanningAdapter
+from .expressions import top_level_conjuncts
 
 
 class CapabilityPlanningAdapter(SourcePlanningAdapter):
@@ -45,8 +46,17 @@ class CapabilityPlanningAdapter(SourcePlanningAdapter):
             raise ValueError(f"{caps.source_kind.value} planning requires a {caps.source_kind.value} source binding")
         reasons: list[str] = []
         names = {field.field.name for field in (*source.fields, source.logical_id)}
-        accepted_filter = requested.filter if self._accepts(requested.filter, names, reasons) else None
-        residual = None if accepted_filter is requested.filter else requested.filter
+        if self._accepts(requested.filter, names, reasons):
+            accepted_filter, residual = requested.filter, None
+        else:
+            # The filter ANDs independent conditions together.  The source can still enforce the ones it
+            # understands; the coordinator re-applies the whole filter, so pushing a subset only narrows the read.
+            conjuncts = top_level_conjuncts(requested.filter)
+            kept = [part for part in conjuncts if self._accepts(part, names, [])]
+            accepted_filter = (
+                None if not kept else kept[0] if len(kept) == 1 else BoundAllExpression(tuple(kept))
+            )
+            residual = requested.filter
 
         # A remote ORDER/LIMIT is only safe after every result-affecting
         # predicate was accepted; otherwise it could discard a row the

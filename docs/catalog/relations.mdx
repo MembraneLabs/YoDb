@@ -11,8 +11,8 @@ A relationship names two fields that must be equal. Both fields must already be
 mapped in [`sources.yaml`](/catalog/sources); a relationship cannot reach a
 column that is not in the catalog.
 
-The file is required, and it must declare at least one relationship. A catalog
-with no relationships does not load (`relationships must not be empty`).
+The file is required. A catalog with no relationships (for example, one dataset) writes
+`relationships: {}`.
 
 ```yaml
 api_version: yodb/v0.1
