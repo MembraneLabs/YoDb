@@ -18,6 +18,8 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError,
 # The catalog format this YoDb reads: the same major version, and any minor version up to this one.
 # It moves only when a file format changes, not with every release of the package.
 FORMAT_VERSION = (0, 2)
+# rules.yaml first appeared in this format version, so it cannot declare an earlier one.
+RULES_FORMAT_VERSION = (0, 2)
 API_VERSION = f"yodb/v{FORMAT_VERSION[0]}.{FORMAT_VERSION[1]}"
 _API_VERSION = re.compile(r"yodb/v(\d+)\.(\d+)")
 _IDENTIFIER = re.compile(r"^[a-z][a-z0-9_]*$")
@@ -179,16 +181,23 @@ class RelationsDocument(StrictModel):
     relationships: dict[str, RelationshipSpec]
 
 
+class RulesDocument(StrictModel):
+    api_version: str
+    # Rules are grouped by dataset.  Reading the file is in place; defining rules is not yet.
+    rules: dict[str, Any]
+
+
 class Catalog(StrictModel):
     metadata: CatalogMetadata
     datasets: dict[str, DatasetSpec]
     sources: dict[str, SourceSpec]
     resolution: dict[str, DatasetResolution]
     relationships: dict[str, RelationshipSpec]
+    rules: dict[str, Any] = Field(default_factory=dict)
 
 
 def load_catalog(directory: str | Path) -> Catalog:
-    """Load and statically validate ``datasets.yaml``, ``sources.yaml``, and ``relations.yaml``.
+    """Load and statically validate ``datasets.yaml``, ``sources.yaml``, ``relations.yaml`` and an optional ``rules.yaml``.
 
     The function performs no network I/O and never resolves connection
     references. It is safe to run during local development and CI.
@@ -198,6 +207,7 @@ def load_catalog(directory: str | Path) -> Catalog:
     datasets_document = _load_document(root / "datasets.yaml", DatasetsDocument)
     sources = _load_document(root / "sources.yaml", SourcesDocument)
     relations = _load_document(root / "relations.yaml", RelationsDocument)
+    rules = _load_document(root / "rules.yaml", RulesDocument, required=False, minimum=RULES_FORMAT_VERSION)
 
     catalog = Catalog(
         metadata=datasets_document.catalog,
@@ -205,23 +215,32 @@ def load_catalog(directory: str | Path) -> Catalog:
         sources=sources.sources,
         resolution=sources.resolution,
         relationships=relations.relationships,
+        rules=rules.rules if rules is not None else {},
     )
     _validate_catalog(catalog)
     return catalog
 
 
-def _load_document(path: Path, model: type[StrictModel]) -> Any:
+def _load_document(
+    path: Path,
+    model: type[StrictModel],
+    *,
+    required: bool = True,
+    minimum: tuple[int, int] = (0, 0),
+) -> Any:
     try:
         with path.open("r", encoding="utf-8") as handle:
             raw = yaml.safe_load(handle)
     except FileNotFoundError as error:
+        if not required:
+            return None
         raise CatalogValidationError(f"Required catalog file is missing: {path.name}") from error
     except yaml.YAMLError as error:
         raise CatalogValidationError(f"Invalid YAML in {path.name}: {error}") from error
 
     if not isinstance(raw, dict):
         raise CatalogValidationError(f"{path.name} must contain a YAML mapping at its root")
-    _check_api_version(path.name, raw.get("api_version"))
+    _check_api_version(path.name, raw.get("api_version"), minimum)
 
     try:
         return model.model_validate(raw)
@@ -229,7 +248,7 @@ def _load_document(path: Path, model: type[StrictModel]) -> Any:
         raise CatalogValidationError(f"Invalid {path.name}: {error}") from error
 
 
-def _check_api_version(file_name: str, declared: Any) -> None:
+def _check_api_version(file_name: str, declared: Any, minimum: tuple[int, int] = (0, 0)) -> None:
     """Refuse a file written for another format major or a newer minor than this YoDb reads.
 
     A missing key is left to the model, which reports it like any other required key.
@@ -250,6 +269,10 @@ def _check_api_version(file_name: str, declared: Any) -> None:
         raise CatalogValidationError(
             f"{file_name}: api_version {declared} is a different major version from the {API_VERSION} this YoDb reads."
         )
+    if (major, minor) < minimum:
+        raise CatalogValidationError(
+            f"{file_name}: api_version must be yodb/v{minimum[0]}.{minimum[1]} or later, not {declared}."
+        )
 
 
 def _validate_catalog(catalog: Catalog) -> None:
@@ -257,6 +280,8 @@ def _validate_catalog(catalog: Catalog) -> None:
     _validate_named_mapping("datasets", catalog.datasets)
     _validate_named_mapping("sources", catalog.sources)
     _validate_named_mapping("relationships", catalog.relationships, allow_empty=True)
+    if catalog.rules:
+        raise CatalogValidationError("rules.yaml cannot define rules yet; leave 'rules' empty")
 
     for dataset_name, dataset in catalog.datasets.items():
         _validate_named_mapping(f"datasets.{dataset_name}.fields", dataset.fields)

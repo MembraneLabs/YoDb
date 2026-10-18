@@ -22,6 +22,9 @@ catalog/
 └── relations.yaml  # approved ways datasets connect
 ```
 
+An optional fourth file, `rules.yaml`, is read but cannot define anything yet. It is experimental (see
+[Compatibility](/reference/compatibility)).
+
 The files answer different questions, and each is kept free of the others'
 concerns. That separation is what lets you move a column to another database
 by editing `sources.yaml` alone, without touching a single query.
