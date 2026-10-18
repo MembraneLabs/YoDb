@@ -115,6 +115,18 @@ class CatalogLoaderTests(unittest.TestCase):
         )
         self.assertEqual(len(catalog.relationships["customer_has_ticket"].implementations), 2)
 
+    def test_a_catalog_may_declare_no_relationships(self) -> None:
+        with catalog_directory(relations="api_version: yodb/v0.1\nrelationships: {}\n") as directory:
+            catalog = load_catalog(directory)
+
+        self.assertEqual(catalog.relationships, {})
+        self.assertIn("customer", catalog.datasets)
+
+    def test_a_catalog_still_needs_datasets_and_sources(self) -> None:
+        with catalog_directory(datasets=DATASETS.split("datasets:")[0] + "datasets: {}\n") as directory:
+            with self.assertRaisesRegex(CatalogValidationError, "datasets must not be empty"):
+                load_catalog(directory)
+
     def test_rejects_unknown_physical_field_mapping(self) -> None:
         invalid_sources = SOURCES.replace(
             "          name: {physical_name: company_name}\n",

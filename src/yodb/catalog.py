@@ -228,7 +228,7 @@ def _validate_catalog(catalog: Catalog) -> None:
     _validate_identifier("catalog.name", catalog.metadata.name)
     _validate_named_mapping("datasets", catalog.datasets)
     _validate_named_mapping("sources", catalog.sources)
-    _validate_named_mapping("relationships", catalog.relationships)
+    _validate_named_mapping("relationships", catalog.relationships, allow_empty=True)
 
     for dataset_name, dataset in catalog.datasets.items():
         _validate_named_mapping(f"datasets.{dataset_name}.fields", dataset.fields)
@@ -450,8 +450,8 @@ def _validate_graph_implementation(
             )
 
 
-def _validate_named_mapping(location: str, values: dict[str, Any]) -> None:
-    if not values:
+def _validate_named_mapping(location: str, values: dict[str, Any], *, allow_empty: bool = False) -> None:
+    if not values and not allow_empty:
         raise CatalogValidationError(f"{location} must not be empty")
     for name in values:
         _validate_identifier(location, name)
