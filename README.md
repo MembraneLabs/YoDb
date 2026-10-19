@@ -1,5 +1,27 @@
 # YoDb
 
+**One interface for querying and retrieving data across heterogeneous sources.**
+
+YoDb is an experimental query and retrieval engine designed to help AI agents interact with data through a unified interface.
+
+Today, YoDb supports querying across PostgreSQL databases, with query planning and execution capabilities.
+
+The longer-term vision is to extend YoDb beyond relational databases to heterogeneous data sources, including other database systems and visual information such as images and videos.
+
+**Current capabilities**
+- PostgreSQL-backed querying
+- Cross-database query execution
+- MCP integration for AI agents
+
+**Planned directions**
+- Additional database connectors
+- Extensible source-specific query and retrieval operators
+- Visual and multimodal retrieval
+
+*YoDb is in active development. PostgreSQL is currently the supported backend; additional sources and visual retrieval are not yet implemented.*
+
+---
+
 YoDb lets an app or an AI agent ask one question about data that lives in
 several PostgreSQL databases. You do not write SQL, and your data is not copied
 anywhere.
